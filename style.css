@@ -2220,3 +2220,20 @@ html, body { overflow-x: hidden; }
   background: linear-gradient(135deg, #f7d774, #c8902a); border: 0; font-size: 18px; box-shadow: 0 3px 10px rgba(0,0,0,.4); }
 .tourney-btn[hidden] { display: none; }
 .t-match.active { border-color: #3b9cff; box-shadow: 0 0 12px rgba(59,156,255,.35); }
+/* 💎 premium avatars: own backdrop and a glowing turning ring */
+.avatar.prem-av { position: relative; background: var(--pa-bg) !important; color: #fff; isolation: isolate; overflow: visible !important;
+  box-shadow: 0 0 0 2px var(--pa-ring), 0 0 10px var(--pa-ring); text-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.avatar.prem-av::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; z-index: -1;
+  background: conic-gradient(from 0deg, transparent 0 55%, var(--pa-ring) 75%, transparent 95%); animation: paSpin 2.6s linear infinite; }
+@keyframes paSpin { to { transform: rotate(360deg); } }
+.prem-av-head { grid-column: 1 / -1; width: 100%; font-size: 12px; font-weight: 700; opacity: .8; margin: 6px 0 2px; }
+.avatar-pick.prem-pick { padding: 4px; }
+.avatar-pick.prem-pick .avatar { width: 34px; height: 34px; font-size: 19px; display: grid; place-items: center; border-radius: 50%; }
+.avatar-pick.prem-pick.locked { opacity: .55; }
+.avatar-pick.prem-pick.locked::after { content: "🔒"; position: absolute; font-size: 10px; right: 0; bottom: 0; }
+.avatar-pick.prem-pick { position: relative; }
+.prem-av-sub { grid-column: 1 / -1; width: 100%; font-size: 11.5px; opacity: .7; margin: 4px 0 0; }
+/* heavy metal: a flickering fiery glow instead of a calm one */
+.avatar.prem-av.metal { box-shadow: 0 0 0 2px var(--pa-ring), 0 0 12px var(--pa-ring), inset 0 0 8px rgba(0,0,0,.8); animation: metalFlicker 1.6s ease-in-out infinite; }
+.avatar.prem-av.metal::before { background: conic-gradient(from 0deg, transparent 0 40%, var(--pa-ring) 55%, transparent 62%, var(--pa-ring) 80%, transparent 90%); animation-duration: 1.3s; }
+@keyframes metalFlicker { 0%, 100% { filter: brightness(1); } 45% { filter: brightness(1.25) contrast(1.15); } 55% { filter: brightness(.9); } }
