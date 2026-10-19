@@ -1,0 +1,97 @@
+# Builds the THAAS Android app on GitHub's computers every time you push.
+# Download it from: GitHub → Actions → the latest "Android app" run → Artifacts.
+#
+# Secrets (GitHub → Settings → Secrets and variables → Actions):
+#   GOOGLE_SERVICES_JSON   the whole google-services.json from Firebase (needed for push notifications)
+#   Optional, for a signed Play Store bundle:
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+name: Android app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Capacitor
+        run: npm install
+
+      - name: Put the game inside the app
+        run: npm run copy-web
+
+      - name: Create the Android project
+        run: npx cap add android
+
+      - name: Firebase settings for push notifications
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "google-services.json added"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret is missing - the app will build, but push notifications won't work."
+          fi
+
+      - name: App icon and splash screen
+        run: npm run icons
+
+      - name: Notification icon, version number, Android 15 fix
+        run: npm run patch
+
+      - name: Sync
+        run: npx cap sync android
+
+      - name: Open the live website in the app (website updates reach the app with no rebuild)
+        run: npm run live
+
+      - name: Build the installable APK
+        working-directory: android-app/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "THAAS-1.0.${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: THAAS-apk-1.0.${{ github.run_number }}
+          path: android-app/THAAS-1.0.${{ github.run_number }}.apk
+
+      # Optional: a signed bundle (.aab) for the Google Play Store
+      - name: Signed Play Store bundle
+        id: release
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS" ]; then echo "No keystore secret - skipping the Play Store bundle."; exit 0; fi
+          echo "$KS" | base64 -d > release.keystore
+          npx cap build android --androidreleasetype AAB \
+            --keystorepath "$PWD/release.keystore" --keystorepass "$KS_PASS" \
+            --keystorealias "$KEY_ALIAS" --keystorealiaspass "$KEY_PASS"
+          echo "built=yes" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.release.outputs.built == 'yes'
+        with:
+          name: THAAS-playstore-1.0.${{ github.run_number }}
+          path: android-app/android/app/build/outputs/bundle/release/*.aab
