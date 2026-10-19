@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019b";
-import * as CFG from "./firebase-config.js?v=20261019b";
-import * as C from "./cards.js?v=20261019b";
-import * as P from "./profile.js?v=20261019b";
-import { DV } from "./i18n.js?v=20261019b";
+} from "./store.js?v=20261019c";
+import * as CFG from "./firebase-config.js?v=20261019c";
+import * as C from "./cards.js?v=20261019c";
+import * as P from "./profile.js?v=20261019c";
+import { DV } from "./i18n.js?v=20261019c";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -1307,7 +1307,7 @@ async function maybeBotMove() {
   const key = `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}`;
   if (botKey === key) return;
   botKey = key;
-  await sleep(350 + Math.random() * 350); // "thinking"
+  await sleep(1100 + Math.random() * 1000); // "thinking": a computer takes 1–2 seconds, like a person
   if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}` !== key) return;
   try {
     const cards = (await getDoc(handRef(bot))).data()?.cards || [];
