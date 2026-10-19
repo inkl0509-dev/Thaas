@@ -2158,3 +2158,18 @@ html, body { overflow-x: hidden; }
 @keyframes taPulse { 50% { opacity: .55; } }
 /* the turn arrow runs over the bottom buttons too, so it's never hidden behind them */
 .turn-arrow { z-index: 61; top: 0; left: 0; right: auto; bottom: auto; }
+/* daily challenges */
+.challenges { display: grid; gap: 6px; }
+.challenges .ch-head { font-size: 14px; margin-bottom: 2px; }
+.challenge { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; background: rgba(232,182,76,.12); }
+.challenge .ch-icon { font-size: 18px; text-align: center; }
+.challenge .ch-text { font-size: 13px; }
+.challenge .ch-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.15); margin-top: 4px; overflow: hidden; }
+.challenge .ch-bar i { display: block; height: 100%; background: linear-gradient(90deg, #e8b64c, #ffd47a); border-radius: 3px; transition: width .4s; }
+.challenge .ch-rew { font-weight: 700; color: #e8b64c; font-size: 12px; }
+.challenge.done { background: rgba(80,200,120,.16); }
+.challenge.done .ch-bar i { background: #50c878; }
+.challenge.done .ch-rew { color: #7ee2a8; }
+.challenges .ch-note { font-size: 11px; }
+.home-ch { margin: 10px 0 4px; }
+#profBadgeCount { font-weight: 400; opacity: .7; font-size: 12px; }
