@@ -165,6 +165,7 @@ async function rtQueryDocs(q) {
   const f = q.filters || [];
   const owner = f.find((x) => x.field === "owner" && x.op === "==");
   const pub = f.find((x) => x.field === "public" && x.op === "==");
+  const lng = f.find((x) => x.field === "lounge" && x.op === "==");
   const mem = f.find((x) => x.field === "members" && x.op === "array-contains");
   if (q.rt === "rooms" && mem) { // holhuashis I've joined: from my own list
     const mine = (await rGet(rRef(rdb, `memberOf/${mem.value}`))).val() || {};
@@ -175,6 +176,7 @@ async function rtQueryDocs(q) {
   let src = rRef(rdb, q.rt);
   if (q.rt === "rooms" && owner) src = rQuery(src, orderByChild("owner"), equalTo(owner.value));
   else if (q.rt === "rooms" && pub) src = rQuery(src, orderByChild("public"), equalTo(pub.value));
+  else if (q.rt === "rooms" && lng) src = rQuery(src, orderByChild("lounge"), equalTo(lng.value));
   return listOf(q.rt, (await rGet(src)).val(), f);
 }
 const querySnap = (docs, changes = []) => ({ docs, size: docs.length, empty: !docs.length, forEach: (fn) => docs.forEach(fn), docChanges: () => changes });
@@ -361,4 +363,12 @@ export function onReconnect(cb) {
 export function rememberMembership(uid, code) {
   if (!rdb || !uid || !code) return;
   rSet(rRef(rdb, `memberOf/${uid}/${code}`), true).catch(() => {});
+}
+
+// Admin: delete a whole holhuashi (table, hands, invite key, joins and members' "my holhuashis" links)
+export async function deleteRoomEverywhere(code, uids = []) {
+  if (!rdb) return fsDeleteDoc(fsDoc(fdb, "rooms", code));
+  const upd = { [`rooms/${code}`]: null, [`hands/${code}`]: null, [`secrets/${code}`]: null, [`joins/${code}`]: null };
+  for (const u of uids) upd[`memberOf/${u}/${code}`] = null;
+  return rUpdate(rRef(rdb), upd);
 }
