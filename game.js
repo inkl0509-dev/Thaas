@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019c";
-import * as CFG from "./firebase-config.js?v=20261019c";
-import * as C from "./cards.js?v=20261019c";
-import * as P from "./profile.js?v=20261019c";
-import { DV } from "./i18n.js?v=20261019c";
+} from "./store.js?v=20261019e";
+import * as CFG from "./firebase-config.js?v=20261019e";
+import * as C from "./cards.js?v=20261019e";
+import * as P from "./profile.js?v=20261019e";
+import { DV } from "./i18n.js?v=20261019e";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -1308,6 +1308,7 @@ async function maybeBotMove() {
   if (botKey === key) return;
   botKey = key;
   await sleep(1100 + Math.random() * 1000); // "thinking": a computer takes 1–2 seconds, like a person
+  while (shuffling()) await sleep(250); // the new middle pile is still being shuffled
   if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}` !== key) return;
   try {
     const cards = (await getDoc(handRef(bot))).data()?.cards || [];
@@ -2817,6 +2818,7 @@ function nextTurn(log) {
 }
 
 function draw(from) {
+  if (shuffling()) return toast("🎩 Wait: the new middle pile is being shuffled");
   if (mustThrowFirst()) return toast("Throw a card first");
   if (isMyTurn() && holdingExtra()) return toast(`You already have ${hand.length} cards · throw one away`);
   if (!canDraw()) { // say why nothing happens, and make sure my screen is up to date
@@ -2922,6 +2924,7 @@ function takeFirstHint() {
 }
 
 function throwCard(cardIds, timedOut = false) {
+  if (shuffling() && !timedOut) return toast("🎩 Wait: the new middle pile is being shuffled");
   if (needsDrawFirst()) return takeFirstHint();
   const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
   if (!canThrow() || !ids.length || !ids.every((c) => hand.includes(c))) return;
@@ -3148,6 +3151,7 @@ function tick() {
   }
   const key = `${room.round}-${room.moveId || 0}`;
   if (key !== turnKey) { turnKey = key; turnSeenAt = Date.now(); }
+  if (shuffling()) turnSeenAt = Math.max(turnSeenAt, Date.now() - 1); // the clock waits for the shuffle
   const left = TURN_MS - (Date.now() - turnSeenAt);
   const secs = Math.max(0, Math.ceil(left / 1000));
   box.hidden = false;
@@ -4587,19 +4591,27 @@ function renderSeats() {
         Object.assign(t.style, { left: slot.tag.x + "px", top: slot.tag.y + "px" });
         t.style.setProperty("--rot", slot.tag.rot + "deg");
       }
-      // their cards, face down, fanned out behind their name
+      // their cards, face down and standing upright, fanned out next to their name (towards the
+      // middle of the table, so they're never cut off by the edge of the screen)
       const nCards = mine ? 0 : cardsHeld(p.uid);
       if (nCards > 0) {
         const fan = document.createElement("span");
-        fan.className = "st-fan";
+        fan.className = "seat-fan";
+        fan.dataset.uid = p.uid;
         const show = Math.min(nCards, 9);
         for (let i = 0; i < show; i++) {
           const c = document.createElement("i");
           c.className = "card back mini-back";
-          c.style.setProperty("--a", ((i - (show - 1) / 2) * (show > 1 ? 56 / (show - 1) : 0)).toFixed(1) + "deg");
+          c.style.setProperty("--a", ((i - (show - 1) / 2) * (show > 1 ? 50 / (show - 1) : 0)).toFixed(1) + "deg");
           fan.append(c);
         }
-        t.append(fan);
+        const vx = W / 2 - slot.tag.x, vy = H / 2 - slot.tag.y, vl = Math.hypot(vx, vy) || 1;
+        const off = slot.side === "top" ? 40 : 46;
+        const fx = Math.min(W - 34, Math.max(34, slot.tag.x + (vx / vl) * off));
+        const fy = Math.min(H - 60, Math.max(44, slot.tag.y + (vy / vl) * off));
+        Object.assign(fan.style, { left: fx + "px", top: fy + "px" });
+        box.append(fan);
+        t._fan = fan;
       }
       t.append(avatarEl(p, "avatar small"));
       const info = document.createElement("span");
@@ -4615,6 +4627,11 @@ function renderSeats() {
       info.append(nm, sub);
       t.append(info, Object.assign(document.createElement("span"), { className: "st-time" }));
       box.append(t);
+      // left and right players: their cards sit just above their name
+      if (t._fan && Math.abs(slot.tag.rot) === 90) {
+        const half = (t.offsetWidth || 90) / 2;
+        Object.assign(t._fan.style, { left: Math.min(W - 30, Math.max(30, slot.tag.x)) + "px", top: Math.max(44, slot.tag.y - half - 24) + "px" });
+      }
     }
   }
   const cur = room.status === "playing" ? room.playerIds[room.turn] : null;
@@ -4735,9 +4752,17 @@ function cardMoves(prev) {
       e.t.forEach((c, i) => flyCard(who, $("discardPile"), c, { delay: w2 + i * 120, slow: true }));
       at += 700 + e.t.length * 120;
     }
-    if (e.s) { const w3 = e.u === uid ? 700 : at; setTimeout(() => rebuildDeck(e.old || []), w3); at = w3 + 1300; }
+    if (e.s) {
+      const w3 = e.u === uid ? 700 : at;
+      shuffleBusyUntil = Date.now() + w3 + SHUFFLE_MS; // nobody plays (and no clock runs) until the new pile is set
+      setTimeout(() => rebuildDeck(e.old || []), w3); at = w3 + 1300;
+    }
   }
 }
+// while the thrown cards are being shuffled into a new middle pile, everyone waits
+const SHUFFLE_MS = 5200;
+let shuffleBusyUntil = 0;
+const shuffling = () => Date.now() < shuffleBusyUntil;
 // the newest move my screen had already shown before this update
 function fxSeen(prev) {
   return (prev?.fx || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
