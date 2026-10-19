@@ -1,12 +1,12 @@
 // Paste your own config here: Firebase console → Project settings → Your apps → Web app → SDK setup.
 // These keys are safe to commit to GitHub; firestore.rules is what protects the data.
 export const firebaseConfig = {
-  apiKey: "AIzaSyCf3vJpqRtNV0HL3gvtKdP0AvmOQYp2EWs",
-  authDomain: "token-8e106.firebaseapp.com",
-  projectId: "token-8e106",
-  storageBucket: "token-8e106.firebasestorage.app",
-  messagingSenderId: "123062480763",
-  appId: "1:123062480763:web:7ccd2236d14c2d932457de",
+  apiKey: "AIzaSyA1jfYnqJ92nkotDJSjjeAXvIYEQf0gucQ",
+  authDomain: "game-3814f.firebaseapp.com",
+  projectId: "game-3814f",
+  storageBucket: "game-3814f.firebasestorage.app",
+  messagingSenderId: "698322919920",
+  appId: "1:698322919920:web:6911800df08c2d0bd87d35",
 };
 
 // Your website's address on Vercel (used by the Android app for invite links and push notifications).
