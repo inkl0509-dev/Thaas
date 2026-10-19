@@ -1,0 +1,22 @@
+{
+  "name": "thaas-android",
+  "private": true,
+  "description": "THAAS Android app (Capacitor). Built automatically by GitHub Actions; see the README.",
+  "scripts": {
+    "build-app": "npm run copy-web && node scripts/ensure-android.mjs && npm run icons && npm run patch && npx cap sync android && npm run live",
+    "open": "npx cap open android",
+    "copy-web": "node scripts/copy-web.mjs",
+    "patch": "node scripts/patch-android.mjs",
+    "icons": "capacitor-assets generate --android --assetPath assets --iconBackgroundColor \"#08495a\" --splashBackgroundColor \"#08495a\"",
+    "live": "node scripts/use-live-site.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/push-notifications": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.0.0"
+  }
+}
