@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019k";
-import * as CFG from "./firebase-config.js?v=20261019k";
-import * as C from "./cards.js?v=20261019k";
-import * as P from "./profile.js?v=20261019k";
-import { DV } from "./i18n.js?v=20261019k";
+} from "./store.js?v=20261019m";
+import * as CFG from "./firebase-config.js?v=20261019m";
+import * as C from "./cards.js?v=20261019m";
+import * as P from "./profile.js?v=20261019m";
+import { DV } from "./i18n.js?v=20261019m";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -1367,12 +1367,14 @@ async function botDigu(bot, cards) {
       if (!deck.length) { if (discard.length <= 1) return; ({ deck, discard } = C.reshuffleDiscard(discard)); }
       card = deck.pop(); from = "from the pile";
     }
-    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`, took: from === "the thrown card" ? card : null,
       ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
   }
   if (room.phase === "discard" && level === "easy") { // easy: throws a random card that isn't in a set
     const lay = C.bestLayout(cards);
-    const loose = lay.leftover.length ? lay.leftover : cards;
+    const ban = takenNow(bot);
+    let loose = (lay.leftover.length ? lay.leftover : cards).filter((x) => x !== ban);
+    if (!loose.length) loose = cards.filter((x) => x !== ban);
     const c = loose[Math.floor(Math.random() * loose.length)];
     const rest = cards.filter((x) => x !== c);
     const win = C.findWinningLayout(rest);
@@ -1386,20 +1388,20 @@ async function botDigu(bot, cards) {
     let deck = [...room.deck], discard = [...room.discard];
     if (!deck.length && discard.length > 1) ({ deck, discard } = C.reshuffleDiscard(discard));
     const next = deck[deck.length - 1];
-    const fromTop = top ? C.diguBestAfter([...cards, top]) : null;
+    const fromTop = top ? C.diguBestAfter([...cards, top], top) : null;
     const fromDeck = next ? C.diguBestAfter([...cards, next]) : null;
     const rank = (o) => (!o ? Infinity : o.win ? -1 : o.pts);
     let card, from;
     if (fromTop && (rank(fromTop) < rank(fromDeck) || !fromDeck)) { discard = [...room.discard]; deck = [...room.deck]; card = discard.pop(); from = "the thrown card"; }
     else if (next) { card = deck.pop(); from = "from the pile"; }
     else return;
-    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`, took: from === "the thrown card" ? card : null,
       ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
   }
   if (room.phase === "draw") {
     const top = room.discard?.[room.discard.length - 1];
     const now = C.bestLayout(cards).points;
-    const withTop = top ? Math.min(...[...cards, top].map((c) => C.bestLayout([...cards, top].filter((x) => x !== c)).points)) : Infinity;
+    const withTop = top ? Math.min(...cards.map((c) => C.bestLayout([...cards, top].filter((x) => x !== c)).points)) : Infinity; // (the taken card can't go straight back)
     let deck = [...room.deck], discard = [...room.discard], card, from;
     if (top && withTop < now) { card = discard.pop(); from = "the thrown card"; }
     else {
@@ -1409,7 +1411,7 @@ async function botDigu(bot, cards) {
       }
       card = deck.pop(); from = "from the pile";
     }
-    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`, took: from === "the thrown card" ? card : null,
       ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
   }
   // throw
@@ -1417,7 +1419,9 @@ async function botDigu(bot, cards) {
   const meI = room.playerIds.indexOf(bot), nxt = room.playerIds[nextActiveIdx(room, meI)];
   const wants = level !== "easy" ? room.track?.[nxt]?.took || [] : [];
   const helpsNext = (c) => { const s = C.parse(c); return wants.some((id) => { const t = C.parse(id); return t.r === s.r || (t.s === s.s && Math.abs(t.r - s.r) <= 2); }); };
+  const ban = takenNow(bot);
   for (const c of cards) {
+    if (c === ban) continue; // can't throw back the card just taken
     const rest = cards.filter((x) => x !== c);
     const sets = C.findWinningLayout(rest);
     if (sets) { best = { c, rest, sets }; break; }
@@ -2808,11 +2812,15 @@ function tagMove(ops, ref0) {
   d.fx = [...list.slice(-4), ev];
 }
 
+// DIGU rule: the card you take from the thrown pile can't be thrown straight back on the same turn.
+const takenNow = (who) => (gameOf(room) === "digu" && room.took && room.playerIds[room.turn] === who && room.phase === "discard" ? room.took : null);
+
 function nextTurn(log) {
   return {
     turn: nextActiveIdx(room, room.turn),
     phase: isCall() ? "throw" : "draw",
     moveId: (room.moveId || 0) + 1,
+    took: null,
     log,
   };
 }
@@ -2845,6 +2853,7 @@ function draw(from) {
   b.update(roomRef(), {
     deck, discard, phase: "discard",
     log: `${nameOf(uid)} took ${from === "discard" ? "the discard" : "from the pile"}`,
+    took: from === "discard" ? card : null,
     ...(reshuffled ? { reshuffles: (room.reshuffles || 0) + 1 } : {}),
     ...(from === "discard" ? trackUpd(uid, "took", [card]) : {}),
   });
@@ -2932,6 +2941,7 @@ function throwCard(cardIds, timedOut = false) {
   if (isDhiha()) return dhihaThrow(ids[0], timedOut);
   const call = isCall();
   if (call ? !C.canThrowTogether(ids) : ids.length !== 1) return toast("Only cards of the same number can be thrown together");
+  if (!call && takenNow(uid) && ids.includes(takenNow(uid))) return toast("You can't throw back the card you just took · throw another card");
   if (call) return callThrow(ids, timedOut);
   const rest = hand.filter((c) => !ids.includes(c));
   const sets = call ? null : C.findWinningLayout(rest);
@@ -2980,7 +2990,7 @@ function onCall() {
 function diguThrow() {
   if (!canThrow()) return null;
   const order = selected ? [selected, ...hand.filter((c) => c !== selected)] : hand;
-  return order.find((c) => C.findWinningLayout(hand.filter((x) => x !== c))) || null;
+  return order.find((c) => c !== takenNow(uid) && C.findWinningLayout(hand.filter((x) => x !== c))) || null;
 }
 
 function onDigu() {
@@ -3089,13 +3099,15 @@ function autoPlay() {
     return throwCard([hand.reduce((a, b) => (C.callValue(b) > C.callValue(a) ? b : a))], true);
   }
   let card = diguThrow();
-  if (!card) card = hand.includes(lastDrawn) ? lastDrawn : worstCard();
+  if (!card) card = hand.includes(lastDrawn) && lastDrawn !== takenNow(uid) ? lastDrawn : worstCard();
   throwCard(card, true);
 }
 
 function worstCard() {
   const { leftover } = C.bestLayout(hand);
-  const pool = leftover.length ? leftover : hand;
+  const ban = takenNow(uid);
+  let pool = (leftover.length ? leftover : hand).filter((c) => c !== ban);
+  if (!pool.length) pool = hand.filter((c) => c !== ban);
   return pool.reduce((a, b) => (C.points(b) > C.points(a) ? b : a));
 }
 
@@ -3470,6 +3482,7 @@ function recordRound(myRow) {
   recordRound.done = key;
   const reg = isRegistered();
   runTransaction(db, async (tx) => {
+    let done = [];
     const ref = doc(db, "users", uid);
     const d = (await tx.get(ref)).data() || {};
     if (d.lastCounted === key) return;
@@ -3481,9 +3494,51 @@ function recordRound(myRow) {
       upd.careerPoints = (d.careerPoints || 0) + earned;
       if (!myRow.call && !myRow.bondi && !myRow.dhiha) upd.bestRound = Math.max(d.bestRound || 0, myRow.pts);
       if (myRow.digu) upd.digus = (d.digus || 0) + 1;
+      const bs = badgeStats(d, myRow, earned);
+      Object.assign(upd, bs);
+      done = bs._done;
     }
     tx.set(ref, upd, { merge: true });
+    return done;
+  }).then((done) => {
+    for (const c of done || []) toast(`🎯 Challenge done: ${c.text} · +${c.reward} points!`);
   }).catch(() => { recordRound.done = null; });
+}
+// What this round adds to the badge stats and today's challenges (registered players, real games).
+function badgeStats(d, row, earned) {
+  const g = gameOf(room), out = {};
+  const win = g === "digu" ? !!row.digu : g === "call" ? row.how === "won" || row.how === "caught-caller"
+    : g === "bondi" ? row.place === 1 : !!row.won;
+  out.played = { ...(d.played || {}), [g]: (d.played?.[g] || 0) + 1 };
+  if (g === "call" && row.how === "won") { out.callWins = (d.callWins || 0) + 1; out.lowCall = Math.min(d.lowCall ?? 99, row.count ?? 99); }
+  if (g === "call" && row.how === "caught-caller") out.catches = (d.catches || 0) + 1;
+  if (g === "bondi" && row.place === 1) out.bondiFirst = (d.bondiFirst || 0) + 1;
+  if (g === "dhiha" && row.won) {
+    out.dhihaWins = (d.dhihaWins || 0) + 1;
+    if (row.tens === 4) out.dhihaTens4 = (d.dhihaTens4 || 0) + 1;
+    if (row.deckCount === 13) out.dhihaSweep = (d.dhihaSweep || 0) + 1;
+  }
+  out.streak = win ? (d.streak || 0) + 1 : 0;
+  out.bestStreak = Math.max(d.bestStreak || 0, out.streak);
+  const day = P.todayKey();
+  if (d.lastDay !== day) { out.days = (d.days || 0) + 1; out.lastDay = day; }
+  // today's challenges
+  const daily = d.daily?.day === day ? { day, prog: { ...(d.daily.prog || {}) }, done: [...(d.daily.done || [])], games: [...(d.daily.games || [])] }
+    : { day, prog: {}, done: [], games: [] };
+  const ev = { game: g, win, digu: !!row.digu, pts: row.pts, callWin: row.how === "won", catch: row.how === "caught-caller",
+    bondiFirst: g === "bondi" && row.place === 1, dhihaWin: g === "dhiha" && !!row.won, newGameToday: !daily.games.includes(g) };
+  if (!daily.games.includes(g)) daily.games.push(g);
+  const done = [];
+  let bonus = 0;
+  for (const c of P.dailyChallenges(day)) {
+    if (daily.done.includes(c.id)) continue;
+    daily.prog[c.id] = (daily.prog[c.id] || 0) + c.count(ev);
+    if (daily.prog[c.id] >= c.goal) { daily.done.push(c.id); bonus += c.reward; done.push(c); }
+  }
+  out.daily = daily;
+  if (bonus) { out.careerPoints = (d.careerPoints || 0) + earned + bonus; out.challengesDone = (d.challengesDone || 0) + done.length; }
+  Object.defineProperty(out, "_done", { value: done, enumerable: false });
+  return out;
 }
 
 function recordWin() {
@@ -3498,6 +3553,27 @@ function recordWin() {
     const bonus = lowWins(gameOf(room)) ? 50 : 0; // CALL / BONDI game winner
     tx.set(ref, { gameWins: (d.gameWins || 0) + 1, lastWin: key, ...(bonus ? { careerPoints: (d.careerPoints || 0) + bonus } : {}) }, { merge: true });
   }).catch(() => { recordWin.done = null; });
+}
+
+// Today's 3 challenges with progress bars (profile, and on the home page for signed-in players).
+function renderChallenges(box) {
+  if (!box) return;
+  const day = P.todayKey();
+  const daily = profile.daily?.day === day ? profile.daily : { prog: {}, done: [] };
+  box.innerHTML = "";
+  if (box.id === "homeChallenges") box.append(Object.assign(document.createElement("b"), { className: "ch-head", textContent: "🎯 Today's challenges" }));
+  for (const c of P.dailyChallenges(day)) {
+    const done = (daily.done || []).includes(c.id), n = Math.min(c.goal, daily.prog?.[c.id] || 0);
+    const row = document.createElement("div");
+    row.className = "challenge" + (done ? " done" : "");
+    row.innerHTML = `<span class="ch-icon"></span><div class="ch-body"><span class="ch-text"></span><div class="ch-bar"><i></i></div></div><small class="ch-rew"></small>`;
+    row.querySelector(".ch-icon").textContent = done ? "✅" : c.icon;
+    row.querySelector(".ch-text").textContent = `${c.text}${c.goal > 1 ? ` (${n}/${c.goal})` : ""}`;
+    row.querySelector(".ch-bar i").style.width = `${(done ? 1 : n / c.goal) * 100}%`;
+    row.querySelector(".ch-rew").textContent = done ? "Done" : `+${c.reward}`;
+    box.append(row);
+  }
+  box.append(Object.assign(document.createElement("small"), { className: "muted ch-note", textContent: "New challenges every day · games against the computer don't count" }));
 }
 
 // ---------- accounts ----------
@@ -3674,6 +3750,8 @@ function renderAccount() {
   $("accountGuest").hidden = reg;
   $("loungeLock").hidden = true;
   $("holhuashiPanel").hidden = !reg; // guests only see Aammu Jagaha
+  $("homeChallenges").hidden = !reg;
+  if (reg) renderChallenges($("homeChallenges"));
   $("createLoungeBtn").classList.toggle("locked-btn", !reg);
   $("createLoungeBtn").textContent = (reg ? "" : "🔒 ") + tr("holhuashi.create", "Create my holhuashi");
   $("accountUser").hidden = !reg;
@@ -4240,6 +4318,8 @@ function renderProfile() {
     $("profStats").append(d);
   });
 
+  renderChallenges($("profChallenges"));
+  $("profBadgeCount").textContent = `${P.earnedBadges(profile).length} of ${P.BADGES.length}`;
   const badges = $("profBadges");
   badges.innerHTML = "";
   for (const b of P.BADGES) {
