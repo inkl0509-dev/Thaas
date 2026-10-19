@@ -52,7 +52,9 @@ export const BADGES = [
   { id: "tens",      icon: "🔟", name: "All the Tens", desc: "Win all four 10s in DHIHA",  test: (s) => (s.dhihaTens4 || 0) >= 1 },
   { id: "sweep",     icon: "🧹", name: "Clean Sweep", desc: "Win all 13 decks in DHIHA",  test: (s) => (s.dhihaSweep || 0) >= 1 },
   // everything
-  { id: "champ",     icon: "🏆", name: "Champion",    desc: "Win a game",                test: (s) => (s.gameWins || 0) >= 1 },
+  { id: "cup",       icon: "🏆", name: "Tournament Cup", desc: "Win a DIGU tournament",   test: (s) => (s.tourneyWins || 0) >= 1, big: true },
+  { id: "cups5",     icon: "🏛️", name: "Cup Collector", desc: "Win 5 DIGU tournaments",  test: (s) => (s.tourneyWins || 0) >= 5, big: true },
+  { id: "champ",     icon: "🥇", name: "Champion",    desc: "Win a game",                test: (s) => (s.gameWins || 0) >= 1 },
   { id: "dynasty",   icon: "🏰", name: "Dynasty",     desc: "Win 10 games",              test: (s) => (s.gameWins || 0) >= 10 },
   { id: "grandmaster", icon: "👑", name: "Grandmaster", desc: "Win 50 games",            test: (s) => (s.gameWins || 0) >= 50 },
   { id: "onFire",    icon: "♨️", name: "On Fire",     desc: "Win 3 rounds in a row",     test: (s) => (s.bestStreak || 0) >= 3 },
