@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019e";
-import * as CFG from "./firebase-config.js?v=20261019e";
-import * as C from "./cards.js?v=20261019e";
-import * as P from "./profile.js?v=20261019e";
-import { DV } from "./i18n.js?v=20261019e";
+} from "./store.js?v=20261019i";
+import * as CFG from "./firebase-config.js?v=20261019i";
+import * as C from "./cards.js?v=20261019i";
+import * as P from "./profile.js?v=20261019i";
+import { DV } from "./i18n.js?v=20261019i";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -3140,9 +3140,10 @@ async function skipOfflinePlayer() {
 function tick() {
   if (room) renderPremiumPanel(); // cheap: only redraws when something changed (e.g. a card was selected)
   const box = $("timer");
-  if (!room || room.status !== "playing") { box.hidden = true; turnKey = null; $("deckRing").hidden = true; renderPause(); return; }
+  if (!room || room.status !== "playing") { box.hidden = true; turnKey = null; $("deckRing").hidden = true; drawTurnArrow(0); renderPause(); return; }
   renderPause();
   if (room.paused) {
+    drawTurnArrow(0);
     box.hidden = false; turnKey = null;
     $("timerText").textContent = "⏸ Paused";
     $("timerBar").style.transform = "scaleX(1)";
@@ -3162,22 +3163,11 @@ function tick() {
   const col = turnColour(left / TURN_MS);
   const frac = Math.max(0, Math.min(1, left / TURN_MS));
   for (const el of [$("seats"), box, $("table")]) { el.style.setProperty("--tc", col.solid); el.style.setProperty("--tcs", col.soft); el.style.setProperty("--tcf", col.faint); }
-  // the countdown runs round the middle-pile card (or the cards on the table when there's no pile)
-  const ring = $("deckRing"), deckEl = $("deck");
-  const target = deckEl.offsetParent && !deckEl.parentElement.hidden ? deckEl : $("discardPile");
-  const tr = $("table").getBoundingClientRect(), dr = target.getBoundingClientRect();
-  if (dr.width) {
-    Object.assign(ring.style, { left: dr.left - tr.left - 6 + "px", top: dr.top - tr.top - 6 + "px", width: dr.width + 12 + "px", height: dr.height + 12 + "px" });
-    ring.style.setProperty("--p", frac.toFixed(3));
-    ring.style.setProperty("--tc", col.solid);
-    ring.hidden = false;
-  }
+  // the countdown: an arrow from the player whose turn it is to the next player, filling up as time runs
+  $("deckRing").hidden = true;
   const tp = document.querySelector(".seat-path.turn");
-  if (tp) {
-    const L = tp._len || (tp._len = tp.getTotalLength());
-    tp.style.strokeDasharray = `${L} ${L}`;
-    tp.style.strokeDashoffset = String(L * (1 - frac));
-  }
+  if (tp) { tp.style.strokeDasharray = "none"; tp.style.strokeDashoffset = "0"; }
+  drawTurnArrow(1 - frac, secs <= 10 ? "#ff2a3c" : "#3b9cff", secs <= 10);
   const st = document.querySelector(".seat-tag.turn .st-time");
   if (st) st.textContent = `${secs}s`;
   const chipTime = document.querySelector(".player.active .ptime");
@@ -4630,7 +4620,7 @@ function renderSeats() {
       // left and right players: their cards sit just above their name
       if (t._fan && Math.abs(slot.tag.rot) === 90) {
         const half = (t.offsetWidth || 90) / 2;
-        Object.assign(t._fan.style, { left: Math.min(W - 30, Math.max(30, slot.tag.x)) + "px", top: Math.max(44, slot.tag.y - half - 24) + "px" });
+        Object.assign(t._fan.style, { left: Math.min(W - 42, Math.max(42, slot.tag.x)) + "px", top: Math.max(44, slot.tag.y - half - 24) + "px" });
       }
     }
   }
@@ -4983,6 +4973,71 @@ function renderPremTools() {
 // ---------- whose turn: a red light on the edge of the screen where that player "sits" ----------
 // I'm always at the bottom; the others sit round the screen in playing order (the next player on
 // my right, then on up and round): 2 players = top, 4 = right/top/left, 3 or 5+ = corners too.
+// ----- the turn arrow -----
+// Where a player sits on my screen (me: just above my cards).
+function seatAnchor(u) {
+  if (u === uid) return { x: innerWidth / 2, y: innerHeight }; // me: the bottom edge
+  const s = seatSlot(u); return { x: s.tag.x, y: s.tag.y };
+}
+let arrowKey = null;
+function drawTurnArrow(fill, colour, low = false) {
+  let svg = $("turnArrow");
+  const show = !!room && room.status === "playing" && !room.paused && !$("game").hidden && $("game").classList.contains("in-play");
+  const cur = show ? room.playerIds[room.turn] : null, nxt = show ? nextPlayerUid() : null;
+  if (!cur || !nxt || cur === nxt) { if (svg) svg.style.display = "none"; arrowKey = null; return; }
+  const NS = "http://www.w3.org/2000/svg";
+  if (!svg) {
+    svg = document.createElementNS(NS, "svg");
+    svg.id = "turnArrow";
+    svg.setAttribute("class", "turn-arrow");
+    svg.innerHTML = '<defs><marker id="taHead" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z"/></marker></defs>'
+      + '<path class="ta-track" marker-end="url(#taHead)"/><path class="ta-fill"/><circle class="ta-tip" r="5"/>';
+    document.body.append(svg);
+  }
+  svg.style.display = "";
+  const W = innerWidth, H = innerHeight;
+  const key = `${cur}>${nxt}|${W}x${H}`;
+  const track = svg.querySelector(".ta-track"), bar = svg.querySelector(".ta-fill"), tip = svg.querySelector(".ta-tip");
+  if (key !== arrowKey) {
+    arrowKey = key;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    // the arrow runs round the edge of the screen (through the corners), the short way round
+    const m = 12, r = 44;
+    let ring = svg._ring;
+    if (!ring || ring._k !== `${W}x${H}`) {
+      ring = svg._ring || document.createElementNS(NS, "path");
+      ring.setAttribute("d", `M ${W / 2} ${H - m} L ${W - m - r} ${H - m} Q ${W - m} ${H - m} ${W - m} ${H - m - r} L ${W - m} ${m + r} Q ${W - m} ${m} ${W - m - r} ${m}`
+        + ` L ${m + r} ${m} Q ${m} ${m} ${m} ${m + r} L ${m} ${H - m - r} Q ${m} ${H - m} ${m + r} ${H - m} Z`);
+      ring.setAttribute("fill", "none"); ring.setAttribute("stroke", "none");
+      if (!svg._ring) svg.append(ring);
+      ring._k = `${W}x${H}`; ring._len = ring.getTotalLength();
+      ring._pts = Array.from({ length: 240 }, (_, i) => { const q = ring.getPointAtLength((i / 240) * ring._len); return { x: q.x, y: q.y, l: (i / 240) * ring._len }; });
+      svg._ring = ring;
+    }
+    const P = ring._len;
+    const at = (pt) => ring._pts.reduce((bst, q) => { const dd = (q.x - pt.x) ** 2 + (q.y - pt.y) ** 2; return dd < bst.d ? { d: dd, l: q.l } : bst; }, { d: Infinity, l: 0 }).l;
+    let la = at(seatAnchor(cur)), lb = at(seatAnchor(nxt));
+    let span = (lb - la + P) % P;          // going one way round …
+    let dir = 1;
+    if (span > P / 2) { span = P - span; dir = -1; } // … or the other, whichever is shorter
+    const gap = Math.min(28, span * 0.15);   // start and stop just clear of the names
+    la += dir * gap; span -= gap * 2;
+    const N = Math.max(8, Math.round(span / 8)), pts = [];
+    for (let i = 0; i <= N; i++) { const q = ring.getPointAtLength((((la + dir * span * (i / N)) % P) + P) % P); pts.push(`${q.x.toFixed(1)} ${q.y.toFixed(1)}`); }
+    const d = "M " + pts.join(" L ");
+    track.setAttribute("d", d); bar.setAttribute("d", d);
+    bar._len = bar.getTotalLength();
+  }
+  const L = bar._len || 1, f = Math.max(0, Math.min(1, fill));
+  bar.style.strokeDasharray = `${L} ${L}`;
+  bar.style.strokeDashoffset = String(L * (1 - f));
+  svg.style.setProperty("--tc", colour);
+  const pt = bar.getPointAtLength(L * f);
+  tip.setAttribute("cx", pt.x.toFixed(1)); tip.setAttribute("cy", pt.y.toFixed(1));
+  svg.classList.toggle("full", f > 0.97);
+  svg.classList.toggle("low", low); // the last 10 seconds: red, and it pulses
+}
+
 function nextPlayerUid() {
   if (!room || room.status !== "playing") return null;
   const ids = room.playerIds, n = ids.length;
