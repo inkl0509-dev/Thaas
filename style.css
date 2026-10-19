@@ -2156,3 +2156,5 @@ html, body { overflow-x: hidden; }
 .turn-arrow.low .ta-tip { animation: taPulse .8s ease-in-out infinite; }
 .turn-arrow.low marker path { fill: #ff2a3c; }
 @keyframes taPulse { 50% { opacity: .55; } }
+/* the turn arrow runs over the bottom buttons too, so it's never hidden behind them */
+.turn-arrow { z-index: 61; top: 0; left: 0; right: auto; bottom: auto; }
