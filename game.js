@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019m";
-import * as CFG from "./firebase-config.js?v=20261019m";
-import * as C from "./cards.js?v=20261019m";
-import * as P from "./profile.js?v=20261019m";
-import { DV } from "./i18n.js?v=20261019m";
+} from "./store.js?v=20261019n";
+import * as CFG from "./firebase-config.js?v=20261019n";
+import * as C from "./cards.js?v=20261019n";
+import * as P from "./profile.js?v=20261019n";
+import { DV } from "./i18n.js?v=20261019n";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -1264,7 +1264,7 @@ function trackUpd(who, kind, cards) {
   const t = room.track?.[who] || {};
   const took = [...(t.took || [])], threw = [...(t.threw || [])];
   (kind === "took" ? took : threw).push(...cards);
-  return { [`track.${who}`]: { took: took.slice(-4), threw: threw.slice(-8) } };
+  return { [`track.${who}`]: { took: took.slice(-8), threw: threw.slice(-10) } };
 }
 let practiceDealPending = null, botKey = null;
 
@@ -1417,15 +1417,39 @@ async function botDigu(bot, cards) {
   // throw
   let best = null;
   const meI = room.playerIds.indexOf(bot), nxt = room.playerIds[nextActiveIdx(room, meI)];
-  const wants = level !== "easy" ? room.track?.[nxt]?.took || [] : [];
-  const helpsNext = (c) => { const s = C.parse(c); return wants.some((id) => { const t = C.parse(id); return t.r === s.r || (t.s === s.s && Math.abs(t.r - s.r) <= 2); }); };
+  // Medium and Hard watch what the next player takes from the thrown pile (and what they throw
+  // away), and don't feed them a card that fits. Hard also knows the next player's hand when this
+  // phone can see it, and never throws a card that would help it.
+  const tr = room.track?.[nxt] || {};
+  const wants = level !== "easy" ? (tr.took || []).filter((id) => !(tr.threw || []).includes(id)) : [];
+  const nextHand = level === "hard" ? botKnown?.[nxt] : null;
+  const scale = level === "hard" ? 1.5 : 1;
+  const helpsNext = (c) => {
+    if (level === "easy") return 0;
+    if (nextHand?.length) { // exact: how much better would their hand get with this card?
+      const now = C.bestLayout(nextHand).points;
+      const withC = Math.min(...nextHand.map((x) => C.bestLayout([...nextHand, c].filter((y) => y !== x)).points));
+      return withC < now ? 20 + (now - withC) * 2 : 0;
+    }
+    const s0 = C.parse(c);
+    let pen = 0;
+    for (const id of wants) {
+      const t = C.parse(id);
+      if (t.r === s0.r) pen = Math.max(pen, 30);                                   // a set of the same number
+      else if (t.s === s0.s && Math.abs(t.r - s0.r) === 1) pen = Math.max(pen, 26); // next to it in a run
+      else if (t.s === s0.s && Math.abs(t.r - s0.r) === 2) pen = Math.max(pen, 14); // a run with a gap
+    }
+    // a number they have thrown away themselves is usually safe to give them
+    if (pen && (tr.threw || []).some((id) => C.parse(id).r === s0.r)) pen = Math.round(pen / 2);
+    return pen * scale;
+  };
   const ban = takenNow(bot);
   for (const c of cards) {
     if (c === ban) continue; // can't throw back the card just taken
     const rest = cards.filter((x) => x !== c);
     const sets = C.findWinningLayout(rest);
     if (sets) { best = { c, rest, sets }; break; }
-    const pts = C.bestLayout(rest).points + (helpsNext(c) ? 12 : 0);
+    const pts = C.bestLayout(rest).points + helpsNext(c);
     if (!best || pts < best.pts || (pts === best.pts && C.points(c) > C.points(best.c))) best = { c, rest, pts };
   }
   const upd = { discard: [...room.discard, best.c], ...trackUpd(bot, "threw", [best.c]) };
@@ -4826,7 +4850,7 @@ function cardMoves(prev) {
     if (e.s) {
       const w3 = e.u === uid ? 700 : at;
       shuffleBusyUntil = Date.now() + w3 + SHUFFLE_MS; // nobody plays (and no clock runs) until the new pile is set
-      setTimeout(() => rebuildDeck(e.old || []), w3); at = w3 + 1300;
+      setTimeout(() => rebuildDeck(e.old || [], (e.n || 0) % SHUFFLE_STYLES), w3); at = w3 + 1300; // a different trick each time (the same on every phone)
     }
   }
 }
@@ -4840,7 +4864,7 @@ function fxSeen(prev) {
 }
 // The middle pile ran out: the thrown cards flip face down one after another, fly into the middle
 // and settle into a new pile.
-function rebuildDeck(old) {
+function rebuildDeck(old, style = 0) {
   const from = $("discardPile"), to = $("deck");
   if (!from || !to || !to.offsetParent) return;
   toast("🎩 Middle pile ran out: shuffling the thrown cards into a new pile");
@@ -4869,12 +4893,13 @@ function rebuildDeck(old) {
     back.animate(kf(180), opt).onfinish = () => { face.remove(); back.remove(); };
   }
   // 2) a magician's shuffle in the middle: riffle, spring the cards in an arc, riffle again
-  setTimeout(() => magicShuffle(to, w, h, () => {
+  setTimeout(() => magicShuffle(to, w, h, style, () => {
     to.classList.remove("rebuilding", "settle"); void to.offsetWidth; to.classList.add("settle");
     sparkleAt(to);
   }), n * 90 + 600);
 }
-function magicShuffle(deckEl, w, h, done) {
+const SHUFFLE_STYLES = 5;
+function magicShuffle(deckEl, w, h, style, done) {
   const r = deckEl.getBoundingClientRect();
   const box = document.createElement("div");
   box.className = "magic-box";
@@ -4915,11 +4940,71 @@ function magicShuffle(deckEl, w, h, done) {
       { transform: at(0, 0) },
     ], { duration: 600, delay: t0, easing: "ease-in-out" });
   });
-  riffle(0);                 // 1st shuffle
-  spring(850);               // cards spring over in an arc
-  riffle(850 + N * 45 + 650); // 2nd shuffle
-  cut(850 + N * 45 + 650 + 850); // and a cut
-  const total = 850 + N * 45 + 650 + 850 + 650;
+  // a fan: the cards spread round their bottom corner, then close up again
+  const fan = (t0) => cards.forEach((c, i) => {
+    const a = ((i / (N - 1)) - 0.5) * 120 * Math.PI / 180;
+    const fx = Math.sin(a) * h * 0.55, fy = h * 0.55 - Math.cos(a) * h * 0.55;
+    c.animate([
+      { transform: at(0, 0) },
+      { transform: at(fx, fy - 10, (a * 180) / Math.PI), offset: 0.4 },
+      { transform: at(fx, fy - 10, (a * 180) / Math.PI), offset: 0.62 },
+      { transform: at(0, 0) },
+    ], { duration: 1000, delay: t0, easing: "cubic-bezier(.45,0,.25,1)" });
+  });
+  // the whole pack flips over in the air
+  const flipAll = (t0) => box.animate([
+    { transform: "perspective(700px) rotateY(0deg) scale(1)" },
+    { transform: "perspective(700px) rotateY(180deg) scale(1.15) translateY(-14px)", offset: 0.5 },
+    { transform: "perspective(700px) rotateY(360deg) scale(1)" },
+  ], { duration: 700, delay: t0, easing: "ease-in-out" });
+  // the cards fly round in a circle, then spiral back into the pack
+  const whirl = (t0) => cards.forEach((c, i) => {
+    const R = w * 0.95, th = (i / N) * Math.PI * 2;
+    const p = (k) => at(Math.cos(th + k) * R, Math.sin(th + k) * R * 0.75, ((th + k) * 180) / Math.PI + 90);
+    c.animate([
+      { transform: at(0, 0) },
+      { transform: p(0), offset: 0.25 },
+      { transform: p(Math.PI * 0.8), offset: 0.5 },
+      { transform: p(Math.PI * 1.6), offset: 0.75 },
+      { transform: at(0, 0, 360) },
+    ], { duration: 1400, delay: t0, easing: "ease-in-out" });
+  });
+  // the pack spins round and drops into place
+  const spinDrop = (t0) => box.animate([
+    { transform: "rotate(0deg) scale(1)" },
+    { transform: "rotate(200deg) scale(1.25) translateY(-20px)", offset: 0.5 },
+    { transform: "rotate(360deg) scale(1)" },
+  ], { duration: 700, delay: t0, easing: "cubic-bezier(.5,0,.3,1.3)" });
+  // overhand: small bunches lift off the top and drop to the bottom
+  const toss = (t0) => cards.forEach((c, i) => {
+    const chunk = Math.floor(i / 3);
+    c.animate([
+      { transform: at(0, 0) },
+      { transform: at((chunk % 2 ? 1 : -1) * 18, -h * 0.85, (chunk % 2 ? 1 : -1) * 10), offset: 0.45 },
+      { transform: at(0, 6), offset: 0.85 },
+      { transform: at(0, 0) },
+    ], { duration: 600, delay: t0 + (3 - chunk) * 180, easing: "ease-in-out" });
+  });
+  // a bridge: the two halves arch up towards each other and cascade together
+  const bridge = (t0) => cards.forEach((c, i) => {
+    const side = i % 2 === 0 ? -1 : 1;
+    c.animate([
+      { transform: at(0, 0) },
+      { transform: at(side * w * 0.65, 0, side * 12), offset: 0.3 },
+      { transform: at(side * w * 0.3, -h * 0.45, side * -28), offset: 0.55 },
+      { transform: at(side * 2, -2 - i * 0.5, 0), offset: 0.6 + (i / N) * 0.3 },
+      { transform: at(0, 0) },
+    ], { duration: 900, delay: t0, easing: "ease-in-out" });
+  });
+  let total;
+  if (style === 1) { fan(0); flipAll(1100); fan(1900); cut(2950); total = 3600; }
+  else if (style === 2) { whirl(0); riffle(1500); spinDrop(2400); total = 3150; }
+  else if (style === 3) { toss(0); bridge(1450); cut(2450); total = 3100; }
+  else if (style === 4) { spring(0); fan(1250); spinDrop(2350); total = 3100; }
+  else { // riffle, spring the cards in an arc, riffle again, cut
+    riffle(0); spring(850); riffle(850 + N * 45 + 650); cut(850 + N * 45 + 650 + 850);
+    total = 850 + N * 45 + 650 + 850 + 650;
+  }
   setTimeout(() => { box.remove(); done(); }, total);
 }
 
