@@ -6,7 +6,7 @@
   <title>THAAS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261019k">
+  <link rel="stylesheet" href="style.css?v=20261019m">
 </head>
 <body>
   <!-- LOBBY -->
@@ -51,6 +51,7 @@
           <button id="signOutBtn" class="ghost small">Sign out</button>
         </div>
       </div>
+      <div id="homeChallenges" class="challenges home-ch" hidden></div>
       <button id="adminBtn" class="admin-btn" hidden>🛡️ Admin panel</button>
       <button id="premiumBtn" class="premium-btn" hidden>💎 Go Premium</button>
     </div>
@@ -379,7 +380,10 @@
       <p id="profNext" class="muted"></p>
       <div id="profStats" class="prof-stats"></div>
 
-      <h3>Badges</h3>
+      <h3>🎯 Today's challenges</h3>
+      <div id="profChallenges" class="challenges"></div>
+
+      <h3>Badges <small id="profBadgeCount"></small></h3>
       <div id="profBadges" class="badges"></div>
 
       <h3>Profile picture <small>or pick an emoji below</small></h3>
@@ -478,6 +482,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261019k"></script>
+  <script type="module" src="game.js?v=20261019m"></script>
 </body>
 </html>
