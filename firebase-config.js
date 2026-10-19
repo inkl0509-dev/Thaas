@@ -11,5 +11,5 @@ export const firebaseConfig = {
 
 // Your website's address on Vercel (used by the Android app for invite links and push notifications).
 // Example: "https://thaas.vercel.app/"
-export const siteUrl = "https://PASTE-YOUR-SITE.vercel.app/";
+export const siteUrl = "https://thaas-red.vercel.app/";
 export const notifyUrl = siteUrl.replace(/\/?$/, "/") + "api/notify";
