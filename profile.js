@@ -5,6 +5,54 @@ export const AVATARS = [
   "👽", "🥷", "🧙", "🧛", "🧜", "🦸", "🐵", "🦉", "🐺", "🐬",
 ];
 
+// 💎 Premium avatars: a picture on its own coloured backdrop with a glowing, turning ring.
+// Saved as "pa-<id>" in the profile, so other players see them too.
+export const PREMIUM_AVATARS = [
+  { id: "pa-reef",    e: "🐠", name: "Reef",      bg: "linear-gradient(135deg,#00c6ff,#0072ff)",   ring: "#7df9ff" },
+  { id: "pa-turtle",  e: "🐢", name: "Turtle",    bg: "linear-gradient(135deg,#43e97b,#38a3a5)",   ring: "#b4ffb0" },
+  { id: "pa-shark",   e: "🦈", name: "Shark",     bg: "linear-gradient(135deg,#1e3c72,#2a5298)",   ring: "#9ecbff" },
+  { id: "pa-whale",   e: "🐋", name: "Whale",     bg: "linear-gradient(135deg,#4facfe,#00f2fe)",   ring: "#e0fbff" },
+  { id: "pa-dolphin", e: "🐬", name: "Dolphin",   bg: "linear-gradient(135deg,#0093e9,#80d0c7)",   ring: "#c9fff6" },
+  { id: "pa-octo",    e: "🐙", name: "Octopus",   bg: "linear-gradient(135deg,#f953c6,#b91d73)",   ring: "#ffb3ec" },
+  { id: "pa-dhoni",   e: "⛵", name: "Dhoni",     bg: "linear-gradient(135deg,#f6d365,#fda085)",   ring: "#fff3b0" },
+  { id: "pa-palm",    e: "🌴", name: "Sunset Palm", bg: "linear-gradient(135deg,#ff512f,#f09819)", ring: "#ffd27a" },
+  { id: "pa-wave",    e: "🌊", name: "Wave",      bg: "linear-gradient(135deg,#00b4db,#0083b0)",   ring: "#a8f0ff" },
+  { id: "pa-hibiscus",e: "🌺", name: "Hibiscus",  bg: "linear-gradient(135deg,#ff9a9e,#fad0c4)",   ring: "#ffe0ea" },
+  { id: "pa-flamingo",e: "🦩", name: "Flamingo",  bg: "linear-gradient(135deg,#ee9ca7,#ffdde1)",   ring: "#ffc2d1" },
+  { id: "pa-peacock", e: "🦚", name: "Peacock",   bg: "linear-gradient(135deg,#11998e,#38ef7d)",   ring: "#c6ffdd" },
+  { id: "pa-dragon",  e: "🐉", name: "Gold Dragon", bg: "linear-gradient(135deg,#f7971e,#ffd200)", ring: "#fff1a8" },
+  { id: "pa-lion",    e: "🦁", name: "Golden Lion", bg: "linear-gradient(135deg,#c79081,#dfa579)", ring: "#ffe2b3" },
+  { id: "pa-phoenix", e: "🔥", name: "Phoenix",   bg: "linear-gradient(135deg,#f12711,#f5af19)",   ring: "#ffd36b" },
+  { id: "pa-moon",    e: "🌙", name: "Moon Night", bg: "linear-gradient(135deg,#0f2027,#2c5364)",  ring: "#e6e6ff" },
+  { id: "pa-star",    e: "🌟", name: "Star",      bg: "linear-gradient(135deg,#8e2de2,#4a00e0)",   ring: "#f5d0ff" },
+  { id: "pa-genie",   e: "🧞", name: "Genie",     bg: "linear-gradient(135deg,#7f00ff,#e100ff)",   ring: "#f0b3ff" },
+  { id: "pa-crown",   e: "👑", name: "Crown",     bg: "linear-gradient(135deg,#232526,#414345)",   ring: "#ffd700" },
+  { id: "pa-diamond", e: "💎", name: "Diamond",   bg: "linear-gradient(135deg,#a1c4fd,#c2e9fb)",   ring: "#ffffff" },
+  // cute
+  { id: "pa-kitten",  e: "🐱", name: "Kitten",    bg: "linear-gradient(135deg,#ffdde1,#ee9ca7)",   ring: "#ffb6c8", g: "cute" },
+  { id: "pa-puppy",   e: "🐶", name: "Puppy",     bg: "linear-gradient(135deg,#fceabb,#f8b500)",   ring: "#ffe7a0", g: "cute" },
+  { id: "pa-bunny",   e: "🐰", name: "Bunny",     bg: "linear-gradient(135deg,#e0c3fc,#8ec5fc)",   ring: "#f3e6ff", g: "cute" },
+  { id: "pa-hamster", e: "🐹", name: "Hamster",   bg: "linear-gradient(135deg,#ffecd2,#fcb69f)",   ring: "#ffd9c2", g: "cute" },
+  { id: "pa-penguin", e: "🐧", name: "Penguin",   bg: "linear-gradient(135deg,#c2e9fb,#a1c4fd)",   ring: "#e8f6ff", g: "cute" },
+  { id: "pa-koala",   e: "🐨", name: "Koala",     bg: "linear-gradient(135deg,#d7d2cc,#a3b8c4)",   ring: "#eef2f5", g: "cute" },
+  { id: "pa-otter",   e: "🦦", name: "Otter",     bg: "linear-gradient(135deg,#d4a373,#faedcd)",   ring: "#ffe8c2", g: "cute" },
+  { id: "pa-chick",   e: "🐥", name: "Chick",     bg: "linear-gradient(135deg,#fff1a8,#ffd86b)",   ring: "#fff7c9", g: "cute" },
+  { id: "pa-teddy",   e: "🧸", name: "Teddy",     bg: "linear-gradient(135deg,#f3d9c4,#c99a76)",   ring: "#ffe3cc", g: "cute" },
+  { id: "pa-panda",   e: "🐼", name: "Baby Panda", bg: "linear-gradient(135deg,#fbc2eb,#a6c1ee)",  ring: "#ffe0f5", g: "cute" },
+  // heavy metal
+  { id: "pa-skull",   e: "💀", name: "Skull",     bg: "radial-gradient(circle at 50% 40%,#3a3a3a,#000)", ring: "#ff1e1e", g: "metal" },
+  { id: "pa-horns",   e: "🤘", name: "Metal Horns", bg: "radial-gradient(circle at 50% 40%,#4a0000,#0a0000)", ring: "#ff3b3b", g: "metal" },
+  { id: "pa-guitar",  e: "🎸", name: "Shred",     bg: "radial-gradient(circle at 50% 40%,#2b0f3a,#05000a)", ring: "#c040ff", g: "metal" },
+  { id: "pa-bolt",    e: "⚡", name: "Thunder",   bg: "radial-gradient(circle at 50% 40%,#1b1b3a,#000)", ring: "#ffe100", g: "metal" },
+  { id: "pa-bat",     e: "🦇", name: "Night Bat", bg: "radial-gradient(circle at 50% 40%,#2a002a,#000)", ring: "#a020f0", g: "metal" },
+  { id: "pa-pirate",  e: "☠️", name: "Pirate",    bg: "radial-gradient(circle at 50% 40%,#202020,#000)", ring: "#e6e6e6", g: "metal" },
+  { id: "pa-oni",     e: "👹", name: "Demon",     bg: "radial-gradient(circle at 50% 40%,#5a0000,#100000)", ring: "#ff6a00", g: "metal" },
+  { id: "pa-snake",   e: "🐍", name: "Viper",     bg: "radial-gradient(circle at 50% 40%,#0b3d0b,#000)", ring: "#39ff14", g: "metal" },
+  { id: "pa-dagger",  e: "🗡️", name: "Blade",     bg: "radial-gradient(circle at 50% 40%,#2e2e38,#050508)", ring: "#b8c6db", g: "metal" },
+  { id: "pa-chains",  e: "⛓️", name: "Chains",    bg: "radial-gradient(circle at 50% 40%,#333,#0a0a0a)", ring: "#9a9a9a", g: "metal" },
+];
+export const premiumAvatar = (id) => PREMIUM_AVATARS.find((x) => x.id === id) || null;
+
 // Career points = every round's points added up (registered players only).
 export const RANKS = [
   { name: "Rookie",   icon: "🃏", at: 0 },
