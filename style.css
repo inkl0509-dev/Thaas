@@ -2142,3 +2142,17 @@ html, body { overflow-x: hidden; }
   border-width: 2px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.45);
   transform-origin: 50% 160%; transform: rotate(var(--a, 0deg)); }
 .seats .seat-tag { z-index: 1; }
+/* side and corner players: the face stays upright, only the name turns with the side */
+.seat-tag.s-slot .avatar { transform: rotate(calc(-1 * var(--rot, 0deg))) !important; }
+/* the turn arrow: from whose turn it is to the next player, filling as time runs */
+.turn-arrow { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 29; pointer-events: none; overflow: visible; }
+.turn-arrow .ta-track { fill: none; stroke: rgba(255,255,255,.22); stroke-width: 4; stroke-dasharray: 2 9; stroke-linecap: round; }
+.turn-arrow marker path { fill: rgba(255,255,255,.55); }
+.turn-arrow.full marker path { fill: var(--tc, #ff3b3b); }
+.turn-arrow .ta-fill { fill: none; stroke: var(--tc, #3b82f6); stroke-width: 5; stroke-linecap: round; filter: drop-shadow(0 0 5px var(--tc, #3b82f6)); transition: stroke-dashoffset .2s linear; }
+.turn-arrow .ta-tip { fill: #fff; stroke: var(--tc, #3b82f6); stroke-width: 3; filter: drop-shadow(0 0 6px var(--tc, #3b82f6)); }
+#deckRing { display: none !important; }
+.turn-arrow.low .ta-fill { stroke-width: 6; animation: taPulse .8s ease-in-out infinite; }
+.turn-arrow.low .ta-tip { animation: taPulse .8s ease-in-out infinite; }
+.turn-arrow.low marker path { fill: #ff2a3c; }
+@keyframes taPulse { 50% { opacity: .55; } }
