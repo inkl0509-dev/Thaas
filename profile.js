@@ -31,17 +31,75 @@ export function rankProgress(points = 0) {
 }
 
 export const BADGES = [
+  // DIGU
   { id: "firstDigu", icon: "🎉", name: "First DIGU",  desc: "Call DIGU once",            test: (s) => (s.digus || 0) >= 1 },
   { id: "hotHand",   icon: "🔥", name: "Hot Hand",    desc: "Call DIGU 10 times",        test: (s) => (s.digus || 0) >= 10 },
   { id: "digu50",    icon: "⚡", name: "Lightning",   desc: "Call DIGU 50 times",        test: (s) => (s.digus || 0) >= 50 },
-  { id: "century",   icon: "💯", name: "Big Round",   desc: "Score 150+ in one round",   test: (s) => (s.bestRound || 0) >= 150 },
+  { id: "digu100",   icon: "🌪️", name: "Storm",       desc: "Call DIGU 100 times",       test: (s) => (s.digus || 0) >= 100 },
+  { id: "century",   icon: "💯", name: "Big Round",   desc: "Score 150+ in one DIGU round", test: (s) => (s.bestRound || 0) >= 150 },
+  { id: "monster",   icon: "🦈", name: "Shark",       desc: "Score 200+ in one DIGU round", test: (s) => (s.bestRound || 0) >= 200 },
+  // CALL
+  { id: "firstCall", icon: "📣", name: "First CALL",  desc: "Win a round by calling CALL", test: (s) => (s.callWins || 0) >= 1 },
+  { id: "callMaster",icon: "🎙️", name: "CALL Master", desc: "Win 25 rounds by calling CALL", test: (s) => (s.callWins || 0) >= 25 },
+  { id: "catcher",   icon: "🪤", name: "Gotcha",      desc: "Catch someone who called CALL", test: (s) => (s.catches || 0) >= 1 },
+  { id: "sharpEye",  icon: "🦅", name: "Sharp Eye",   desc: "Catch 10 callers",           test: (s) => (s.catches || 0) >= 10 },
+  { id: "iceCold",   icon: "🧊", name: "Ice Cold",    desc: "Win a CALL with a count of 2 or less", test: (s) => s.lowCall != null && s.lowCall <= 2 },
+  // BONDI
+  { id: "firstOut",  icon: "🏃", name: "First Out",   desc: "Be first out in BONDI",      test: (s) => (s.bondiFirst || 0) >= 1 },
+  { id: "escape",    icon: "🪂", name: "Escape Artist", desc: "Be first out in BONDI 20 times", test: (s) => (s.bondiFirst || 0) >= 20 },
+  // DHIHA
+  { id: "teamPlayer",icon: "🤝", name: "Team Player", desc: "Win a DHIHA round",          test: (s) => (s.dhihaWins || 0) >= 1 },
+  { id: "tens",      icon: "🔟", name: "All the Tens", desc: "Win all four 10s in DHIHA",  test: (s) => (s.dhihaTens4 || 0) >= 1 },
+  { id: "sweep",     icon: "🧹", name: "Clean Sweep", desc: "Win all 13 decks in DHIHA",  test: (s) => (s.dhihaSweep || 0) >= 1 },
+  // everything
   { id: "champ",     icon: "🏆", name: "Champion",    desc: "Win a game",                test: (s) => (s.gameWins || 0) >= 1 },
   { id: "dynasty",   icon: "🏰", name: "Dynasty",     desc: "Win 10 games",              test: (s) => (s.gameWins || 0) >= 10 },
+  { id: "grandmaster", icon: "👑", name: "Grandmaster", desc: "Win 50 games",            test: (s) => (s.gameWins || 0) >= 50 },
+  { id: "onFire",    icon: "♨️", name: "On Fire",     desc: "Win 3 rounds in a row",     test: (s) => (s.bestStreak || 0) >= 3 },
+  { id: "unstoppable", icon: "🚀", name: "Unstoppable", desc: "Win 5 rounds in a row",   test: (s) => (s.bestStreak || 0) >= 5 },
+  { id: "allRounder",icon: "🎲", name: "All-Rounder", desc: "Play DIGU, CALL, BONDI and DHIHA", test: (s) => ["digu", "call", "bondi", "dhiha"].every((g) => (s.played?.[g] || 0) >= 1) },
   { id: "regular",   icon: "🎴", name: "Regular",     desc: "Play 25 rounds",            test: (s) => (s.gamesPlayed || 0) >= 25 },
   { id: "veteran",   icon: "🎖️", name: "Veteran",     desc: "Play 100 rounds",           test: (s) => (s.gamesPlayed || 0) >= 100 },
+  { id: "legend",    icon: "🗿", name: "Island Legend", desc: "Play 500 rounds",         test: (s) => (s.gamesPlayed || 0) >= 500 },
+  { id: "loyal",     icon: "📅", name: "Loyal",       desc: "Play on 7 different days",  test: (s) => (s.days || 0) >= 7 },
+  { id: "local",     icon: "🌴", name: "True Local",  desc: "Play on 30 different days", test: (s) => (s.days || 0) >= 30 },
+  { id: "challenger",icon: "🎯", name: "Challenger",  desc: "Finish 10 daily challenges", test: (s) => (s.challengesDone || 0) >= 10 },
   { id: "rich",      icon: "💰", name: "High Roller", desc: "Reach 5,000 career points", test: (s) => (s.careerPoints || 0) >= 5000 },
 ];
 
+// ---------- daily challenges ----------
+// Everyone gets the same 3 challenges each day. Finishing one adds career points. They count only in
+// games with other people (games against the computer don't count, like career points).
+// ev (what happened in a round): { game, win, digu, pts, callWin, catch, bondiFirst, dhihaWin, games: [games played today] }
+export const CHALLENGES = [
+  { id: "play5",   icon: "🎴", text: "Play 5 rounds",                 goal: 5, reward: 40,  count: (e) => 1 },
+  { id: "play10",  icon: "🃏", text: "Play 10 rounds",                goal: 10, reward: 80, count: (e) => 1 },
+  { id: "win2",    icon: "🏅", text: "Win 2 rounds",                  goal: 2, reward: 60,  count: (e) => (e.win ? 1 : 0) },
+  { id: "win4",    icon: "🥇", text: "Win 4 rounds",                  goal: 4, reward: 120, count: (e) => (e.win ? 1 : 0) },
+  { id: "digu1",   icon: "🎉", text: "Call DIGU",                     goal: 1, reward: 60,  count: (e) => (e.digu ? 1 : 0) },
+  { id: "digu2",   icon: "🔥", text: "Call DIGU twice",               goal: 2, reward: 120, count: (e) => (e.digu ? 1 : 0) },
+  { id: "big100",  icon: "💯", text: "Score 100+ in a DIGU round",    goal: 1, reward: 80,  count: (e) => (e.game === "digu" && e.pts >= 100 ? 1 : 0) },
+  { id: "digu3r",  icon: "♠️", text: "Play 3 DIGU rounds",            goal: 3, reward: 40,  count: (e) => (e.game === "digu" ? 1 : 0) },
+  { id: "call1",   icon: "📣", text: "Win a round by calling CALL",   goal: 1, reward: 60,  count: (e) => (e.callWin ? 1 : 0) },
+  { id: "catch1",  icon: "🪤", text: "Catch a CALL",                  goal: 1, reward: 80,  count: (e) => (e.catch ? 1 : 0) },
+  { id: "call3r",  icon: "♣️", text: "Play 3 CALL rounds",            goal: 3, reward: 40,  count: (e) => (e.game === "call" ? 1 : 0) },
+  { id: "bondi1",  icon: "🏃", text: "Be first out in BONDI",         goal: 1, reward: 60,  count: (e) => (e.bondiFirst ? 1 : 0) },
+  { id: "bondi3r", icon: "♥️", text: "Play 3 BONDI rounds",           goal: 3, reward: 40,  count: (e) => (e.game === "bondi" ? 1 : 0) },
+  { id: "dhiha1",  icon: "🤝", text: "Win a DHIHA round",             goal: 1, reward: 70,  count: (e) => (e.dhihaWin ? 1 : 0) },
+  { id: "mix2",    icon: "🎲", text: "Play 2 different games",        goal: 2, reward: 50,  count: (e) => (e.newGameToday ? 1 : 0) },
+];
+const hashStr = (s) => { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+export const todayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// today's 3 challenges (one easy "play", one "win", one special), the same for everyone
+export function dailyChallenges(day = todayKey()) {
+  const h = hashStr(day);
+  const easy = ["play5", "play10", "digu3r", "call3r", "bondi3r", "mix2"];
+  const win = ["win2", "win4", "digu1", "call1", "bondi1"];
+  const special = ["digu2", "big100", "catch1", "dhiha1", "win4", "call1"];
+  const pick = (list, k) => CHALLENGES.find((c) => c.id === list[(h >>> k) % list.length]);
+  const out = [pick(easy, 0), pick(win, 5), pick(special, 11)];
+  return out.filter((c, i) => out.findIndex((x) => x.id === c.id) === i);
+}
 export const earnedBadges = (stats) => BADGES.filter((b) => b.test(stats || {}));
 
 // Cosmetics, each unlocked at a rank (index into RANKS). Guests always get the first option.
