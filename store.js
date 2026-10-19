@@ -47,7 +47,9 @@ const rtNow = () => Date.now() + rtOffset;
 // rooms/X → rooms/X · rooms/X/hands/U → hands/X/U · rooms/X/joins/U → joins/X/U · rooms/X/secret/invite → secrets/X
 // presence/U (who's walking in Aammu Jagaha) · lobbyNotes/N · lastSeen/U also live there: they change
 // often and are read by everyone, which is cheap in Realtime Database and costly in Firestore.
-const RT_LISTS = ["presence", "lobbyNotes", "lastSeen"];
+const RT_LISTS = ["presence", "lobbyNotes", "lastSeen", "tournaments", "tourneyOf"];
+// documents that carry a change counter, so two phones saving at once can't overwrite each other
+const isTourney = (rt) => rt.startsWith("tournaments/") && rt.split("/").length === 2;
 function rtPath(segs) {
   if (rdb && RT_LISTS.includes(segs[0]) && segs.length <= 2) return segs.join("/");
   if (!rdb || segs[0] !== "rooms") return null;
@@ -214,6 +216,7 @@ function flatUpdate(ref, upd) { // Firestore-style update → Realtime Database 
   const out = {};
   for (const [k, v] of Object.entries(upd)) out[`${ref.rt}/${k.split(".").join("/")}`] = isS(v)
     ? (v.__s === "ts" ? rServerTimestamp() : v.__s === "inc" ? rIncrement(v.n) : null) : toRtValue(v);
+  if (isTourney(ref.rt)) out[`${ref.rt}/_rev`] = rIncrement(1);
   if (ref.rt.startsWith("rooms/") && ref.rt.split("/").length === 2) {
     out[`${ref.rt}/_rev`] = rIncrement(1);
     if ("playerIds" in upd) out[`${ref.rt}/pids`] = asSet(upd.playerIds);
@@ -226,6 +229,7 @@ function setValue(ref, data, merge, cur) {
   if (merge) return applyLocal(cur, data);
   const v = toRtValue(data);
   if (ref.rt.startsWith("rooms/") && ref.rt.split("/").length === 2) { v._rev = 1; withIndexes(v); }
+  if (isTourney(ref.rt)) v._rev = 1;
   return v;
 }
 async function txUpdate(ref, upd) { // updates that add to / remove from lists
@@ -235,6 +239,7 @@ async function txUpdate(ref, upd) { // updates that add to / remove from lists
   if (!res.committed) throw { code: "aborted", message: "Couldn't save · try again" };
 }
 function withRoomMeta(ref, v) {
+  if (v && isTourney(ref.rt)) v._rev = (Number(v._rev) || 0) + 1;
   if (v && ref.rt.startsWith("rooms/") && ref.rt.split("/").length === 2) { v._rev = (Number(v._rev) || 0) + 1; withIndexes(v); }
   return v;
 }
