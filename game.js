@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019q";
-import * as CFG from "./firebase-config.js?v=20261019q";
-import * as C from "./cards.js?v=20261019q";
-import * as P from "./profile.js?v=20261019q";
-import { DV } from "./i18n.js?v=20261019q";
+} from "./store.js?v=20261019s";
+import * as CFG from "./firebase-config.js?v=20261019s";
+import * as C from "./cards.js?v=20261019s";
+import * as P from "./profile.js?v=20261019s";
+import { DV } from "./i18n.js?v=20261019s";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -3893,7 +3893,7 @@ function myEntry(name) {
   const reg = isRegistered();
   return {
     uid, name,
-    avatar: reg ? profile.avatar || P.AVATARS[0] : null,
+    avatar: reg ? (P.premiumAvatar(profile.avatar) && !isPremium() ? P.AVATARS[0] : profile.avatar || P.AVATARS[0]) : null,
     rank: reg ? myRank() : null,
     badges: reg ? P.earnedBadges(profile).length : 0,
     photoV: reg && hasPhoto() ? profile.photoV : null, // others load the picture from my profile
@@ -4006,7 +4006,13 @@ function fillAvatar(a, p) {
     img.src = url;
     img.alt = "";
     a.append(img);
-  } else a.textContent = p.avatar || (p.name || "?").trim().charAt(0).toUpperCase();
+  } else {
+    const pa = P.premiumAvatar(p.avatar);
+    a.classList.toggle("prem-av", !!pa);
+    a.classList.toggle("metal", pa?.g === "metal");
+    if (pa) { a.textContent = pa.e; a.style.setProperty("--pa-bg", pa.bg); a.style.setProperty("--pa-ring", pa.ring); }
+    else a.textContent = p.avatar || (p.name || "?").trim().charAt(0).toUpperCase();
+  }
 }
 
 function avatarEl(p, cls = "avatar") {
@@ -4101,6 +4107,36 @@ function openAuth(mode) {
 
 function renderAvatarPicker(box, current, onPick) {
   box.innerHTML = "";
+  // 💎 Premium avatars first (locked for others while Premium is on sale; hidden while it isn't)
+  if (box.id === "profAvatars" && (isPremium() || premiumCfg.visible)) {
+    const head = Object.assign(document.createElement("div"), { className: "prem-av-head", textContent: isPremium() ? "💎 Premium avatars" : "💎 Premium avatars · for Premium players" });
+    box.append(head);
+    let group = null;
+    for (const pa of P.PREMIUM_AVATARS) {
+      if ((pa.g || "") !== group) {
+        group = pa.g || "";
+        if (group) box.append(Object.assign(document.createElement("div"), { className: "prem-av-sub", textContent: group === "cute" ? "🧸 Cute" : "🤘 Heavy metal" }));
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "avatar-pick prem-pick" + (pa.id === current ? " on" : "") + (isPremium() ? "" : " locked");
+      b.title = pa.name;
+      const face = document.createElement("span");
+      face.className = "avatar prem-av";
+      face.textContent = pa.e;
+      face.style.setProperty("--pa-bg", pa.bg); face.style.setProperty("--pa-ring", pa.ring);
+      if (pa.g === "metal") face.classList.add("metal");
+      b.append(face);
+      b.onclick = () => {
+        if (!isPremium()) return needPremium("Premium avatars are");
+        box.querySelectorAll(".on").forEach((x) => x.classList.remove("on"));
+        b.classList.add("on");
+        onPick(pa.id);
+      };
+      box.append(b);
+    }
+    box.append(Object.assign(document.createElement("div"), { className: "prem-av-head", textContent: "Everyone" }));
+  }
   for (const a of P.AVATARS) {
     const b = document.createElement("button");
     b.type = "button";
