@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019n";
-import * as CFG from "./firebase-config.js?v=20261019n";
-import * as C from "./cards.js?v=20261019n";
-import * as P from "./profile.js?v=20261019n";
-import { DV } from "./i18n.js?v=20261019n";
+} from "./store.js?v=20261019o";
+import * as CFG from "./firebase-config.js?v=20261019o";
+import * as C from "./cards.js?v=20261019o";
+import * as P from "./profile.js?v=20261019o";
+import { DV } from "./i18n.js?v=20261019o";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -142,7 +142,7 @@ async function createRoom({ isPublic = true, game = "digu", loungeName = "" } = 
   if (!isPublic && premiumGate()) {
     try {
       const mine = await getDocs(query(collection(db, "rooms"), where("owner", "==", uid)));
-      const count = mine.docs.filter((d) => !["deleted", "closed"].includes(d.data().status)).length;
+      const count = mine.docs.filter((d) => !d.data().tourney && !["deleted", "closed"].includes(d.data().status)).length;
       if (count >= FREE_LOUNGES) return needPremium(`You have ${count} holhuashis · free players can have ${FREE_LOUNGES}. More holhuashis are`);
     } catch {}
   }
@@ -221,6 +221,265 @@ async function joinRoom(code, { quiet = false } = {}) {
     if (!quiet) toast(e?.code === "permission-denied" && key ? "That invite code isn't valid (the owner may have made a new one)" : errMsg(e));
     return false;
   }
+}
+
+// ---------- 🏆 DIGU tournaments ----------
+// The organiser creates a tournament and shares its code. Players join with the code. When it starts,
+// players are drawn into tables of up to 4; each table plays a short DIGU game (a few rounds). The
+// player with the most points at each table goes through to the next round, until one table is left:
+// the final. Its winner gets the 🏆 Tournament Cup badge.
+const T_MATCH_ROUNDS = [3, 5];
+const tRef = (code) => doc(db, "tournaments", code);
+const tRoundName = (t, r) => ((t.rounds?.[r] || []).length === 1 ? "Final" : `Round ${r + 1}`); // one table left = the final
+// split players into tables of at most 4 (sizes as even as possible, at least 2)
+function tGroups(ids) {
+  const n = ids.length, tables = Math.max(1, Math.ceil(n / 4)), out = Array.from({ length: tables }, () => []);
+  ids.forEach((u, i) => out[i % tables].push(u));
+  return out.filter((g) => g.length);
+}
+let tCurrent = null, tUnsub = null;
+async function createTournament() {
+  if (!isRegistered()) return toast("🔒 Sign in to create a tournament");
+  if (blockedCheck()) return;
+  const name = ($("tourneyName").value.trim() || `${myName()}'s DIGU Cup`).slice(0, 40);
+  let code;
+  do { code = "T" + randomCode().slice(0, 4); } while ((await getDoc(tRef(code))).exists());
+  const me = myEntry(myName());
+  try {
+    await setDoc(tRef(code), {
+      name, owner: uid, status: "open", game: "digu", matchRounds: Number($("tourneyRounds").value) || 3,
+      players: [{ uid, name: me.name, avatar: me.avatar || null }], pids: { [uid]: true },
+      createdAt: serverTimestamp(),
+    });
+    await setDoc(doc(db, "tourneyOf", uid), { [code]: name }, { merge: true }).catch(() => {});
+    $("tourneyName").value = "";
+    openTournament(code);
+  } catch (e) { toast(errMsg(e)); }
+}
+async function joinTournament(code) {
+  code = (code || "").trim().toUpperCase().replace(/^.*#/, "");
+  if (!code) return toast("Enter the tournament code");
+  if (!isRegistered()) return toast("🔒 Sign in to join a tournament");
+  try {
+    const me = myEntry(myName());
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(tRef(code));
+      if (!snap.exists()) throw "No tournament with that code";
+      const t = snap.data();
+      if ((t.players || []).some((p) => p.uid === uid)) return;
+      if (t.status !== "open") throw "This tournament has already started";
+      if ((t.players || []).length >= 64) throw "This tournament is full (64 players)";
+      tx.update(tRef(code), { players: [...(t.players || []), { uid, name: me.name, avatar: me.avatar || null }], [`pids.${uid}`]: true });
+    });
+    const t = (await getDoc(tRef(code))).data();
+    await setDoc(doc(db, "tourneyOf", uid), { [code]: t?.name || code }, { merge: true }).catch(() => {});
+    $("tourneyCode").value = "";
+    openTournament(code);
+  } catch (e) { toast(typeof e === "string" ? e : errMsg(e)); }
+}
+function openTournament(code) {
+  tUnsub?.();
+  tCurrent = { code, t: null };
+  $("tourneyModal").hidden = false;
+  $("tourneyBody").innerHTML = '<p class="muted">Loading…</p>';
+  tUnsub = onSnapshot(tRef(code), (snap) => {
+    const t = snap.data();
+    if (!t) { $("tourneyBody").innerHTML = '<p class="muted">This tournament no longer exists.</p>'; return; }
+    const was = tCurrent?.t;
+    tCurrent = { code, t };
+    renderTournament();
+    if (t.status === "done" && was && was.status !== "done") tourneyCupShow(t);
+    if (t.status === "done" && t.champion === uid) claimCup(code, t);
+  }, (e) => toast(errMsg(e)));
+}
+function closeTournament() { tUnsub?.(); tUnsub = null; tCurrent = null; $("tourneyModal").hidden = true; }
+async function startTournament() {
+  const { code, t } = tCurrent || {};
+  if (!t || t.owner !== uid || t.status !== "open") return;
+  const ids = (t.players || []).map((p) => p.uid);
+  if (ids.length < 2) return toast("At least 2 players are needed");
+  const draw = [...ids].sort(() => Math.random() - 0.5);
+  const round0 = tGroups(draw).map((g) => ({ players: g, status: "waiting" }));
+  await updateDoc(tRef(code), { status: "running", rounds: [round0], current: 0, startedAt: serverTimestamp() }).catch((e) => toast(errMsg(e)));
+}
+const tName = (t, u) => (t.players || []).find((p) => p.uid === u)?.name || "?";
+const matchCode = (code, r, m) => `${code}R${r + 1}M${m + 1}`;
+// go to my table: the first one there sets it up, the others sit down
+async function playMatch(r, m) {
+  const { code, t } = tCurrent || {};
+  const match = t?.rounds?.[r]?.[m];
+  if (!match || !(match.players || []).includes(uid)) return;
+  const rc = matchCode(code, r, m);
+  try {
+    const name = myName(), me = myEntry(name);
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(doc(db, "rooms", rc));
+      if (snap.exists()) return;
+      tx.set(doc(db, "rooms", rc), {
+        host: uid, status: "lobby", players: [me], playerIds: [uid], scores: { [uid]: 0 },
+        round: 0, moveId: 0, game: "digu", target: targetFor("digu"), maxPlayers: match.players.length, gameRound: 0,
+        public: false, lounge: true, owner: t.owner, members: match.players,
+        name: `🏆 ${t.name} · ${tRoundName(t, r)} · Table ${m + 1}`.slice(0, 60),
+        endMode: "rounds", roundsLimit: t.matchRounds || 3, stats: { rounds: 0, games: 0 },
+        tourney: { code, r, m, allowed: match.players },
+        heartbeat: serverTimestamp(), seen: { [uid]: serverTimestamp() }, createdAt: serverTimestamp(),
+        log: `${tRoundName(t, r)} · Table ${m + 1}: waiting for ${match.players.map((u) => tName(t, u)).join(", ")}`,
+      });
+    });
+    const r0 = (await getDoc(doc(db, "rooms", rc))).data();
+    if (r0?.playerIds?.includes(uid)) { rememberMembership(uid, rc); enterRoom(rc); }
+    else await joinRoom(rc);
+    if (match.status === "waiting") updateDoc(tRef(code), { [`rounds.${r}.${m}.status`]: "playing", [`rounds.${r}.${m}.room`]: rc }).catch(() => {});
+    $("tourneyModal").hidden = true;
+  } catch (e) { toast(errMsg(e)); }
+}
+// a tournament table finished its game: save the result and, when the whole round is done, draw the next one
+async function recordMatch(r0, rc) {
+  const tz = r0.tourney;
+  if (!tz || recordMatch.done === rc) return;
+  recordMatch.done = rc;
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(tRef(tz.code));
+      const t = snap.data();
+      if (!t || t.status !== "running") return;
+      const rounds = (t.rounds || []).map((rd) => (rd || []).map((x) => ({ ...x })));
+      const match = rounds[tz.r]?.[tz.m];
+      if (!match || match.status === "done") return;
+      const scores = Object.fromEntries((match.players || []).map((u) => [u, r0.scores?.[u] ?? 0]));
+      const winner = [...match.players].sort((a, b) => (scores[b] ?? 0) - (scores[a] ?? 0))[0];
+      Object.assign(match, { status: "done", scores, winner, room: rc });
+      const upd = { rounds };
+      if (rounds[tz.r].every((x) => x.status === "done")) {
+        const winners = rounds[tz.r].map((x) => x.winner).filter(Boolean);
+        if (winners.length <= 1) Object.assign(upd, { status: "done", champion: winners[0] || winner, endedAt: serverTimestamp() });
+        else { rounds.push(tGroups(winners).map((g) => ({ players: g, status: "waiting" }))); upd.current = tz.r + 1; }
+      }
+      tx.update(tRef(tz.code), upd);
+    });
+  } catch (e) { recordMatch.done = null; console.warn("Tournament result", e); }
+}
+// the champion's own phone adds the cup to their profile (once)
+function claimCup(code, t) {
+  if (!isRegistered() || claimCup.done === code) return;
+  claimCup.done = code;
+  runTransaction(db, async (tx) => {
+    const ref = doc(db, "users", uid);
+    const d = (await tx.get(ref)).data() || {};
+    if ((d.cups || []).includes(code)) return;
+    tx.set(ref, { cups: [...(d.cups || []), code].slice(-50), tourneyWins: (d.tourneyWins || 0) + 1, careerPoints: (d.careerPoints || 0) + 500 }, { merge: true });
+  }).catch(() => { claimCup.done = null; });
+}
+// the big moment: a huge cup for the champion
+function tourneyCupShow(t) {
+  const fx = document.createElement("div");
+  fx.className = "cup-fx";
+  fx.innerHTML = '<div class="cup-rays"></div><div class="cup-big">🏆</div><div class="cup-title"></div><div class="cup-name"></div>';
+  fx.querySelector(".cup-title").textContent = t.name;
+  fx.querySelector(".cup-name").textContent = t.champion === uid ? "You are the champion! +500 points" : `${tName(t, t.champion)} is the champion!`;
+  document.body.append(fx);
+  try { confetti(fx, false); } catch {}
+  fx.onclick = () => fx.remove();
+  setTimeout(() => fx.remove(), 7000);
+}
+function renderTournament() {
+  const { code, t } = tCurrent || {};
+  const box = $("tourneyBody");
+  if (!t) return;
+  box.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "t-head";
+  head.innerHTML = `<h2>🏆 <span></span></h2><p class="muted"></p>`;
+  head.querySelector("span").textContent = t.name;
+  head.querySelector("p").textContent = `DIGU · ${t.matchRounds || 3} rounds a table · organised by ${tName(t, t.owner)}`
+    + (t.status === "open" ? " · waiting for players" : t.status === "running" ? " · in progress" : " · finished");
+  box.append(head);
+  if (t.status === "done") {
+    const ch = document.createElement("div");
+    ch.className = "t-champ";
+    ch.innerHTML = `<span class="cup">🏆</span><div><small>Champion</small><b></b></div>`;
+    ch.querySelector("b").textContent = tName(t, t.champion);
+    box.append(ch);
+  }
+  // invite
+  if (t.status === "open") {
+    const inv = document.createElement("div");
+    inv.className = "t-invite";
+    inv.innerHTML = `<span>Invitation code</span><b></b><button type="button" class="ghost small">Copy</button>`;
+    inv.querySelector("b").textContent = code;
+    inv.querySelector("button").onclick = () => navigator.clipboard?.writeText(code).then(() => toast("Code copied"), () => {});
+    box.append(inv);
+  }
+  // players
+  const pl = document.createElement("div");
+  pl.className = "t-players";
+  pl.append(Object.assign(document.createElement("h3"), { textContent: `Players (${(t.players || []).length})` }));
+  const chips = document.createElement("div");
+  chips.className = "t-chips";
+  const out = new Set();
+  (t.rounds || []).forEach((rd) => (rd || []).forEach((x) => { if (x.status === "done") (x.players || []).forEach((u) => { if (u !== x.winner) out.add(u); }); }));
+  for (const p of t.players || []) {
+    const c = document.createElement("span");
+    c.className = "t-chip" + (out.has(p.uid) ? " out" : "") + (p.uid === t.champion ? " champ" : "") + (p.uid === uid ? " me" : "");
+    c.textContent = (p.uid === t.champion ? "🏆 " : "") + p.name + (p.uid === t.owner ? " ★" : "");
+    chips.append(c);
+  }
+  pl.append(chips);
+  box.append(pl);
+  if (t.status === "open") {
+    if (t.owner === uid) {
+      const b = Object.assign(document.createElement("button"), { type: "button", className: "primary", textContent: `▶ Start the tournament (${(t.players || []).length} players)` });
+      b.disabled = (t.players || []).length < 2;
+      b.onclick = startTournament;
+      box.append(b);
+      box.append(Object.assign(document.createElement("p"), { className: "muted small-note", textContent: "Players are drawn into tables of up to 4. The top scorer at each table goes through to the next round, until the final." }));
+    } else box.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "Waiting for the organiser to start the tournament…" }));
+  }
+  // schedule
+  (t.rounds || []).forEach((rd, r) => {
+    const sec = document.createElement("div");
+    sec.className = "t-round";
+    sec.append(Object.assign(document.createElement("h3"), { textContent: tRoundName(t, r) }));
+    (rd || []).forEach((x, m) => {
+      const card = document.createElement("div");
+      card.className = "t-match " + x.status + ((x.players || []).includes(uid) ? " mine" : "");
+      const title = document.createElement("div");
+      title.className = "t-match-head";
+      title.textContent = `Table ${m + 1} · ${x.status === "done" ? "finished" : x.status === "playing" ? "playing now" : "waiting"}`;
+      card.append(title);
+      for (const u of x.players || []) {
+        const row = document.createElement("div");
+        row.className = "t-row" + (x.winner === u ? " win" : "");
+        row.innerHTML = `<span></span><b></b>`;
+        row.firstChild.textContent = (x.winner === u ? "➜ " : "") + tName(t, u) + (u === uid ? " (you)" : "");
+        row.lastChild.textContent = x.scores ? `${x.scores[u] ?? 0} pts` : "";
+        card.append(row);
+      }
+      if (x.status !== "done" && (x.players || []).includes(uid) && t.status === "running") {
+        const go = Object.assign(document.createElement("button"), { type: "button", className: "primary small", textContent: x.status === "playing" ? "▶ Go to my table" : "▶ Play my match" });
+        go.onclick = () => playMatch(r, m);
+        card.append(go);
+      }
+      sec.append(card);
+    });
+    box.append(sec);
+  });
+}
+// my tournaments (home page)
+async function renderMyTournaments() {
+  const box = $("myTourneys");
+  if (!box || !isRegistered()) return;
+  try {
+    const d = (await getDoc(doc(db, "tourneyOf", uid))).data() || {};
+    const codes = Object.keys(d).filter((k) => /^T[A-Z0-9]{4}$/.test(k));
+    box.innerHTML = "";
+    box.hidden = !codes.length;
+    for (const c of codes.slice(-6).reverse()) {
+      const b = Object.assign(document.createElement("button"), { type: "button", className: "ghost small t-mine", textContent: `🏆 ${d[c]}` });
+      b.onclick = () => openTournament(c);
+      box.append(b);
+    }
+  } catch { box.hidden = true; }
 }
 
 // ---------- the lobby: fixed tables, seats and players walking around ----------
@@ -1211,7 +1470,7 @@ const hasBots = (r) => !!r?.playerIds?.some(isBot);
 const noPoints = (r) => !!r?.practice || hasBots(r);
 
 // Holhuashi owner: fill a free seat with a computer player (or take one away) before the game starts.
-const canManageBots = () => !!room && isLoungeDoc(room) && room.status === "lobby"
+const canManageBots = () => !!room && isLoungeDoc(room) && !room.tourney && room.status === "lobby"
   && (ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)));
 async function addBot(silent = false) {
   if (!canManageBots()) return;
@@ -1598,7 +1857,7 @@ async function renderMyLounges(force = false) {
       else if (d && !d.exists()) forgetLounge(l.code);
     }));
   } catch (e) { console.warn("My holhuashis", e); }
-  const list = [...found.entries()].filter(([, r]) => r.status !== "deleted" && r.status !== "closed" && !(r.removed || []).includes(uid));
+  const list = [...found.entries()].filter(([, r]) => !r.tourney && r.status !== "deleted" && r.status !== "closed" && !(r.removed || []).includes(uid));
   box.innerHTML = "";
   box.hidden = !list.length;
   if (!list.length) return;
@@ -1982,6 +2241,13 @@ function enterRoom(code) {
     // someone just called DIGU or CALL: the big moment, on everyone's screen
     if (sameRound && prev.status === "playing" && room.status === "ended") playShout(room);
     if (prev && room.gameOver && room.champions?.length && !prev.gameOver) celebrateWinner(room);
+    if (room.tourney && room.gameOver && room.champions?.length) recordMatch(room, roomId);
+    // a tournament table starts by itself once everyone drawn for it has sat down
+    if (room.tourney && room.status === "lobby" && !room.round && room.host === uid
+        && (room.tourney.allowed || []).every((u) => room.playerIds.includes(u)) && enterRoom.autoStarted !== `${roomId}-t`) {
+      enterRoom.autoStarted = `${roomId}-t`;
+      setTimeout(() => dealRound(), 1500);
+    }
 
     // reactions (skip the one already there when I open the room)
     const rx = room.reaction;
@@ -2055,6 +2321,7 @@ function hideTableOverlays() {
   chatOpen = false; tipOpen = false;
 }
 function leaveRoom() {
+  $("tourneyBtn").hidden = true;
   stopPresence();
   hideTableOverlays();
   pendingMoves = []; serverRoom = null; serverHand = [];
@@ -3490,7 +3757,8 @@ function renderResults() {
   const hostGone = !host && isOffline(room, room.host, roomId);
   $("nextRoundBtn").hidden = !(host || hostGone) || over;
   const lobbyTable = isLobbyRoom(room);
-  $("playAgainBtn").hidden = !over || (!host && !lobbyTable);
+  $("playAgainBtn").hidden = !over || (!host && !lobbyTable) || !!room.tourney; // a tournament table plays one game
+  $("resTourneyBtn").hidden = !room.tourney;
   $("playAgainBtn").textContent = lobbyTable ? "Back to the Aammu Jagaha" : "New game";
   $("waitNext").hidden = host || hostGone || (over && lobbyTable);
   $("waitNext").textContent = over ? "Waiting for the host to start a new game…" : "Waiting for the host to deal the next round…";
@@ -3775,6 +4043,7 @@ function renderAccount() {
   $("loungeLock").hidden = true;
   $("holhuashiPanel").hidden = !reg; // guests only see Aammu Jagaha
   $("homeChallenges").hidden = !reg;
+  if (reg && renderAccount.tUid !== uid) { renderAccount.tUid = uid; renderMyTournaments(); }
   if (reg) renderChallenges($("homeChallenges"));
   $("createLoungeBtn").classList.toggle("locked-btn", !reg);
   $("createLoungeBtn").textContent = (reg ? "" : "🔒 ") + tr("holhuashi.create", "Create my holhuashi");
@@ -4349,7 +4618,7 @@ function renderProfile() {
   for (const b of P.BADGES) {
     const has = b.test(profile);
     const el = document.createElement("div");
-    el.className = "badge" + (has ? "" : " locked");
+    el.className = "badge" + (has ? "" : " locked") + (b.big ? " big" : "");
     el.title = b.desc;
     el.innerHTML = `<span></span><small></small>`;
     el.firstChild.textContent = has ? b.icon : "🔒";
@@ -5261,6 +5530,7 @@ function render() {
   renderSeats();
   renderPremTools();
   queueMicrotask(markOnline);
+  $("tourneyBtn").hidden = !room.tourney;
   turnAlert(isMyTurn() && !$("game").hidden);
   const me = room.playerIds.includes(uid);
   const playing = room.status === "playing";
@@ -5482,7 +5752,7 @@ function renderLoungeScene() {
     Object.assign(document.createElement("strong"), { className: "table-game", textContent: GAME_NAME[gameOf(room)] }),
     Object.assign(document.createElement("small"), { className: "table-no", textContent: `${nameOf(room.host)}'s holhuashi` }),
   );
-  if (owner || canManageBots()) {
+  if ((owner || canManageBots()) && !(room.tourney && n < 2)) { // tournament tables: real players only
     const start = document.createElement("button");
     const enough = n >= (isDhiha() ? 4 : 2);
     start.className = "table-play";
@@ -6214,6 +6484,10 @@ $("seatLeave").onclick = standUpAndStep;
 $("lobbyFloor").addEventListener("click", onFloorTap);
 addEventListener("resize", () => { clearTimeout(renderFloor.t); renderFloor.t = setTimeout(() => { walkerEls.forEach((el) => (el._pos = null)); renderFloor(); }, 150); });
 $("joinBtn").onclick = () => joinRoom($("code").value);
+$("tourneyCreate").onclick = createTournament;
+$("tourneyJoin").onclick = () => joinTournament($("tourneyCode").value);
+$("tourneyClose").onclick = closeTournament;
+$("tourneyBtn").onclick = $("resTourneyBtn").onclick = () => { if (room?.tourney) { $("results").hidden = true; openTournament(room.tourney.code); } };
 $("code").addEventListener("keydown", (e) => e.key === "Enter" && joinRoom($("code").value));
 $("startBtn").onclick = dealRound;
 $("pauseBtn").onclick = togglePause;
