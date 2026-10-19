@@ -9,12 +9,12 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
-  disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019a";
-import * as CFG from "./firebase-config.js?v=20261019a";
-import * as C from "./cards.js?v=20261019a";
-import * as P from "./profile.js?v=20261019a";
-import { DV } from "./i18n.js?v=20261019a";
+  disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
+} from "./store.js?v=20261019b";
+import * as CFG from "./firebase-config.js?v=20261019b";
+import * as C from "./cards.js?v=20261019b";
+import * as P from "./profile.js?v=20261019b";
+import { DV } from "./i18n.js?v=20261019b";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -4029,6 +4029,71 @@ async function openAdmin() {
   }
 }
 
+// ----- admin: every holhuashi -----
+let adminLounges = null;
+async function loadAdminLounges() {
+  adminLounges = null;
+  $("adminList").innerHTML = '<p class="muted">Loading holhuashis…</p>';
+  try {
+    const snap = await getDocs(query(collection(db, "rooms"), where("lounge", "==", true)));
+    adminLounges = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((r) => r.status !== "closed");
+  } catch (e) { adminLounges = []; toast(errMsg(e)); }
+  renderAdminLounges();
+}
+function renderAdminLounges() {
+  const box = $("adminList");
+  if (!adminLounges) { loadAdminLounges(); return; }
+  const q = $("adminSearch").value.trim().toLowerCase();
+  const nameOfUser = (u) => adminUsers.find((x) => x.id === u)?.name || adminLounges.flatMap((r) => r.players || []).find((p) => p.uid === u)?.name || (u ? u.slice(0, 8) + "…" : "?");
+  const list = adminLounges
+    .filter((r) => !q || (r.name || "").toLowerCase().includes(q) || r.id.toLowerCase().includes(q) || nameOfUser(r.owner).toLowerCase().includes(q))
+    .sort((a, b) => untilMs(b.heartbeat) - untilMs(a.heartbeat));
+  $("adminCount").textContent = `${adminLounges.length} holhuashis · ${adminLounges.filter((r) => r.status === "playing").length} playing now`;
+  box.innerHTML = "";
+  if (!list.length) box.innerHTML = '<p class="muted">No holhuashis match.</p>';
+  for (const r of list) {
+    const row = document.createElement("div");
+    row.className = "admin-row lounge-row";
+    const info = document.createElement("div");
+    info.className = "admin-info";
+    const members = (r.members || []).filter((u) => !isBot(u));
+    const last = untilMs(r.heartbeat);
+    info.append(Object.assign(document.createElement("strong"), { textContent: `🌴 ${r.name || "Holhuashi"}` }),
+      Object.assign(document.createElement("small"), { textContent:
+        `Code ${r.id} · owner ${nameOfUser(r.owner)} · ${members.length} member${members.length === 1 ? "" : "s"} · ${GAME_NAME[gameOf(r)] || ""}`
+        + ` · ${r.status === "playing" ? "▶ playing now" : r.paused ? "⏸ paused" : "waiting"}`
+        + (r.points ? ` · ${r.points} pts` : "") + (last ? ` · active ${ago(last)}` : "") }));
+    const det = document.createElement("details");
+    det.className = "lounge-members";
+    det.append(Object.assign(document.createElement("summary"), { textContent: "Members" }),
+      Object.assign(document.createElement("p"), { textContent: members.map((u) => nameOfUser(u) + (u === r.owner ? " (owner)" : "")).join(", ") || "No members" }));
+    if ((r.playerIds || []).length) det.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "At the table: " + (r.players || []).map((p) => p.name).join(", ") }));
+    info.append(det);
+    const del = Object.assign(document.createElement("button"), { type: "button", className: "ghost small danger", textContent: "Delete" });
+    del.onclick = async () => {
+      if (!confirm(`Delete the holhuashi "${r.name || r.id}" for everyone? This can't be undone.`)) return;
+      try {
+        await deleteRoomEverywhere(r.id, [...new Set([r.owner, ...members].filter(Boolean))]);
+        adminLounges = adminLounges.filter((x) => x.id !== r.id);
+        toast("Holhuashi deleted");
+        renderAdminLounges();
+      } catch (e) { toast(errMsg(e)); }
+    };
+    row.append(info, del);
+    box.append(row);
+  }
+}
+// ----- guests who have left are removed (by the server) -----
+const cleanupUrl = () => (NOTIFY_URL ? NOTIFY_URL.replace(/notify$/, "cleanup") : ""); // (NOTIFY_URL is set further down)
+async function runCleanup(asAdmin) {
+  if (!cleanupUrl() || !auth.currentUser) return null;
+  const headers = { "content-type": "application/json" };
+  if (asAdmin) headers.authorization = `Bearer ${await auth.currentUser.getIdToken()}`;
+  const r = await fetch(cleanupUrl(), { method: "POST", headers, body: "{}" });
+  return r.json().catch(() => null);
+}
+setTimeout(() => runCleanup(false).catch(() => {}), 25_000); // the server does this at most every 30 minutes
+
 // "online now", "5 min ago", "yesterday 21:04", …
 function seenAgo(ms) {
   const d = Date.now() - ms;
@@ -4039,6 +4104,7 @@ function seenAgo(ms) {
   return `last online ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 function renderAdmin() {
+  if (adminFilter === "lounges") return renderAdminLounges();
   const q = $("adminSearch").value.trim().toLowerCase();
   const list = adminUsers
     .filter((u) => adminFilter === "all"
@@ -5948,7 +6014,16 @@ $("adminFilters").addEventListener("click", (e) => {
   $("adminFilters").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
   renderAdmin();
 });
-$("adminRefresh").onclick = openAdmin;
+$("adminRefresh").onclick = () => { adminLounges = null; openAdmin(); };
+$("adminCleanGuests").onclick = async () => {
+  if (!confirm("Remove every guest who hasn't been active in the last 15 minutes? Registered players are never removed.")) return;
+  try {
+    const r = await runCleanup(true);
+    if (!r?.ok) throw new Error(r?.error || "The cleanup service isn't reachable");
+    toast(`🧹 ${r.removed} guest${r.removed === 1 ? "" : "s"} removed`);
+    openAdmin();
+  } catch (e) { toast(errMsg(e)); }
+};
 $("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
 $("targetCustom").addEventListener("submit", (e) => {
   e.preventDefault();
