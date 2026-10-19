@@ -2219,3 +2219,4 @@ html, body { overflow-x: hidden; }
 .tourney-btn { position: fixed; top: 8px; left: 8px; z-index: 46; width: 36px; height: 36px; padding: 0; border-radius: 50%;
   background: linear-gradient(135deg, #f7d774, #c8902a); border: 0; font-size: 18px; box-shadow: 0 3px 10px rgba(0,0,0,.4); }
 .tourney-btn[hidden] { display: none; }
+.t-match.active { border-color: #3b9cff; box-shadow: 0 0 12px rgba(59,156,255,.35); }
