@@ -2133,3 +2133,6 @@ html, body { overflow-x: hidden; }
 .intro-steps li { text-align: left; }
 .intro-steps li b, .intro-steps li small { grid-column: 2; }
 #accountGuest .guest-why { white-space: normal; overflow: visible; text-overflow: clip; display: block; }
+.lounge-row .lounge-members { margin-top: 4px; font-size: 12.5px; }
+.lounge-row .lounge-members summary { cursor: pointer; opacity: .8; }
+.lounge-row .lounge-members p { margin: 4px 0 0; }
