@@ -1,0 +1,70 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "rooms": {
+      ".read": "auth != null",
+      ".indexOn": ["public", "owner"],
+      "$code": {
+        ".write": "auth != null && ( (!data.exists() && newData.child('host').val() === auth.uid) || data.child('pids').child(auth.uid).exists() || (data.child('lounge').val() === true && data.child('owner').val() === auth.uid) || (newData.child('pids').child(auth.uid).exists() && data.child('status').val() === 'lobby' && !data.child('rset').child(auth.uid).exists() && (data.child('lounge').val() !== true || data.child('owner').val() === auth.uid || data.child('mset').child(auth.uid).exists() || (root.child('secrets').child($code).child('key').exists() && root.child('joins').child($code).child(auth.uid).child('key').val() === root.child('secrets').child($code).child('key').val()))) || (data.child('public').val() === true && newData.child('host').val() === auth.uid && (data.child('status').val() === 'closed' || !data.child('pids').exists() || data.child('heartbeat').val() < now - 70000)) )"
+      }
+    },
+
+    "hands": {
+      "$code": {
+        ".read": "auth != null && root.child('rooms').child($code).child('status').val() === 'ended'",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || root.child('rooms').child($code).child('status').val() === 'ended' || ($uid.beginsWith('bot-') && root.child('rooms').child($code).child('host').val() === auth.uid))",
+          ".write": "auth != null && (auth.uid === $uid || root.child('rooms').child($code).child('host').val() === auth.uid || (root.child('rooms').child($code).child('pids').child(auth.uid).exists() && (root.child('rooms').child($code).child('status').val() === 'lobby' || root.child('rooms').child($code).child('status').val() === 'ended')))"
+        }
+      }
+    },
+
+    "secrets": {
+      "$code": {
+        ".read": "auth != null && (root.child('rooms').child($code).child('owner').val() === auth.uid || root.child('rooms').child($code).child('mset').child(auth.uid).exists())",
+        ".write": "auth != null && (root.child('rooms').child($code).child('owner').val() === auth.uid || (!data.exists() && !root.child('rooms').child($code).child('owner').exists()) )"
+      }
+    },
+
+    "joins": {
+      "$code": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || root.child('rooms').child($code).child('owner').val() === auth.uid)",
+          ".write": "auth != null && ( (auth.uid === $uid && newData.child('key').val() === root.child('secrets').child($code).child('key').val()) || (!newData.exists() && root.child('rooms').child($code).child('owner').val() === auth.uid))"
+        }
+      }
+    },
+
+    "presence": {
+      ".read": "auth != null",
+      "$uid": { ".write": "auth != null && (auth.uid === $uid || root.child('admins').child(auth.uid).val() === true)" }
+    },
+
+    "lobbyNotes": {
+      ".read": "auth != null",
+      ".indexOn": ["at"],
+      "$id": {
+        ".write": "auth != null && ((!data.exists() && newData.child('uid').val() === auth.uid && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 200) || (!newData.exists() && (data.child('uid').val() === auth.uid || root.child('admins').child(auth.uid).val() === true)))"
+      }
+    },
+
+    "lastSeen": {
+      ".read": "auth != null",
+      "$uid": { ".write": "auth != null && auth.uid === $uid" }
+    },
+
+    "admins": {
+      ".read": "auth != null",
+      ".write": false
+    },
+
+    "memberOf": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    }
+  }
+}

@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>THAAS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20261019a">
+</head>
+<body>
+  <!-- LOBBY -->
+  <main id="lobby" class="lobby">
+    <div class="lang-switch" role="group" aria-label="Language">
+      <button id="langEn" type="button">English</button>
+      <button id="langDv" type="button" lang="dv">ދިވެހި</button>
+    </div>
+    <div class="logo-wrap">
+      <h1 class="logo">THAAS</h1>
+      <img class="logo-dv" src="thaas-dv.png" alt="ތާސް" lang="dv">
+    </div>
+    <div class="logo-suits" aria-hidden="true"><span>♠</span><span class="r">♥</span><span>♣</span><span class="r">♦</span></div>
+    
+    <section class="intro panel">
+      <img src="thaas-intro.jpg" alt="Friends playing cards on a woven mat by the beach, a dhoni boat on the lagoon behind them" loading="lazy">
+      <div class="intro-text">
+        <h2 data-i18n="intro.title">Welcome to Thaas</h2>
+        <p data-i18n="intro.p1"><b>Thaas</b> (ތާސް) is what we call playing cards in the Maldives. For generations, friends have gathered in the <b>holhuashi</b> by the beach, on joali chairs under the palm trees, to play <b>DIGU</b>, <b>CALL</b> and <b>BONDI</b>.</p>
+        <p data-i18n="intro.p2">Now you can play them online, with friends on any island or anywhere in the world.</p>
+      </div>
+    </section>
+    <section class="intro-games" aria-label="The games">
+      <div class="ig g-digu"><b>DIGU</b><small>Make 3 sets from 10 cards and call DIGU</small><i>2–4 players</i></div>
+      <div class="ig g-call"><b>CALL</b><small>Keep your count lowest, then CALL</small><i>2–6 players</i></div>
+      <div class="ig g-bondi"><b>BONDI</b><small>Follow suit and get rid of your cards first</small><i>2–6 players</i></div>
+      <div class="ig g-dhiha"><b>DHIHA</b><small>Teams of two chase the tens</small><i>4 players · holhuashi</i></div>
+    </section>
+    <ol class="intro-steps">
+      <li><span>🛖</span><b>Aammu Jagaha</b><small>Walk into the public place, take a chair at a table and play with whoever is there.</small></li>
+      <li><span>🌴</span><b>Holhuashi</b><small>Sign in to make your own private spot and invite your friends with a code.</small></li>
+      <li><span>🏆</span><b>Climb the ranks</b><small>Registered players earn points, badges, card backs and table styles.</small></li>
+    </ol>
+    <div id="account" class="account panel">
+      <div id="accountGuest" class="account-row">
+        <div class="guest-top">
+          <strong data-i18n="guest.q">Playing as guest?</strong>
+          <button id="registerBtn" class="primary small" data-i18n="register">Register</button>
+          <button id="signInBtn" class="ghost small" data-i18n="signin">Sign in</button>
+        </div>
+        <small class="guest-why">Guests can play in Aammu Jagaha. Register to make your own holhuashi, and get an avatar, ranks, badges and table styles.</small>
+      </div>
+      <div id="accountUser" class="account-row" hidden>
+        <span id="acctAvatar" class="avatar"></span>
+        <div class="account-text"><strong id="acctName"></strong><small id="acctRank"></small></div>
+        <div class="account-btns">
+          <button id="profileBtn" class="ghost small">Profile</button>
+          <button id="signOutBtn" class="ghost small">Sign out</button>
+        </div>
+      </div>
+      <button id="adminBtn" class="admin-btn" hidden>🛡️ Admin panel</button>
+      <button id="premiumBtn" class="premium-btn" hidden>💎 Go Premium</button>
+    </div>
+    <p id="blockedNote" class="blocked-note" hidden>⛔ Your account has been blocked by an admin. You can't create or join rooms.</p>
+    <div id="lobbyActions" class="panel loading">
+      <label><span data-i18n="name">Your name</span> <input id="name" maxlength="16" autocomplete="nickname" placeholder="e.g. Thakuru"></label>
+      <p class="enter-title" data-i18n="home.pick">🛖 Aammu Jagaha · pick a game and walk in</p>
+      <div class="enter-lobbies">
+        <button id="enter-digu" class="enter-lobby g-digu"><b data-i18n="game.digu">DIGU</b><small data-i18n="players.24">sets · 2–4 players</small></button>
+        <button id="enter-call" class="enter-lobby g-call"><b data-i18n="game.call">CALL</b><small data-i18n="players.26">low count · 2–6</small></button>
+        <button id="enter-bondi" class="enter-lobby g-bondi"><b data-i18n="game.bondi">BONDI</b><small data-i18n="players.26">follow suit · 2–6</small></button>
+      </div>
+      <button id="botBtn" class="bot-btn" data-i18n="bot.play">🤖 Play vs computer</button>
+      <p class="play-hint" data-i18n="home.hint">Each game has its own Aammu Jagaha (public place) · switch any time from the tabs at the top</p>
+    </div>
+
+    <div id="holhuashiPanel" class="panel lobby-more" hidden>
+      <h2 class="lounge-head" data-i18n="holhuashi.head">🌴 Holhuashis</h2>
+      <p class="muted lounge-sub" data-i18n="holhuashi.sub">Your own spot by the beach, with a name and a code that lasts. Come back any time, invite friends with the code, and play as many games as you like. Start in a thatched hut, then earn points to move up: the beach, a water villa, a guesthouse, a royal yacht and finally a resort hotel.</p>
+      <div id="myLounges" class="my-lounges" hidden></div>
+      <div class="row">
+        <input id="loungeName" maxlength="30" placeholder="Holhuashi name" data-i18n-ph="holhuashi.name">
+        <button id="createLoungeBtn" class="grow">Create my holhuashi</button>
+      </div>
+      <p id="loungeLock" class="muted small-note" hidden data-i18n="holhuashi.lock">🔒 Sign in to create your own holhuashi. Holhuashis are invite-only: you need the owner's invite code.</p>
+      <div class="row">
+        <input id="code" maxlength="11" placeholder="INVITE CODE (ABCDE-7K2Q)" autocapitalize="characters">
+        <button id="joinBtn" data-i18n="join">Join</button>
+      </div>
+    </div>
+    <p id="gamesPlayed" class="games-played"></p>
+    <details class="rules">
+      <summary data-i18n="howto">How to play</summary>
+      <ul class="rules-dv" lang="dv" dir="rtl">
+        <li>🛖 އާންމު ޖަގަހަ: މީގެ ތިން ޖަގަހަ ހުރެއެވެ. އެއީ ކޮންމެ ކުޅިވަރަކަށް ޖަގަހައެކެވެ: ޑިގު (4 މޭޒު، ކޮންމެ މޭޒެއްގައި 4 ގޮނޑި)، ކޯލް އަދި ބޮނޑި (4 މޭޒު، ކޮންމެ މޭޒެއްގައި 6 ގޮނޑި). ފެންނާނީ ހަމައެކަނި ތިބާ ހުރި ޖަގަހައިގައި ތިބި މީހުންނެވެ. މަތީގައިވާ ޓެބްތައް ބޭނުންކޮށްގެން ކޮންމެ ވަގުތަކުވެސް ޖަގަހަ ބަދަލުކުރެވިދާނެއެވެ؛ މޭޒެއްގައި އިށީނދެގެން އިންދާ ބަދަލުކޮށްފިނަމަ ގޮނޑިން ތެދުވާނެއެވެ. މޭޒުތަކަކީ ވަކި މީހެއްގެ މިލްކެއް ނޫނެވެ. ކޮންމެ މޭޒަކަށް ފިތާލިޔަސް ވަގުތުން ހުސް ގޮނޑިއެއް ލިބޭނެއެވެ؛ 2 މީހުން ނުވަތަ އެއަށްވުރެ ގިނަ މީހުން އިށީނުމުން މޭޒުގައި އިން ކޮންމެ މީހަކަށްވެސް ▶ ކުޅޭ (Play) އަށް ފިތާލެވޭނެއެވެ. މޭޒު ފުރިއްޖެނަމަ އަމިއްލައަށް ކުޅުން ފެށޭނެއެވެ. މިތަނުގައި ކުޅޭނީ 4 ބުރެވެ. ތެދުވޭ (Stand up) އަށް ނުފިތާހާ ހިނދަކު ގޮނޑި ހުންނާނީ ތިބާގެ ނަމުގައެވެ.</li>
+        <li>📣 ކޯލް (2–6 ކުޅުންތެރިން، ކޮންމެ މީހަކަށް 5 ކާޑު): ތިބާގެ ވާރައިގައި އެންމެ ފުރަތަމަ އެއްލާނީއެވެ: އެއް ކާޑު، ނުވަތަ އެއް ނަންބަރެއްގެ އެތައް ކާޑެއް އެއްފަހަރާ (މިސާލަކަށް ތިން ކިއު). އެއަށްފަހު ކާޑެއް ނަގާށެވެ: ކުރީގެ ކުޅުންތެރިޔާ އެންމެ ފަހުން އެއްލި ކާޑު، ނުވަތަ މެދުގައިވާ ބޮނޑިން ކާޑެކެވެ. ކާޑުގެ އަގުތައް: އޭސް (A) = 1، 2–10 = ކާޑުގައިވާ އަދަދު، ޖޭ/ކިއު/ކޭ (J/Q/K) = 10. ތިބާގެ ޖެހުމުގައި، ކާޑު އެއްލުމުގެ ބަދަލުގައި، އަތުގައިވާ ޖުމްލަ ޕޮއިންޓަކީ 7 ނުވަތަ އެއަށްވުރެ މަދު އަދަދެއްނަމަ، &#x27;ކޯލް&#x27; އަށް ފިތާލައިގެން އެ ބުރު ނިންމާލެވިދާނެއެވެ. އެންމެ މަދު އަދަދެއް އޮތީ ތިބާގެ އަތުގައިނަމަ، ތިބާއަށް ލިބޭނީ 0 ޕޮއިންޓެވެ. އަދި ދެން ތިބި އެންމެންނަށް ލިބޭނީ އެމީހުންގެ އަތުގައި އޮތް އަދަދެވެ. ތިބާއަށްވުރެ މަދު އަދަދެއް އެހެން މީހެއްގެ އަތުގައި އޮވެއްޖެނަމަ، ތިބާއަށް 50 ޕޮއިންޓް ލިބޭނެއެވެ، އެމީހާއަށް 0 ލިބޭނެއެވެ، އަދި ދެން ތިބި އެންމެންނަށް ލިބޭނީ އެމީހުންގެ އަތުގައި އޮތް އަދަދެވެ. މޮޅުވާނީ ޖުމްލަ އެންމެ މަދު ޕޮއިންޓް ހޯދާ މީހާއެވެ.</li>
+        <li>♠ ބޮނޑި (2–6 ކުޅުންތެރިން): މުޅި ކާޑުބައި އެއްކޮށް ބަހާލާނެއެވެ. މެދުގައި އެއްވެސް ކާޑެއް ނޯންނާނެއެވެ. ކޭ ލާލު ބާސަ (K♠)އޮތް މީހަކު ކޮންމެވެސް ކާޑެއް ދޫކުރުމައްފަހު ކުޅުން ފަށާނީއެވެ. ކޮންމެ މީހަކުވެސް ޖެހޭނީ އެ ވައްޓާލި ވައްތަރުގެ (suit) ކާޑެއް ވައްޓާށެވެ. އެންމެންވެސް އެ ވައްތަރު ވައްޓައިފިނަމަ، އެ ކާޑުތައް އެއްފަރާތްކުރެވޭނެއެވެ. އަދި ދެން ކުޅުން ފަށާނީ އެންމެ ބޮޑު ކާޑު އެއްލި މީހާއެވެ. އެ ވައްތަރުގެ ކާޑެއް އަތުގައި ނެތްނަމަ، ކޮންމެ ކާޑެއްވެސް ވައްޓާލެވިދާނެއެވެ (ކެނޑުން): އޭރުން އެ ބުރު ހުއްޓި، އެއްލި ހުރިހާ ކާޑެއް ލިބޭނީ އެންމެ ފުރަތަމަ ފެށި ވައްތަރުން އެންމެ ބޮޑު ކާޑު އެއްލި މީހާއަށެވެ. އަދި ދެން ކުޅެން ފަށާނީވެސް އެމީހާއެވެ. އެންމެ ބޮޑު ކާޑަކީ އޭސް (A) އެވެ. މަޤްޞަދަކީ އެންމެ ފުރަތަމަ އަތުގައިވާ ހުރިހާ ކާޑެއް ހުސްކުރުމެވެ: އެންމެ ފުރަތަމަ ކާޑުތައް ހުސްކުރާ މީހާ އެ ބުރުން މޮޅުވެ ލިބޭނީ 0 އެވެ؛ ދެން ހުސްކުރާ މީހާއަށް 10، އެއަށްފަހު 20، 30… އަދި އެންމެ ފަހުން އަތުގައި ކާޑު ހުންނަ މީހާ ބަލިވާނެއެވެ. ޕޮއިންޓް ގުނޭނީ ގެއްލުމެއްގެ ގޮތުގައެވެ. އެހެންކަމުން މުޅި ގޭމުން މޮޅުވާނީ ޖުމްލަ އެންމެ މަދު ޕޮއިންޓް ހޯދާ މީހާއެވެ.</li>
+        <li>🌴 ހޮޅުއަށިތައް (ލޮގިންވެފައިވާ ކުޅުންތެރިންނަށް): އަތިރިމަތީގައި ތިބާގެ އަމިއްލަ ނަމުގައި ހެދިފައިވާ، އަބަދުވެސް ހުޅުވިފައި ހުންނަ ތަނެކެވެ. ހޮޅުއަށްޓަށް ވަދެވޭނީ ހަމައެކަނި ދަޢުވަތު ދީގެންނެވެ: ހޮޅުއަށީގެ ވެރިފަރާތުން ދަޢުވަތު ކޯޑެއް (މިސާލަކަށް ABCDE-7K2Q ފަދަ) ނުވަތަ ލިންކެއް ހިއްސާކުރާނެއެވެ. އަދި އެއްފަހަރު ދަޢުވަތު ލިބުމުން ކޮންމެ ވަގުތަކުވެސް އެނބުރި އާދެވޭނެއެވެ. ޑިގު، ކޯލް ނުވަތަ ބޮނޑި، 2–6 ކުޅުންތެރިންނާ އެކު، ބޭނުންވަރަކަށް ކުޅޭށެވެ. ހޮޅުއަށީގެ ޕޮއިންޓް އިތުރުވާނީ ކުޅުންތެރިންގެ އަދަދާއި ކުޅޭ މިންވަރަށް ބަލައިގެންނެވެ.</li>
+        <li>ޑިގު ކުޅޭއިރު ކޮންމެ މީހަކަށް 10 ކާޑު ލިބޭނެއެވެ (ކޯލް ގައި 5). ބާކީ ކާޑުތައް ބާއްވާނީ ފުށްފުށަށް މެދުގައެވެ. އަދި އެއްލާ ބައި ފެށޭނީ ހުސްކޮށެވެ.</li>
+        <li>ތިބާގެ ވަގުތުގައި، ކުރީގެ ކުޅުންތެރިޔާ އެންމެ ފަހުން އެއްލި ކާޑު ނުވަތަ މެދުގައިވާ ބޮނޑީގެ އެންމެ މަތީ ކާޑު ނަގާށެވެ. އެއަށްފަހު އެއް ކާޑު އެއްލާށެވެ. މައުސް ނުވަތަ އިނގިލިން ކާޑު ދަމާލާށެވެ، ނުވަތަ ކާޑަށް ފިތާލާށެވެ.</li>
+        <li>ކޮންމެ ބުރަކަށް ލިބޭނީ 50 ސިކުންތެވެ. ވަގުތު ހަމަވެއްޖެނަމަ، ދެން ޖެހޭނީ ޖެހިގެން ހުރި ކުޅުންތެރިޔާގެ ފަހަރެވެެ (ކާޑެއް ނަގާފައިވާނަމަ، އެ ނެގި ކާޑު އެއްލެވޭނެއެވެ).</li>
+        <li>ސެޓަކީ އެއް ނަންބަރެއްގެ 3 ނުވަތަ 4 ކާޑު (7♠ 7♥ 7♦) ނުވަތަ އެއް ވައްތަރެއްގެ ތަރުތީބުން ހުންނަ ކާޑުތަކެވެ (2♥ 3♥ 4♥). އޭސް ކުޑަ އެއްޗެއްގެ ގޮތުގައި (A-2-3) ނުވަތަ ބޮޑު އެއްޗެއްގެ ގޮތުގައި (Q-K-A) ބޭނުންކުރެވިދާނެއެވެ.</li>
+        <li>ތިބާގެ 10 ކާޑުން 3 ކާޑުގެ ދެ ސެޓާއި 4 ކާޑުގެ އެއް ސެޓު ހަމަވުމުން، &#x27;ޑިގު&#x27; އަށް ފިތާލާށެވެ. އެންމެންވެސް އެމީހުންގެ ކާޑުތައް ދައްކާނެއެވެ.</li>
+        <li>ދިގުވުމާ އެއް ކާޑަށް ގާތްވުމުން، &#x27;ޑިގަށް 1&#x27; (1 to DIGU) ބަޓަނަށް ފިތައި އެންމެންނަށް އެކަން އެންގިދާނެއެވެ.</li>
+        <li>“އަވަސްކުރޭ!” ނުވަތަ “އައްދޭ!” ފަދަ އަވަސް އިހުސާސްތައް ފޮނުވުމަށް 😀 އަށް ފިތާލާށެވެ.</li>
+        <li>ކާޑުތަކުގެ އަގުތައް: A = 15، 2–10 = ކާޑުގައިވާ އަދަދު، J/Q/K = 10.</li>
+        <li>ކޮންމެ ބުރެއްގެ ޕޮއިންޓް ހަދާ ގޮތް: &quot;ދިގު&quot; ގޮވާ މީހާއަށް 100 ގެ ބޯނަހަކާއެކު އޭނާގެ ކާޑުތަކުގެ އަގު ލިބޭނެއެވެ. ދެން ތިބި އެންމެންނަށް ލިބޭނީ ސެޓު ހަދާފައި ހުރި ކާޑުތަކުގެ އަގުން، ބާކީ ހުރި ކާޑުތަކުގެ އަގު ކެނޑުމުން ވާ ވަރެވެ. އެއްވެސް ސެޓެއް ނެތް ނަމަ = 100- އެވެ.</li>
+        <li>ކާޑު ބެހުމުގެ ކުރިން، ހޯސްޓް ކުރާ ފަރާތުން ޓާގެޓެއް ކަނޑައަޅާނެއެވެ (މިސާލަކަށް: 500). އެއިން އަދަދަކަށް އެއްވެސް މީހަކަށް ވާސިލުވެވުމުން ކުޅިވަރު ނިމޭނެއެވެ، އަދި އެންމެ މަތިން ޕޮއިންޓް ހޯދި މީހާ މޮޅުވާނެއެވެ.</li>
+        <li>އަތުގައި ހުރި ކާޑުތައް އަތުރާލުމާއި އިތުރު ރިއެކްޝަންތައް އަންލޮކް ވަމުންދާނީ ގިނައިން ގޭމް ކުޅެމުން ދިޔަ ވަރަކަށެވެ.</li>
+        <li>އެވަޓާރ އެއް ޚިޔާރުކުރުމަށާއި ކުޅޭ ގޭމްތަކުން ކެރިއަރ ޕޮއިންޓް އެއްކުރުމަށް ރަޖިސްޓްރީ ކުރުން (އިޚްތިޔާރީ). ޕޮއިންޓްތަކުން ތިބާގެ ރޭންކް މަތިވެ (🥉 → 👑)، ބެޖުތައް ލިބި، އަދި މޭޒުގެ ކުލަތަކާއި، ކާޑުގެ ފަހަތް އަދި &quot;ޑިގު&quot; ގޮވާ ސްޓައިލްތައް އަންލޮކް ވާނެއެވެ. ގެސްޓުންނަށް ހަމައެކަނި ނަމެއް ޖަހައިގެން ކުޅެވޭނެއެވެ.</li>
+        <li>5–6 ކުޅުންތެރިން ކުޅޭނީ އެއްކޮށް އެއްކޮށްލާފައިވާ ދެ ތާސްބައި ބޭނުންކޮށްގެންނެވެ.</li>
+      </ul>
+      <ul class="rules-en">
+        <li><strong>🔟 DHIHA</strong> (holhuashis only · 4 players in 2 teams): pick your team in the holhuashi; teammates sit opposite. Everyone gets 13 cards and a random player starts. Follow the suit that was led. The first player who can't follow sets the <strong>Hukum</strong> (trump) with the card they play, for the rest of the round. A deck goes to the team of whoever played the highest Hukum, or else the highest card of the led suit (A is high), and they lead next. Decks with a 10 lie face up. <strong>3 tens wins the round</strong>; at 2 tens each, the team with <strong>7 decks</strong> wins. Points: 1 a round, 2 for all four 10s, 3 for all 13 decks. First team to the target (or the most after the set rounds) wins the game.</li>
+        <li><strong>🛖 Aammu Jagaha</strong> (the public place): there are three, one for each game: <strong>DIGU</strong> (4 tables, 4 seats each), <strong>CALL</strong> and <strong>BONDI</strong> (4 tables, 6 seats each). You only see the people in the one you're in. Switch any time with the tabs at the top; if you're sitting at a table, switching stands you up. Nobody owns the tables. Tap any table and you get a free chair there straight away; once 2 or more are seated anyone at the table can press <strong>▶ Play</strong>. A full table starts by itself. Games here are 4 rounds. Your chair stays yours until you press Stand up.</li>
+        <li><strong>📣 CALL</strong> (2–6 players, 5 cards each): on your turn, <strong>throw first</strong>: one card, or several cards of the same number together (for example, three Qs). <strong>Then take</strong> a card: the last card the previous player threw, or one from the middle pile. Card values: A = 1, 2–10 = face value, J/Q/K = 10. At the start of your turn, instead of throwing, if your count is <strong>7 or less</strong>, you can press <strong>CALL</strong> to end the round. If you have the lowest count, you score 0 and everyone else scores their count. If anyone has <em>less</em> than you, you score <strong>50</strong>, they score 0, and everyone else scores their count. <strong>Lowest total wins.</strong></li>
+        <li><strong>♠ BONDI</strong> (2–6 players): the whole deck is dealt out and nothing goes in the middle. Whoever has <strong>K♠</strong> starts by playing any card. Everyone in turn must play a card of the <strong>same suit</strong>. If everyone follows, those cards are set aside and the highest card leads next. If you <strong>don't have that suit</strong>, play any card (a <em>cut</em>): the trick stops and all its cards go to whoever played the <strong>highest card of the led suit</strong>, who then leads. A is high. The goal is to <strong>get rid of all your cards first</strong>: the first player out wins the round and scores <strong>0</strong>; the next out scores <strong>10</strong>, then 20, 30… and the last player holding cards loses. Points count against you, so the <strong>lowest total wins</strong> the game.</li>
+        <li><strong>🌴 Holhuashis</strong> (signed-in players): your own named spot by the beach that stays open for good. Holhuashis are <strong>invite-only</strong>: the owner shares an invite code (like ABCDE-7K2Q) or link, and once you've been invited you can come back any time. Play DIGU, CALL or BONDI, 2–6 players, as many games as you like. Holhuashi points grow with the number of players and how often you play.</li>
+        <li>Everyone gets 10 cards (5 in CALL). The rest go face-down in the middle, and the thrown pile starts empty.</li>
+        <li>On your turn, take the last card the previous player threw <em>or</em> the top card of the middle pile, then throw one card away. Drag cards with your mouse or finger, or tap them.</li>
+        <li>You have 50 seconds per turn. If time runs out, your turn passes to the next player (if you already took a card, the card you took is thrown away).</li>
+        <li>A set is 3 or 4 cards of the <strong>same number</strong> (7♠ 7♥ 7♦) or the <strong>same suit in order</strong> (2♥ 3♥ 4♥). Ace goes low (A-2-3) or high (Q-K-A).</li>
+        <li>When your 10 cards make two sets of 3 and one set of 4, press <strong>DIGU</strong>. Everyone shows their cards.</li>
+        <li>When you're one card away from DIGU, you can tell everyone with the <strong>1 to DIGU</strong> button.</li>
+        <li>Tap 😀 to send a quick reaction like “Quick!” or “Oh man!”.</li>
+        <li>Card values: A = 15, 2–10 = face value, J/Q/K = 10.</li>
+        <li>Scoring each round: whoever calls DIGU gets <strong>100 bonus + their card values</strong>. Everyone else gets their cards in sets <em>minus</em> their leftover cards. No set at all = <strong>−100</strong>.</li>
+        <li>Before dealing, the host picks the target (e.g. 500). When anyone reaches it, the game ends and the highest total wins.</li>
+        <li>Sorting your hand and extra reactions unlock as you play more games.</li>
+        <li><strong>Register</strong> (optional) to pick an avatar and build career points across games. Points raise your rank (🥉 → 👑), earn badges, and unlock table colours, card backs and your DIGU shout style. Guests can play with just a name.</li>
+        <li>5–6 players use two decks shuffled together.</li>
+      </ul>
+    </details>
+  </main>
+
+
+  <!-- LOBBY SCREEN (…/#lobby) -->
+  <main id="lobbyScreen" class="lobby-screen" hidden>
+    <header class="top">
+      <button id="lobbyBackBtn" class="ghost" title="Back to home">←</button>
+      <div class="room">🛖 <strong id="lobbyTitle">Aammu Jagaha</strong> <span id="openCount" class="target-info"></span></div>
+    </header>
+    <nav class="lobby-tabs" aria-label="Lobbies">
+      <button id="tab-digu" class="lobby-tab g-digu" data-i18n="game.digu">DIGU</button>
+      <button id="tab-call" class="lobby-tab g-call" data-i18n="game.call">CALL</button>
+      <button id="tab-bondi" class="lobby-tab g-bondi" data-i18n="game.bondi">BONDI</button>
+    </nav>
+    <section class="lobby-room">
+      <div id="aloneBanner" class="alone-banner" hidden>
+        <span data-i18n="alone">Nobody else is here right now.</span>
+        <button id="aloneBotBtn" class="primary small" data-i18n="bot.play">🤖 Play vs computer</button>
+      </div>
+      <div class="lobby-quick">
+        <span class="floor-hint" data-i18n="jagaha.hint">Tap a table to take a chair · tap another to switch · Start when 2+ are there</span>
+        <div class="quick-btns">
+          <button id="seatFind" class="small quick-find">Find a seat</button>
+        </div>
+      </div>
+      <h3 class="select-title" data-i18n="table.select">Select a table</h3>
+      <div id="tableCards" class="table-cards"></div>
+      <div id="lobbyFloor" class="lobby-floor">
+        <div id="floorTables"></div>
+        <div id="floorWalkers"></div>
+        <div class="floor-lagoon"><span class="floor-dhoni">⛵</span></div>
+        <span class="floor-palm fp1">🌴</span><span class="floor-palm fp2">🌴</span><span class="floor-palm fp3">🛖</span><span class="floor-palm fp4">🌴</span>
+        <div class="floor-door">🛖 Entrance</div>
+      </div>
+      <div id="seatBar" class="seat-bar" hidden>
+        <span id="seatText"></span>
+        <div class="seat-btns">
+          <button id="seatStart" class="primary small">▶ Play</button>
+          <button id="seatLeave" class="ghost small">Stand up</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- GAME -->
+  <main id="game" class="game" hidden>
+    <header class="top">
+      <button id="leaveBtn" class="ghost" title="Leave room">←</button>
+      <div class="room">Room <strong id="roomCode"></strong> <span id="targetInfo" class="target-info"></span> <button id="copyCode" class="ghost small">Copy invite</button></div>
+    </header>
+    <div id="pauseBar" class="pause-bar" hidden></div>
+
+    <div id="players" class="players"></div>
+    <p id="status" class="status"></p>
+    <div id="timer" class="timer" hidden>
+      <div class="timer-track"><div id="timerBar" class="timer-bar"></div></div>
+      <span id="timerText"></span>
+    </div>
+
+    <section id="table" class="table">
+      <div id="deckRing" class="deck-ring" hidden></div>
+      <div class="pile">
+        <div id="deck" class="card back"><span id="deckCount"></span></div>
+        <small>Middle pile</small>
+      </div>
+      <div class="pile">
+        <div id="discardPile"></div>
+        <small>Discard</small>
+      </div>
+    </section>
+    <div id="hukumBadge" class="hukum-badge" hidden></div>
+    <div id="dhihaPiles" class="dhiha-piles" hidden></div>
+    <div id="premiumPanel" class="prem-panel prem-l" hidden>
+      <span id="premiumTitle" class="prem-title">💎 Card tracker</span>
+      <div id="premiumBody"></div>
+    </div>
+    <div id="premiumPanelR" class="prem-panel prem-r" hidden>
+      <div id="premiumBodyR"></div>
+    </div>
+    <p id="log" class="log"></p>
+
+    <!-- LOUNGE: a private room while waiting for friends -->
+    <section id="loungeRoom" class="lounge-room" hidden>
+      <div class="lr-wall">
+        <span class="lr-light l1"></span><span class="lr-light l2"></span><span class="lr-light l3"></span>
+        <div class="lr-frame">🏞️</div>
+        <div class="lr-sea"></div><span class="lr-boat">⛵</span><span class="lr-sun"></span>
+      </div>
+      <div class="lr-floor">
+        <div class="lr-rug"></div>
+        <span class="plant p1">🪴</span><span class="plant p2">🌿</span><span class="plant p3">🪴</span><span class="plant p4">🌴</span>
+        <div class="lr-main">
+          <section id="loungeScene" class="lounge-scene"></section>
+        <section id="targetSetup" class="notice-board">
+          <div class="pin pin-l"></div><div class="pin pin-r"></div>
+          <div class="notice-head">📌 House rules</div>
+          <h2 id="loungeTitle" class="lounge-title"></h2>
+          <p id="loungeNote" class="code-note"></p>
+          <p id="loungePoints" class="lounge-points"></p>
+          <div id="placeBox" class="place-box">
+            <p>Place</p>
+            <div id="placeChoices" class="place-choices"></div>
+          </div>
+          <div id="loungeManage" class="lounge-manage" hidden>
+            <input id="loungeNameEdit" maxlength="30" placeholder="Lounge name">
+            <button type="button" id="loungeRenameBtn" class="small">Rename</button>
+            <button type="button" id="loungeDeleteBtn" class="small ghost danger">Delete holhuashi</button>
+          </div>
+          <div id="loungeMembers" class="lounge-members" hidden></div>
+          <hr>
+          <p>Game</p>
+          <div class="vis-toggle">
+            <button type="button" id="gameDigu">🃏 DIGU</button>
+            <button type="button" id="gameCall">📣 CALL</button>
+            <button type="button" id="gameBondi">♠ BONDI</button>
+            <button type="button" id="gameDhiha">🔟 DHIHA</button>
+          </div>
+          <p id="gameNote" class="muted vis-note"></p>
+          <hr>
+          <p id="maxLabel"></p>
+          <div id="maxChoices" class="target-choices"></div>
+          <hr>
+          <p>The game ends by</p>
+          <div class="vis-toggle">
+            <button type="button" id="endPoints">🎯 Points</button>
+            <button type="button" id="endRounds">🔁 Rounds</button>
+          </div>
+          <div id="roundsSection" hidden>
+            <p id="roundsLabel" class="sub-label"></p>
+            <div id="roundsChoices" class="target-choices"></div>
+            <form id="roundsCustom" class="target-custom">
+              <input id="roundsInput" type="number" inputmode="numeric" min="1" max="50" placeholder="Other">
+              <button>Set</button>
+            </form>
+          </div>
+          <div id="targetSection">
+            <p id="targetLabel" class="sub-label"></p>
+            <div id="targetChoices" class="target-choices"></div>
+            <form id="targetCustom" class="target-custom">
+              <input id="targetInput" type="number" inputmode="numeric" min="50" max="100000" placeholder="Other">
+              <button>Set</button>
+            </form>
+            <p id="targetNote" class="muted"></p>
+          </div>
+        </section>
+        </div>
+      </div>
+    </section>
+
+    <button id="startBtn" class="primary big" hidden>Deal cards</button>
+
+    <section id="handSection" class="hand-section" hidden>
+      <div id="turnBadge" class="turn-badge" hidden>⭐ Your turn</div>
+      <div class="hand-tools">
+        <button id="sortSuit" class="ghost small">Sort by suit</button>
+        <button id="sortRank" class="ghost small">Sort by number</button>
+        <button id="groupSets" class="ghost small">Group sets</button>
+      </div>
+      <p id="sortLockNote" class="lock-note" hidden></p>
+      <div id="hand" class="hand"></div>
+      <div class="actions">
+        <button id="discardBtn">Throw away</button>
+        <button id="diguBtn" class="digu">DIGU</button>
+        <button id="callBtn" class="digu call-btn" hidden>CALL</button>
+      </div>
+      <p id="callCount" class="call-count" hidden></p>
+      <button id="almostBtn" class="almost-btn" hidden></button>
+    </section>
+
+    <details id="loungeChat" class="lounge-chat" hidden open>
+      <summary>💬 Holhuashi chat <span id="chatUnread" class="chat-unread" hidden></span><button type="button" id="chatClose" class="ghost small chat-close" aria-label="Close chat">✕</button></summary>
+      <div id="chatList" class="chat-list"></div>
+      <form id="chatForm" class="chat-form">
+        <input id="chatText" maxlength="200" placeholder="Say something…" autocomplete="off">
+        <button class="primary small">Send</button>
+      </form>
+    </details>
+    <button id="reactBtn" class="react-btn" title="Send a reaction" aria-label="Send a reaction">😀</button>
+    <div id="reactTray" class="react-tray" hidden></div>
+
+    <div id="results" class="overlay" hidden>
+      <div class="panel results">
+        <h2 id="resultsTitle"></h2>
+        <p id="resultsSub" class="results-sub"></p>
+        <div id="resultsList"></div>
+        <button id="nextRoundBtn" class="primary">Next round</button>
+        <button id="playAgainBtn" class="primary" hidden>New game</button>
+        <p id="waitNext" class="muted">Waiting for the host to deal the next round…</p>
+        <button type="button" id="resultsLeave" class="ghost small results-leave">Leave table</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- REGISTER / SIGN IN -->
+  <div id="authModal" class="overlay modal" hidden>
+    <form id="authForm" class="panel auth">
+      <button type="button" id="authClose" class="ghost close" aria-label="Close">✕</button>
+      <h2 id="authTitle"></h2>
+      <label id="authNameRow">Name <input id="authName" maxlength="16" autocomplete="nickname"></label>
+      <div id="authAvatarRow">
+        <span class="field-label">Pick your avatar</span>
+        <div id="authAvatars" class="avatar-grid"></div>
+      </div>
+      <label><span data-i18n="auth.email">Email</span> <input id="authEmail" type="email" autocomplete="email" required></label>
+      <label>Password <input id="authPassword" type="password" minlength="6" autocomplete="current-password" required></label>
+      <label class="remember"><input type="checkbox" id="authRemember" checked> <span data-i18n="auth.remember">Remember me on this device</span></label>
+      <p id="authError" class="error"></p>
+      <button id="authSubmit" class="primary"></button>
+      <button type="button" id="authSwitch" class="link"></button>
+    </form>
+  </div>
+
+  <!-- PLAY VS COMPUTER -->
+  <div id="botModal" class="overlay modal" hidden>
+    <form id="botForm" class="panel auth bot-form">
+      <button type="button" id="botClose" class="ghost close" aria-label="Close">✕</button>
+      <h2>🤖 Play vs computer</h2>
+      <span class="field-label">Game</span>
+      <div class="pick-row">
+        <label><input type="radio" name="game" value="digu" checked><span>🃏 DIGU</span></label>
+        <label><input type="radio" name="game" value="call"><span>📣 CALL</span></label>
+        <label><input type="radio" name="game" value="bondi"><span>♠ BONDI</span></label>
+      </div>
+      <span class="field-label">Computer players</span>
+      <div class="pick-row">
+        <label><input type="radio" name="bots" value="1"><span>1</span></label>
+        <label><input type="radio" name="bots" value="2" checked><span>2</span></label>
+        <label><input type="radio" name="bots" value="3"><span>3</span></label>
+      </div>
+      <span class="field-label">Level</span>
+      <div class="pick-row">
+        <label><input type="radio" name="level" value="easy"><span>😊 Easy</span></label>
+        <label><input type="radio" name="level" value="medium" checked><span>🙂 Medium</span></label>
+        <label><input type="radio" name="level" value="hard"><span>😈 Hard</span></label>
+      </div>
+      <p class="muted small-note">4 rounds. Practice games count toward unlocks, but not toward your rank or career points.</p>
+      <button class="primary">Start</button>
+    </form>
+  </div>
+
+  <!-- PROFILE -->
+  <div id="profileModal" class="overlay modal" hidden>
+    <div class="panel profile">
+      <button type="button" id="profileClose" class="ghost close" aria-label="Close">✕</button>
+      <div class="prof-head">
+        <span id="profAvatar" class="avatar big"></span>
+        <div>
+          <input id="profName" maxlength="16" aria-label="Your name">
+          <div id="profRank" class="prof-rank"></div>
+        </div>
+      </div>
+      <div class="prof-track"><div id="profBar"></div></div>
+      <p id="profNext" class="muted"></p>
+      <div id="profStats" class="prof-stats"></div>
+
+      <h3>Badges</h3>
+      <div id="profBadges" class="badges"></div>
+
+      <h3>Profile picture <small>or pick an emoji below</small></h3>
+      <div class="photo-row">
+        <button type="button" id="photoThumb" class="photo-thumb" title="Use my picture"></button>
+        <label class="photo-upload">
+          <input id="photoInput" type="file" accept="image/*" hidden>
+          <span id="photoUploadLabel" class="btn-like">Upload picture</span>
+        </label>
+        <button type="button" id="photoRemove" class="ghost small">Remove</button>
+      </div>
+
+      <h3>Avatar</h3>
+      <div id="profAvatars" class="avatar-grid"></div>
+
+      <h3>Table colour <small>your screen</small></h3>
+      <div id="profTables" class="style-grid"></div>
+      <h3>Card backs <small>your screen</small></h3>
+      <div id="profDecks" class="style-grid"></div>
+      <h3>DIGU shout <small>everyone sees it when you win</small></h3>
+      <div id="profFonts" class="style-grid"></div>
+      <div id="profColors" class="style-grid"></div>
+      <div class="prof-preview"><div class="card back preview-card" id="profPreview"></div></div>
+      <p class="muted small-note">🔒 Higher ranks unlock more styles. Rank up by earning career points.</p>
+      <p class="player-id">Player ID: <code id="profId"></code> <button type="button" id="copyId" class="ghost small">Copy</button></p>
+    </div>
+  </div>
+
+  <!-- PREMIUM -->
+  <div id="premiumModal" class="overlay modal" hidden>
+    <div class="panel premium">
+      <button type="button" id="premiumClose" class="ghost close" aria-label="Close">✕</button>
+      <h2>💎 THAAS Premium</h2>
+      <p class="prem-price"><b id="premiumPrice">MVR 5 / month</b></p>
+      <ul id="premiumFeatures" class="prem-features"></ul>
+      <p id="premiumStatus" class="prem-status"></p>
+      <div class="prem-pay">
+        <b>How to get it</b>
+        <p id="premiumPay"></p>
+        <p class="muted small-note">Your player ID: <code id="premiumId"></code> <button type="button" id="premiumCopy" class="ghost small">Copy</button></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADMIN -->
+  <div id="adminModal" class="overlay modal" hidden>
+    <div class="panel admin">
+      <button type="button" id="adminClose" class="ghost close" aria-label="Close">✕</button>
+      <h2>🛡️ Admin</h2>
+      <p id="adminCount" class="muted"></p>
+      <div class="admin-tools">
+        <input id="adminSearch" placeholder="Search name or player ID">
+        <button type="button" id="adminRefresh" class="ghost small" title="Reload">↻</button>
+      </div>
+      <details class="admin-prem">
+        <summary>💎 Premium settings</summary>
+        <label class="prem-toggle"><input type="checkbox" id="premVisible"> Show Premium to players</label>
+        <label>Price <input id="premPrice" placeholder="MVR 5 / month"></label>
+        <label>How to pay (shown to players)<textarea id="premPayInfo" rows="3" placeholder="e.g. Transfer MVR 5 to BML 7730000000000 (Name), then send your player ID to 7xxxxxx on Viber"></textarea></label>
+        <button type="button" id="premSave" class="primary small">Save</button>
+        <p class="muted small-note">While hidden, nobody sees Premium (admins still get the tools to try them). Turn a player's Premium on with <b>💎 +1 month</b> in the list below.</p>
+      </details>
+      <div id="adminFilters" class="admin-filters">
+        <button type="button" data-f="all" class="on">All</button>
+        <button type="button" data-f="registered">Registered</button>
+        <button type="button" data-f="guests">Guests</button>
+        <button type="button" data-f="blocked">Blocked</button>
+        <button type="button" data-f="recent">Last online</button>
+      </div>
+      <div id="adminList" class="admin-list"></div>
+      <p class="muted small-note"><strong>Delete</strong> wipes a player's profile (name, picture, points, rank, badges). <strong>Block</strong> stops them creating or joining rooms. To remove someone's login completely, delete them in Firebase console → Authentication → Users too.</p>
+    </div>
+  </div>
+
+  <div id="bottomBar" class="bottom-bar" hidden>
+    <span id="bottomBack"></span>
+    <button id="pauseBtn" class="corner-btn pause-btn" hidden title="Pause">⏸</button>
+    <button id="endGameBtn" class="corner-btn end-btn" hidden title="End the game">⏹</button>
+    <div id="premTools" class="prem-tools" hidden>
+    <button type="button" id="premEye" title="💎 Show the side players' details">👁</button>
+    <button type="button" id="premTip" title="💎 A tip">💡</button>
+  </div>
+  </div>
+  <div id="offlineAsk" class="offline-ask" hidden>
+    <p id="offlineAskText"></p>
+    <div><button type="button" id="offlineRemove" class="danger small">Remove</button> <button type="button" id="offlineKeep" class="ghost small">Keep</button></div>
+  </div>
+  <button id="chatBtn" class="chat-btn" hidden title="Holhuashi chat">💬<span id="chatBtnBadge" class="chat-btn-badge" hidden></span></button>
+  <div id="seats" class="seats" hidden></div>
+
+  <div id="tipBubble" class="tip-bubble" hidden></div>
+  <div id="turnGlow" class="turn-glow" hidden aria-hidden="true">
+    <div id="tgNow" class="tg-spot"><span class="tg-line"></span><span class="tg-name"></span></div>
+    <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script type="module" src="game.js?v=20261019a"></script>
+</body>
+</html>

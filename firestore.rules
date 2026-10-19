@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    function roomData(roomId) {
+      return get(/databases/$(database)/documents/rooms/$(roomId)).data;
+    }
+
+    // Admins: a document in "admins" whose ID is the admin's player ID.
+    // Only add these in the Firebase console; the game itself can never create one.
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Blocked players: a document in "banned" whose ID is their player ID (admins create these).
+    function isBlocked() {
+      return exists(/databases/$(database)/documents/banned/$(request.auth.uid));
+    }
+
+    match /admins/{userId} {
+      allow read: if signedIn() && request.auth.uid == userId; // lets the game know you're an admin
+      allow write: if false;
+    }
+
+    // Premium: settings (admins only) and who has paid (admins set it; players read their own / others' badge)
+    match /config/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /premium/{userId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /banned/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin() && request.auth.uid != userId; // admins can't block themselves
+    }
+
+    // Player profiles: anyone signed in can see them (names, avatars, pictures, ranks);
+    // only the owner can change theirs (unless blocked). Admins can delete any profile.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == userId && !isBlocked()
+        && (!('photo' in request.resource.data)
+            || request.resource.data.photo == null
+            || request.resource.data.photo.size() < 150000);
+      allow delete: if signedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // Each phone's push-notification address. Private: only its owner (and the server) can see it.
+    match /pushTokens/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Who is walking around the lobby right now (position, name, avatar). Each player writes only their own.
+    match /presence/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == userId && !isBlocked();
+      allow delete: if signedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // Lobby notice board: anyone signed in can read and post (up to 200 characters, as themselves);
+    // you can delete your own messages, admins can delete any.
+    match /lobbyNotes/{noteId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && !isBlocked()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 200;
+      allow update: if false;
+      allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    match /rooms/{roomId} {
+      allow read: if signedIn();
+      // Lobby tables (public) and games vs the computer (practice) can be opened by anyone;
+      // lounges only by registered (non-guest) players.
+      allow create: if signedIn() && !isBlocked()
+        && request.resource.data.host == request.auth.uid
+        && request.resource.data.playerIds == [request.auth.uid]
+        && (request.resource.data.public == true
+            || request.resource.data.practice == true
+            || request.auth.token.firebase.sign_in_provider != 'anonymous');
+      // players in the room can update it; someone joining must be adding themselves;
+      // an empty or abandoned lobby table can be set up again by whoever sits down first
+      // Holhuashis (lounge == true) are invite-only: to join the first time you must also save the
+      // owner's private invite key (see "joins" below); after that you're a member and can come back.
+      allow update: if signedIn() && !isBlocked() && (
+        request.auth.uid in resource.data.playerIds ||
+        // the holhuashi owner can always manage it (members, settings), even when not at the table
+        (resource.data.get('lounge', false) == true && resource.data.get('owner', '') == request.auth.uid) ||
+        (resource.data.status == 'lobby'
+          && request.resource.data.playerIds.size() == resource.data.playerIds.size() + 1
+          && request.auth.uid in request.resource.data.playerIds
+          && !(request.auth.uid in resource.data.get('removed', []))
+          && (resource.data.get('lounge', false) != true
+              || resource.data.get('owner', '') == request.auth.uid
+              || request.auth.uid in resource.data.get('members', [])
+              || existsAfter(/databases/$(database)/documents/rooms/$(roomId)/joins/$(request.auth.uid)))) ||
+        (resource.data.public == true
+          && (resource.data.status == 'closed'
+              || resource.data.playerIds.size() == 0
+              || resource.data.heartbeat < request.time - duration.value(70, 's'))
+          && request.resource.data.playerIds == [request.auth.uid]
+          && request.resource.data.host == request.auth.uid)
+      );
+
+      // A holhuashi's private invite key: only the owner (and invited members) can read it;
+      // only the owner can set or change it.
+      match /secret/{docId} {
+        allow read: if signedIn() && (roomData(roomId).get('owner', '') == request.auth.uid
+          || request.auth.uid in roomData(roomId).get('members', []));
+        allow write: if signedIn() && roomData(roomId).get('owner', '') == request.auth.uid;
+      }
+
+      // Using an invite: you can only record your own join, and only with the right key.
+      match /joins/{userId} {
+        allow read: if signedIn() && (request.auth.uid == userId || roomData(roomId).get('owner', '') == request.auth.uid);
+        allow create, update: if signedIn() && request.auth.uid == userId
+          && request.resource.data.key == get(/databases/$(database)/documents/rooms/$(roomId)/secret/invite).data.key;
+        // the owner removes a member's saved key when removing them
+        allow delete: if signedIn() && roomData(roomId).get('owner', '') == request.auth.uid;
+      }
+
+      // Each player's hand: only they can see it, until someone calls DIGU.
+      // In a game vs the computer, the host's screen plays for the computer players ("bot-…"),
+      // so it may see their cards.
+      match /hands/{playerId} {
+        allow read: if signedIn() && (
+          request.auth.uid == playerId
+          || roomData(roomId).status == 'ended'
+          || (playerId.matches('bot-.*') && roomData(roomId).host == request.auth.uid)
+        );
+        // the player updates their own hand; the host, or (between rounds) any player at the table, deals
+        allow write: if signedIn() && (
+          request.auth.uid == playerId
+          || roomData(roomId).host == request.auth.uid
+          || (request.auth.uid in roomData(roomId).playerIds
+              && roomData(roomId).status in ['lobby', 'ended'])
+        );
+      }
+    }
+  }
+}

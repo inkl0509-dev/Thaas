@@ -1,0 +1,14 @@
+# installed tools (recreated by "npm install")
+node_modules/
+
+# the Android app's build folders (recreated by "npm run build-app")
+android-app/android/
+android-app/www/
+
+# private keys: never upload these
+google-services.json
+*firebase-adminsdk*.json
+*service-account*.json
+*.keystore
+*.jks
+*-key.json

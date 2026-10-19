@@ -1,0 +1,6129 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, signInAnonymously, onAuthStateChanged, signOut, updateProfile,
+  setPersistence, browserLocalPersistence, browserSessionPersistence,
+  EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+// Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
+import {
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
+  collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
+  disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, watchPresence, stopPresence, onReconnect, rememberMembership,
+} from "./store.js?v=20261019a";
+import * as CFG from "./firebase-config.js?v=20261019a";
+import * as C from "./cards.js?v=20261019a";
+import * as P from "./profile.js?v=20261019a";
+import { DV } from "./i18n.js?v=20261019a";
+
+const { firebaseConfig } = CFG;
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+// Local cache: the game reloads instantly and your own moves show before the server confirms them.
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  // phones, the Android app and some mobile networks can stall the live connection: detect it and
+  // fall back to a connection type that keeps working
+  experimentalAutoDetectLongPolling: true,
+});
+// Realtime Database for the card tables: add databaseURL to firebase-config.js to switch it on
+initStore(app, db, databaseUrlFor(firebaseConfig, CFG.databaseURL));
+
+const TURN_MS = 50_000;   // each player gets 50 seconds
+const GRACE_MS = 10_000;  // others wait 10 s after my time is up before skipping me (my own timeout move lands first)   // others wait a little longer before skipping someone who has gone offline
+const RESULTS_DELAY = 2600; // time to watch the DIGU card flip before the scores appear
+const HEAP_SIZE = 7;      // how many thrown cards are visible on the table
+
+// Reactions and how many games you must play to unlock each one.
+const REACTIONS = [
+  ["😂", 0], ["👍", 0], ["😮", 0], ["Quick!", 0], ["Oh man!", 0], ["Hurry up!", 0],
+  ["😭", 2], ["So close!", 2],
+  ["🔥", 3], ["Nice one!", 3],
+  ["😎", 5], ["Haha", 5],
+  ["😡", 8], ["Not again!", 8],
+  ["🤞", 10], ["Good game", 10],
+  ["👑", 15], ["Too easy!", 15],
+];
+// 💎 Premium reactions
+const PREMIUM_REACTIONS = ["🥳", "😍", "🤯", "🙏", "😏", "🤣", "💪", "👏", "💎", "🌴", "🐠", "🦈", "🥥", "🏝️", "☕", "🎉",
+  "Bravo!", "Well played!", "Lucky!", "Watch this 😏", "Your turn, boss", "GG 🤝"];
+const SORT_UNLOCK = 5;      // "Sort by suit" / "Sort by number" unlock after this many games
+const TARGET_CHOICES = [300, 500, 1000];
+const DEFAULT_TARGET = 500;
+// Lobby tables (listed on the home screen): up to 4 players, 4 rounds, highest total wins.
+// Private tables (code only): 2–6 players, play to a target score.
+const LOBBY_MAX = 4;
+const LOBBY_ROUNDS = 4;
+const isLobbyRoom = (r) => r?.public !== false;
+// Two games: DIGU (sets, highest total wins) and CALL (low count, lowest total wins).
+// Three games: DIGU (sets, highest total wins), CALL (low count, lowest total wins) and
+// BONDI (follow suit, get rid of your cards first, lowest total wins).
+const gameOf = (r) => (["call", "bondi", "dhiha"].includes(r?.game) ? r.game : "digu");
+const isCall = () => gameOf(room) === "call";
+const isBondi = () => gameOf(room) === "bondi";
+const isDhiha = () => gameOf(room) === "dhiha";   // team game, holhuashis only
+const DHIHA_TARGETS = [3, 5, 7];
+const teamName = (t) => (t === "A" ? "Team 1" : "Team 2");
+const lowWins = (g) => g === "call" || g === "bondi";
+const GAME_NAME = { digu: "DIGU", call: "CALL", bondi: "BONDI", dhiha: "DHIHA" };
+const LOBBY_SEATS = { digu: 4, call: 6, bondi: 6 }; // lobby tables: DIGU 2–4 players, CALL and BONDI 2–6
+const targetFor = (g) => (g === "dhiha" ? 5 : lowWins(g) ? CALL_DEFAULT_TARGET : DEFAULT_TARGET);
+const CALL_TARGETS = [50, 100, 200];
+const CALL_DEFAULT_TARGET = 100;
+
+// ---------- state ----------
+let uid = null;
+let roomId = null;
+let room = null;           // latest room document
+let hand = [];             // my cards, in my own display order
+let selected = null;       // card id I tapped
+let lastDrawn = null;      // highlight the card I just picked up
+let unsubRoom = null, unsubHand = null;
+let resultsRound = 0;      // which round's results are on screen
+let resultsTimer = null;
+let actedKey = null;       // stops double moves from fast double taps
+let turnKey = null, turnSeenAt = 0, timeoutFired = null;
+let drag = null;
+let lastReactionId;        // undefined until the first room snapshot
+let heapKey = null, heapTop = null, heapLen = 0;
+let lastReactAt = 0;
+let gamesPlayed = null;    // from my users/{uid} document; null until loaded
+let lastRows = null;       // this round's score breakdown, shown on the results screen
+let profile = {};          // my users/{uid} document (stats, name, avatar, style choices)
+const oneAwayCache = { key: null, value: false, pending: false };
+const callSel = new Set();   // CALL: cards picked to throw together (same number)
+
+const $ = (id) => document.getElementById(id);
+const roomRef = () => doc(db, "rooms", roomId);
+const handRef = (u = uid) => doc(db, "rooms", roomId, "hands", u);
+
+function store(key, val) { try { localStorage.setItem(key, val); } catch {} }
+function load(key) { try { return localStorage.getItem(key); } catch { return null; } }
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+const errMsg = (e) => {
+  if (typeof e === "string") return e;
+  if (e?.code === "permission-denied") return amBlocked
+    ? "Your account has been blocked by an admin"
+    : "Firebase blocked this. Republish firestore.rules in the Firebase console.";
+  return e?.message || "Something went wrong";
+};
+
+// ---------- lobby ----------
+function myName() {
+  if (isRegistered() && profile.name) return profile.name;
+  const n = $("name").value.trim().slice(0, 16);
+  if (!n) { toast("Enter your name first"); $("name").focus(); return null; }
+  store("digu-name", n);
+  return n;
+}
+
+const inviteRef = (code) => doc(db, "rooms", code, "secret", "invite");
+function randomKey() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const a = new Uint32Array(4);
+  crypto.getRandomValues(a);
+  return [...a].map((n) => chars[n % chars.length]).join("");
+}
+function randomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
+async function createRoom({ isPublic = true, game = "digu", loungeName = "" } = {}) {
+  if (blockedCheck()) return;
+  if (!isPublic && !isRegistered()) return toast("🔒 Register to create your own holhuashi");
+  if (!isPublic && premiumGate()) {
+    try {
+      const mine = await getDocs(query(collection(db, "rooms"), where("owner", "==", uid)));
+      const count = mine.docs.filter((d) => !["deleted", "closed"].includes(d.data().status)).length;
+      if (count >= FREE_LOUNGES) return needPremium(`You have ${count} holhuashis · free players can have ${FREE_LOUNGES}. More holhuashis are`);
+    } catch {}
+  }
+  const name = myName();
+  if (!name) return;
+  let code;
+  do { code = randomCode(); } while ((await getDoc(doc(db, "rooms", code))).exists());
+  await setDoc(doc(db, "rooms", code), {
+    host: uid,
+    status: "lobby",
+    players: [myEntry(name)],
+    playerIds: [uid],
+    scores: { [uid]: 0 },
+    round: 0,
+    moveId: 0,
+    game,                         // "digu" or "call"
+    target: targetFor(game),
+    maxPlayers: isPublic ? LOBBY_SEATS[game] : 6,
+    gameRound: 0,                 // rounds played in this game (lobby games stop after 4)
+    public: isPublic,             // true = lobby table on the home screen; false = a registered player's holhuashi
+    endMode: "points",            // lounges: "points" (first to target) or "rounds" (fixed number)
+    roundsLimit: DEFAULT_LOUNGE_ROUNDS,
+    heartbeat: serverTimestamp(), // players keep this fresh so abandoned rooms drop off the list
+    seen: { [uid]: serverTimestamp() },
+    log: isPublic ? `${name} opened a ${GAME_NAME[game]} table` : `${name} opened their holhuashi`,
+    createdAt: serverTimestamp(),
+    // holhuashis stay open for good (until the owner deletes them), even when everyone has left
+    ...(isPublic ? {} : { lounge: true, owner: uid, members: [uid], name: (loungeName || `${name}'s holhuashi`).slice(0, 30),
+      stats: { rounds: 0, games: 0 } }),
+  });
+  if (!isPublic) await setDoc(inviteRef(code), { key: randomKey() }).catch((e) => console.warn("Invite code", e));
+  if (!isPublic) rememberMembership(uid, code);
+  if (!isPublic) rememberLounge(code, (loungeName || `${name}'s holhuashi`).slice(0, 30));
+  enterRoom(code);
+}
+
+async function joinRoom(code, { quiet = false } = {}) {
+  if (blockedCheck()) return false;
+  const name = myName();
+  if (!name) return false;
+  // a holhuashi invite looks like ABCDE-7K2Q (code + private key), or a link ending in #ABCDE-7K2Q
+  const [c0, key = ""] = code.trim().toUpperCase().replace(/^.*#/, "").split("-");
+  code = c0;
+  if (!code) { toast("Enter a room code"); return false; }
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "rooms", code);
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw "Room not found";
+      const r = snap.data();
+      if (r.status === "deleted") throw "This holhuashi was deleted by its owner";
+      if (isLoungeDoc(r) && (r.removed || []).includes(uid)) throw "🚫 The owner removed you from this holhuashi";
+      if (r.playerIds.includes(uid)) return; // already in (e.g. page reload)
+      // holhuashis are invite-only: first time in, you need the owner's invite code; after that you're a regular
+      const regular = !isLoungeDoc(r) || r.owner === uid || (r.members || []).includes(uid) || (!r.owner && !r.members);
+      if (!regular && !key) throw "🔒 This holhuashi is invite-only · ask the owner for their invite code or link";
+      if (!regular) tx.set(doc(db, "rooms", code, "joins", uid), { key, name, at: serverTimestamp() });
+      if (r.status !== "lobby") throw isLoungeDoc(r) ? "A game is being played in this holhuashi right now · try again when it ends" : "That game has already started";
+      if (r.playerIds.length >= (r.maxPlayers || 6)) throw `Room is full (${r.maxPlayers || 6} players max)`;
+      tx.update(ref, {
+        players: [...r.players, myEntry(name)],
+        playerIds: [...r.playerIds, uid],
+        [`scores.${uid}`]: 0,
+        [`seen.${uid}`]: serverTimestamp(),
+        log: `${name} joined`,
+        ...(r.owner === uid || !r.playerIds.length ? { host: uid, heartbeat: serverTimestamp() } : {}), // the owner runs their own holhuashi
+        ...(isLoungeDoc(r) ? { members: arrayUnion(uid), [`memberInfo.${uid}`]: { name, avatar: myEntry(name).avatar || null } } : {}),
+      });
+    });
+    rememberMembership(uid, code);
+    enterRoom(code);
+    sendNotify("join", code);
+    return true;
+  } catch (e) {
+    if (typeof e === "string" && e.startsWith("🚫")) forgetLounge(code);
+    if (!quiet) toast(e?.code === "permission-denied" && key ? "That invite code isn't valid (the owner may have made a new one)" : errMsg(e));
+    return false;
+  }
+}
+
+// ---------- the lobby: fixed tables, seats and players walking around ----------
+// The lobby is its own screen (address …/#lobby). It always has the same tables: DIGU 1–4 and CALL 1–4.
+// Nobody owns a table. Walk in, sit at any free seat, and once 2 or more are seated anyone at the
+// table can press Play. You can get up and wander while waiting; your seat is kept.
+const LOBBY_TABLES = [
+  ...[1, 2, 3, 4].map((no) => ({ id: `DIGU${no}`, game: "digu", no })),
+  ...[1, 2, 3, 4].map((no) => ({ id: `CALL${no}`, game: "call", no })),
+  ...[1, 2, 3, 4].map((no) => ({ id: `BONDI${no}`, game: "bondi", no })),
+];
+// Three separate lobbies, one per game, each with its own 4 tables and its own crowd.
+// Address: …/#lobby-digu, #lobby-call, #lobby-bondi (plain #lobby = DIGU).
+let lobbyGame = "digu";
+const lobbyHash = (g = lobbyGame) => "#lobby-" + g;
+const lobbyFromHash = (h) => (h === "#lobby" ? "digu" : /^#lobby-(digu|call|bondi)$/.exec(h)?.[1] || null);
+const lobbyTables = () => LOBBY_TABLES.filter((t) => t.game === lobbyGame);
+const inMyLobby = (p) => (p.lobby || "digu") === lobbyGame;
+const FRESH_MS = 75_000;     // a table nobody has kept alive for this long is treated as empty
+const OFFLINE_MS = 60_000;   // a player who hasn't checked in for over a minute is removed (waiting at a table)
+const OFFLINE_PLAY_MS = 150_000; // during a game: 2½ minutes, so locking the phone or answering a message doesn't throw you out
+const PRESENCE_MS = 60_000;  // a player not seen for this long has left the lobby
+const WALK_SPEED = 150;      // px per second
+const MAX_WALK_S = 2.2;      // long walks speed up so nobody waits more than ~2 seconds
+const walkTime = (distPx) => Math.min(MAX_WALK_S, Math.max(0.3, distPx / WALK_SPEED));
+let openRooms = [], unsubOpen = null;
+let presence = new Map(), unsubPresence = null;
+let me = { x: 50, y: 92, seated: false }; // my spot on the floor, in % of the floor
+let floorLayout = { W: 1, H: 1, tables: new Map() };
+let sitTimer = null;
+const walkerEls = new Map();
+
+// Phones' clocks can be minutes off, so time checks use the server's clock, learned from my own
+// check-ins (the server stamps them). Until it's known, tables are assumed to be in use.
+let serverOffset = 0, serverTimeKnown = false;
+const serverNow = () => Date.now() + serverOffset;
+setInterval(() => { const o = serverClockOffset(); if (o !== null) { serverOffset = o; serverTimeKnown = true; } }, 2000);
+const roomFresh = (r) => {
+  const t = tsMs(r.heartbeat);
+  return !t || !serverTimeKnown || serverNow() - t < FRESH_MS; // brand-new rooms have no server time yet
+};
+const seatsOf = (r) => (isLobbyRoom(r) ? LOBBY_SEATS[gameOf(r)] : r.maxPlayers || 6);
+const lobbyQuery = () => query(collection(db, "rooms"), where("public", "==", true), where("status", "in", ["lobby", "playing", "ended"]));
+const inLobbyView = () => !$("lobbyScreen").hidden;
+const myLobbyTable = () => (room && roomId && isLobbyRoom(room) && room.status === "lobby" ? roomId : null);
+const tableName = (t) => `${GAME_NAME[t.game || gameOf(t)]} table ${t.no || String(t.id).slice(-1)}`;
+// A player counts as "in the lobby" if my device heard from them recently (they check in every
+// 20 seconds and on every move). Using the time my device received it avoids problems when
+// phones' clocks disagree.
+const presenceFresh = (p) => !!p && Date.now() - (p._seen || 0) < PRESENCE_MS;
+
+// ----- who is offline -----
+// Every player's screen checks in on its table every 20 seconds (room.seen[uid], stamped by the
+// server). Anyone who hasn't checked in for over a minute counts as offline: they are hidden in the
+// lobby and the other players' screens remove them from the table.
+function tsMs(t) { return typeof t === "number" ? t : t?.toMillis?.() ?? (t?.seconds ? t.seconds * 1000 : 0); }
+const firstNoticed = new Map();
+function isOffline(r, id, rid) {
+  if (id === uid || isBot(id) || !serverTimeKnown) return false;
+  const t = tsMs(r.seen?.[id]);
+  const limit = r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS;
+  if (t) return serverNow() - t > limit;
+  const k = `${rid}:${id}`; // no check-in recorded yet: give them a minute from when I first noticed
+  if (!firstNoticed.has(k)) firstNoticed.set(k, Date.now());
+  return Date.now() - firstNoticed.get(k) > (r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS);
+}
+// how long since a player last checked in (they check in every 20 seconds while the game is open)
+function silentFor(id) {
+  if (!room || id === uid || isBot(id) || !serverTimeKnown) return 0;
+  const t = tsMs(room.seen?.[id]);
+  return t ? serverNow() - t : 0;
+}
+const onlinePlayers = (r, rid) => (r.players || []).filter((p) => !isOffline(r, p.uid, rid));
+let presenceLoaded = false, presenceWarned = false;
+
+// Which chair each player is in. Players keep the chair they picked (p.seat);
+// older entries without one just fill the first free chairs.
+function seatMap(r) {
+  const seats = seatsOf(r), map = new Map();
+  for (const p of r.players || []) {
+    let s = Number.isInteger(p.seat) && p.seat >= 0 && p.seat < seats && !map.has(p.seat) ? p.seat : -1;
+    if (s < 0) for (let k = 0; k < seats; k++) if (!map.has(k)) { s = k; break; }
+    if (s >= 0) map.set(s, p);
+  }
+  return map;
+}
+const mySeat = (r) => [...seatMap(r)].find(([, p]) => p.uid === uid)?.[0] ?? -1;
+
+// A fixed table plus whatever is happening at it right now.
+function tableState(t) {
+  const r = openRooms.find((x) => x.id === t.id);
+  const live = r && r.status !== "closed" && roomFresh(r) && r.playerIds?.length;
+  if (live) {
+    const players = onlinePlayers(r, t.id); // offline players aren't shown in the lobby
+    return { ...r, id: t.id, game: t.game, no: t.no, public: true, players, playerIds: players.map((p) => p.uid) };
+  }
+  return live
+    ? { ...r, id: t.id, game: t.game, no: t.no, public: true }
+    : { id: t.id, game: t.game, no: t.no, public: true, status: "lobby", players: [], playerIds: [] };
+}
+
+function watchOpenRooms() {
+  unsubOpen?.();
+  unsubOpen = onSnapshot(lobbyQuery(), (snap) => {
+    openRooms = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderFloor();
+  }, () => { $("floorTables").innerHTML = '<p class="muted floor-msg">Couldn\'t load the lobby.</p>'; });
+  unsubPresence?.();
+  presenceLoaded = false;
+  unsubPresence = onSnapshot(collection(db, "presence"), (snap) => {
+    const now = Date.now();
+    const changed = new Set(snap.docChanges().filter((c) => c.type !== "removed").map((c) => c.doc.id));
+    const at = (data) => tsMs(data.at);
+    // On first load, compare check-in times with each other (all from the server's clock),
+    // never with this phone's clock, which may be wrong.
+    const newest = Math.max(0, ...snap.docs.map((d) => at(d.data())));
+    const mine = snap.docs.find((d) => d.id === uid);
+    if (mine && changed.has(uid) && at(mine.data())) { // the server just stamped my check-in
+      serverOffset = at(mine.data()) - now;
+      serverTimeKnown = true;
+    }
+    const next = new Map();
+    for (const d of snap.docs) {
+      const data = d.data();
+      let seen = presence.get(d.id)?._seen || 0;
+      if (changed.has(d.id)) {
+        if (presenceLoaded) seen = now; // a live update: they're here right now
+        else { const t = at(data); seen = !t || newest - t < 120_000 ? now : 0; }
+      }
+      next.set(d.id, { ...data, _seen: seen });
+    }
+    if (!snap.metadata?.fromCache) presenceLoaded = true;
+    presence = next;
+    renderFloor();
+  }, (e) => warnPresence(e));
+}
+
+// ----- my presence (where I am on the floor) -----
+const presenceRef = (u = uid) => doc(db, "presence", u);
+function writePresence() {
+  if (!uid || amBlocked || !inLobbyView()) return;
+  const e = myEntry(isRegistered() ? profile.name || "Player" : ($("name").value.trim() || "Guest").slice(0, 16));
+  setDoc(presenceRef(), {
+    name: e.name, avatar: e.avatar, photoV: e.photoV ?? null, rank: e.rank ?? null,
+    x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10,
+    seated: !!(me.seated && myLobbyTable()), roomId: myLobbyTable(), lobby: lobbyGame,
+    at: serverTimestamp(),
+  }).catch(warnPresence);
+}
+
+// If other players can't see me (or I can't see them), say why instead of failing silently.
+function warnPresence(e) {
+  if (presenceWarned) return;
+  presenceWarned = true;
+  toast(e?.code === "permission-denied"
+    ? "Other players can't see you moving: republish firestore.rules in the Firebase console"
+    : "Live movement isn't connecting right now");
+  console.warn("Lobby presence:", e);
+}
+function clearPresence() {
+  if (uid) deleteDoc(presenceRef()).catch(() => {});
+}
+setInterval(() => { if (inLobbyView()) writePresence(); }, 20_000);
+addEventListener("pagehide", clearPresence);
+
+// ----- layout: tables in a grid, open floor below -----
+// Everyone gets the same layout (it just scales to the screen), so a player standing next to a
+// table on your phone is standing next to that table on everyone else's screen too.
+// This lobby's 4 tables, two by two.
+function layoutFloor(all) {
+  const tables = all.filter((r) => r.game === lobbyGame);
+  const floor = $("lobbyFloor");
+  const W = floor.clientWidth || 360;
+  const cell = W / 2;
+  const head = cell * 0.08;
+  const rowH = cell * 0.98;
+  const H = Math.round(head + 2 * rowH + cell * 0.45); // + open floor and entrance
+  floor.style.height = H + "px";
+  floor.style.setProperty("--u", (W / 100) + "px");       // 1% of the floor width, for sizing
+  const map = new Map();
+  tables.forEach((r) => {
+    const k = (r.no || 1) - 1, col = k % 2, row = Math.floor(k / 2);
+    const cx = (col + 0.5) * cell, cy = head + row * rowH + rowH * 0.5;
+    const size = cell * 0.78;
+    const seats = seatsOf(r);
+    const seatPos = [];
+    for (let j = 0; j < seats; j++) {
+      const ang = Math.PI / 2 + (j * 2 * Math.PI) / seats; // first seat at the bottom
+      seatPos.push({ x: ((cx + size * 0.4 * Math.cos(ang)) / W) * 100, y: ((cy + size * 0.4 * Math.sin(ang)) / H) * 100 });
+    }
+    map.set(r.id, { cx: (cx / W) * 100, cy: (cy / H) * 100, size, seatPos });
+  });
+  floorLayout = { W, H, tables: map };
+}
+
+function renderFloor() {
+  if (!$("lobbyFloor") || $("lobbyScreen").hidden) return;
+  renderBotOffer();
+  const tables = lobbyTables().map(tableState);
+  const inLobby = [...presence.values()].filter((p) => presenceFresh(p) && inMyLobby(p)).length + [...ghostPeople().values()].filter((g) => !g.seated).length;
+  const playing = tables.filter((r) => r.status !== "lobby").reduce((n, r) => n + r.playerIds.length, 0);
+  $("openCount").textContent = `${inLobby} ${tr("here", "here")}${playing ? ` · ${playing} playing` : ""}`;
+  $("lobbyTitle").textContent = `${gameWord(lobbyGame)} · ${tr("jagaha", "Aammu Jagaha")}`;
+  for (const id of ["lobbyTitle", "openCount", "seatFind", "createLoungeBtn"]) { if (document.body.classList.contains("lang-dv")) $(id).lang = "dv"; else $(id).removeAttribute("lang"); }
+  $("lobbyScreen").dataset.game = lobbyGame;
+  for (const g of ["digu", "call", "bondi"]) $("tab-" + g).classList.toggle("on", g === lobbyGame);
+  $("seatFind").textContent = tr("seat.find", `Find a ${GAME_NAME[lobbyGame]} seat`);
+  layoutFloor(tables);
+  const box = $("floorTables");
+  box.innerHTML = "";
+  for (const r of tables) box.append(lobbyTable(r));
+  renderTableCards(tables);
+  renderSeatBar();
+  renderWalkers();
+}
+
+function lobbyTable(r) {
+  const L = floorLayout.tables.get(r.id);
+  const waiting = r.status === "lobby";
+  const mine = r.playerIds.includes(uid);
+  const seats = seatsOf(r);
+  const n = r.playerIds.length;
+  const t = document.createElement("div");
+  t.className = "ltable" + (waiting ? "" : " in-play") + (mine ? " mine" : "") + (n ? "" : " empty-table");
+  t.dataset.id = r.id;
+  t.style.left = L.cx + "%";
+  t.style.top = L.cy + "%";
+  t.style.width = t.style.height = L.size + "px";
+
+  const felt = document.createElement("div");
+  felt.className = "ltable-felt g-" + r.game;
+  const title = document.createElement("strong");
+  title.className = "table-game";
+  title.textContent = GAME_NAME[r.game];
+  const no = Object.assign(document.createElement("small"), { className: "table-no", textContent: `Table ${r.no}` });
+  felt.append(title, no);
+  if (!waiting) {
+    felt.append(Object.assign(document.createElement("small"), { textContent: `Playing · ${Math.max(1, r.gameRound || 1)}/${LOBBY_ROUNDS}` }));
+  } else if (mine) {
+    // anyone sitting at the table can start once 2 or more are seated
+    const play = document.createElement("button");
+    play.className = "table-play" + (n >= 2 ? "" : " wait");
+    play.textContent = "Start";
+    play.title = n >= 2 ? `Start with ${n} players` : "Needs at least 2 players";
+    play.onclick = (e) => { e.stopPropagation(); startTable(); };
+    felt.append(play);
+  } else {
+    felt.append(Object.assign(document.createElement("small"), {
+      textContent: n === 0 ? `${seats} seats` : n === 1 ? "1 waiting" : `${n} ready`,
+    }));
+  }
+  t.append(felt);
+
+  const chairs = seatMap(r);
+  for (let i = 0; i < seats; i++) {
+    const p = chairs.get(i);
+    const seat = document.createElement(p ? "div" : "button");
+    seat.className = "seat" + (p ? " taken" : " empty");
+    seat.style.left = `${50 + 40 * Math.cos(Math.PI / 2 + (i * 2 * Math.PI) / seats)}%`;
+    seat.style.top = `${50 + 40 * Math.sin(Math.PI / 2 + (i * 2 * Math.PI) / seats)}%`;
+    if (p) {
+      // a chair is reserved for whoever sits in it (offline players are already left out)
+      seat.append(avatarEl(p, "avatar"));
+      const nm = document.createElement("span");
+      nm.className = "seat-name";
+      nm.textContent = p.name;
+      seat.append(nm);
+      seat.title = p.uid === uid ? "Your chair · walk away to stand up" : `${p.name}'s chair`;
+      if (p.uid === uid && waiting) {
+        seat.classList.add("my-seat");
+        seat.title = "Your chair · tap to stand up";
+        seat.onclick = (e) => { e.stopPropagation(); standUpAndStep(); };
+      }
+    } else if (waiting) {
+      seat.textContent = "+";
+      seat.title = `Sit at ${tableName(r)}`;
+      seat.onclick = (e) => { e.stopPropagation(); takeSeat(r, i); };
+    }
+    t.append(seat);
+  }
+  return t;
+}
+
+// ----- characters -----
+function walkerEl(id) {
+  let el = walkerEls.get(id);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "walker";
+    el.innerHTML = '<div class="walker-body"><span class="walker-head avatar"></span><span class="torso"></span><span class="legs"><i></i><i></i></span></div><span class="walker-name"></span>';
+    $("floorWalkers").append(el);
+    walkerEls.set(id, el);
+  }
+  return el;
+}
+
+function colorFor(id) {
+  return `hsl(${hash(id) % 360} 55% 45%)`;
+}
+
+function placeWalker(el, id, info, x, y) {
+  const px = (x / 100) * floorLayout.W, py = (y / 100) * floorLayout.H;
+  const old = el._pos;
+  el.querySelector(".torso").style.background = colorFor(id);
+  fillAvatar(el.querySelector(".walker-head"), info);
+  el.querySelector(".walker-name").textContent = info.name || "Player";
+  if (!old) { // first appearance: no walking animation
+    el.style.transition = "none";
+    el.style.left = px + "px";
+    el.style.top = py + "px";
+    void el.offsetWidth;
+  } else if (Math.abs(old.px - px) > 0.5 || Math.abs(old.py - py) > 0.5) {
+    const dur = walkTime(Math.hypot(px - old.px, py - old.py));
+    el.style.transition = `left ${dur}s linear, top ${dur}s linear`;
+    el.style.left = px + "px";
+    el.style.top = py + "px";
+    el.classList.add("walking");
+    el.classList.toggle("face-left", px < old.px);
+    clearTimeout(el._stop);
+    el._stop = setTimeout(() => el.classList.remove("walking"), dur * 1000);
+  }
+  el._pos = { px, py };
+}
+
+function renderWalkers() {
+  if (!$("floorWalkers") || !inLobbyView()) return;
+  const shown = new Set();
+  if (uid && !(me.seated && myLobbyTable())) {
+    const el = walkerEl(uid);
+    el.classList.add("me");
+    placeWalker(el, uid, myEntry(isRegistered() ? profile.name || "Player" : ($("name").value.trim() || "Guest")), me.x, me.y);
+    shown.add(uid);
+  }
+  for (const [id, p] of presence) {
+    if (id === uid || !presenceFresh(p) || !inMyLobby(p)) continue;
+    const table = p.roomId && openRooms.find((r) => r.id === p.roomId && r.status === "lobby" && r.playerIds.includes(id));
+    if (p.seated && table) continue; // drawn in their seat instead
+    placeWalker(walkerEl(id), id, { uid: id, ...p }, p.x ?? 50, p.y ?? 92);
+    shown.add(id);
+  }
+  for (const [id, g] of ghostPeople()) {
+    if (g.seated) continue;
+    placeWalker(walkerEl(id), id, { uid: id, name: g.name, avatar: g.avatar }, g.x, g.y);
+    shown.add(id);
+  }
+  for (const [id, el] of walkerEls) {
+    if (!shown.has(id)) { el.remove(); walkerEls.delete(id); }
+  }
+  $("lobbyFloor").classList.toggle("alone", shown.size <= 1);
+}
+
+// ----- computer people in Aammu Jagaha -----
+// When nobody else is in this lobby, a few computer players (with ordinary names) walk about. If I
+// sit at a table and no one comes, they sit down with me and we play; real people can still join.
+const ghosts = new Map(); // id → { name, avatar, x, y, seated, game }
+const othersInLobby = () => [...presence.entries()].filter(([id, p]) => id !== uid && presenceFresh(p) && inMyLobby(p)).length;
+function ghostPeople() {
+  if (!inLobbyView() || othersInLobby() > 0) { if (ghosts.size) ghosts.clear(); return ghosts; }
+  for (const [id, g] of ghosts) if (g.game !== lobbyGame) ghosts.delete(id);
+  if (!ghosts.size) {
+    const n = 3 + Math.floor(Math.random() * 2);
+    const taken = new Set([myName(), ...(room?.players || []).map((p) => p.name)].filter(Boolean).map((x) => x.toLowerCase()));
+    const names = [...BOT_NAMES].filter((x) => !taken.has(x.toLowerCase())).sort(() => Math.random() - 0.5);
+    for (let i = 0; i < n; i++) {
+      const id = "bot-" + Math.random().toString(36).slice(2, 7);
+      ghosts.set(id, { name: names[i], avatar: botFace(), x: 15 + Math.random() * 70, y: 78 + Math.random() * 16, seated: false, game: lobbyGame });
+    }
+  }
+  return ghosts;
+}
+// they wander about the floor
+setInterval(() => {
+  if (!inLobbyView() || !ghosts.size) return;
+  for (const g of ghosts.values()) if (!g.seated && Math.random() < 0.4) { g.x = 8 + Math.random() * 84; g.y = 74 + Math.random() * 22; }
+  renderWalkers();
+}, 4000);
+// I'm waiting at a lobby table and nobody else is here: computer people come and sit with me,
+// one after another, then the game starts. Real people who arrive can still sit down too.
+let ghostJoinAt = 0;
+setInterval(async () => {
+  if (!room || !roomId || !isLobbyRoom(room) || room.status !== "lobby" || room.host !== uid || !room.playerIds.includes(uid)) { ghostJoinAt = 0; return; }
+  const free = [...ghostPeople().entries()].filter(([, g]) => !g.seated);
+  const humans = room.playerIds.filter((u) => !isBot(u)).length;
+  if (!ghostJoinAt) { ghostJoinAt = Date.now() + 4000 + Math.random() * 3000; return; }
+  if (Date.now() < ghostJoinAt) return;
+  const seats = seatsOf(room);
+  const want = Math.min(seats - humans, Math.max(1, Math.min(3, seats - 1)));
+  const botsHere = room.playerIds.filter(isBot).length;
+  if (botsHere < want && free.length && room.players.length < seats) {
+    const inRoom = new Set(room.players.map((p) => p.name.toLowerCase()));
+    const pick = free.find(([, g]) => !inRoom.has(g.name.toLowerCase()));
+    if (!pick) return;
+    const [id, g] = pick;
+    // walk to the table, then sit
+    const L = floorLayout.tables.get(roomId);
+    if (L) { g.x = L.cx; g.y = L.cy + 8; renderWalkers(); }
+    ghostJoinAt = Date.now() + 2500 + Math.random() * 2000;
+    setTimeout(() => {
+      if (!room || room.status !== "lobby" || room.playerIds.includes(id) || room.players.length >= seatsOf(room)) return;
+      g.seated = true;
+      updateDoc(roomRef(), {
+        players: [...room.players, { uid: id, name: g.name, avatar: g.avatar, rank: null, badges: 0 }],
+        playerIds: [...room.playerIds, id], [`scores.${id}`]: 0, botLevel: "medium",
+        log: `${g.name} sat down`,
+      }).catch(() => { g.seated = false; });
+    }, 1500);
+    return;
+  }
+  // everyone's seated: start
+  if (botsHere && room.players.length >= 2 && Date.now() > ghostJoinAt + 1500) { ghostJoinAt = Date.now() + 60_000; dealRound(); }
+}, 1000);
+
+// Others who are standing still shuffle about a little, so the room feels alive.
+setInterval(() => {
+  for (const [id, el] of walkerEls) {
+    if (id === uid || el.classList.contains("walking") || Math.random() < 0.5) continue;
+    const dx = (Math.random() - 0.5) * 22, dy = (Math.random() - 0.5) * 10;
+    el.querySelector(".walker-body").style.transform = `translate(${dx}px, ${dy}px)`;
+    el.classList.toggle("face-left", dx < 0);
+    el.classList.add("shuffling");
+    setTimeout(() => el.classList.remove("shuffling"), 1400);
+  }
+}, 3500);
+
+// ----- moving myself -----
+// Standing up frees your chair for someone else. While you're sitting you belong to that table,
+// so you can only leave it by standing up (before the game starts).
+function standUp() {
+  const wasAtTable = me.seated && myLobbyTable();
+  me.seated = false;
+  if (wasAtTable) { exitRoom(); toast("You stood up · your chair is free again"); }
+}
+
+function standUpAndStep() {
+  if (!myLobbyTable()) return;
+  standUp();
+  walkTo({ x: me.x, y: Math.min(96, me.y + 7) }); // step away from the table
+}
+
+const seatedHint = () => toast("You're sitting at a table · tap Stand up first to leave it");
+
+function walkTo(pos, then, { keepSeat = false } = {}) {
+  const dur = walkTime(Math.hypot(((pos.x - me.x) / 100) * floorLayout.W, ((pos.y - me.y) / 100) * floorLayout.H));
+  if (me.seated) {
+    if (keepSeat) me.seated = false; // moving to another chair at the same table
+    else standUp();
+    renderFloor();
+  }
+  me.x = Math.min(97, Math.max(3, pos.x));
+  me.y = Math.min(97, Math.max(3, pos.y));
+  renderWalkers();
+  writePresence();
+  clearTimeout(sitTimer);
+  if (then) sitTimer = setTimeout(then, Math.max(250, dur * 1000));
+}
+
+// No walking: tap any table and you're given a free chair there straight away.
+function onFloorTap(e) {
+  if (e.target.closest("button")) return; // Start, + chairs and other buttons handle themselves
+  const el = e.target.closest(".ltable");
+  if (!el) return toast("Tap a table to sit down");
+  const t = LOBBY_TABLES.find((x) => x.id === el.dataset.id);
+  if (t) sitAnywhere(t);
+}
+
+// Give me the first free chair at this table (moving me from another table if I was waiting there).
+// The screen changes straight away; saving happens in the background.
+let pendingSeat = null; // { id, from } while my tap is being saved
+async function sitAnywhere(t) {
+  if (blockedCheck() || !myName()) return;
+  if ((pendingSeat?.id || myLobbyTable()) === t.id) return;
+  const r = tableState(t);
+  if (r.status !== "lobby") return toast("This table is playing right now · pick another one");
+  if (r.playerIds.filter((u) => u !== uid).length >= seatsOf(r)) return toast("This table is full · pick another one");
+  const chairs = seatMap(r);
+  let free = 0;
+  while (chairs.has(free) && chairs.get(free).uid !== uid) free++;
+  const old = myLobbyTable();
+  pendingSeat = { id: t.id, from: old };
+  renderFloor(); // show me at the new table now
+  if (old) { me.seated = false; leaveRoom(); leaveTable(old); } // leave in the background
+  const ok = await sitAt(t, free);
+  if (ok) me.seated = true;
+  pendingSeat = null;
+  writePresence();
+  renderFloor();
+}
+
+// Sit at a fixed table. An empty (or abandoned) table is simply set up again with me in it.
+async function sitAt(t, seatIndex) {
+  const name = myName();
+  if (!name) return false;
+  const entry = { ...myEntry(name), seat: seatIndex };
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "rooms", t.id);
+      const snap = await tx.get(ref);
+      const r = snap.data();
+      const live = r && r.status !== "closed" && roomFresh(r) && r.playerIds?.length;
+      if (!live) {
+        tx.set(ref, {
+          host: uid, status: "lobby", game: t.game, public: true, tableNo: t.no,
+          players: [entry], playerIds: [uid], scores: { [uid]: 0 }, seen: { [uid]: serverTimestamp() },
+          round: r?.round || 0, moveId: 0, gameRound: 0, maxPlayers: LOBBY_SEATS[t.game],
+          target: targetFor(t.game),
+          endMode: "rounds", roundsLimit: LOBBY_ROUNDS, almost: {},
+          heartbeat: serverTimestamp(), createdAt: serverTimestamp(),
+          log: `${name} sat down`,
+        });
+        return;
+      }
+      if (r.status !== "lobby") throw "This table is playing right now";
+      const taken = seatMap(r).get(seatIndex);
+      if (taken && taken.uid !== uid) {
+        throw isOffline(r, taken.uid, t.id)
+          ? "That chair is being freed (its player went offline) · try again in a few seconds"
+          : `${taken.name} is sitting in that chair`;
+      }
+      if (r.playerIds.includes(uid)) { // moving to another chair at the same table
+        tx.update(ref, { players: r.players.map((p) => (p.uid === uid ? { ...p, seat: seatIndex } : p)) });
+        return;
+      }
+      if (r.playerIds.length >= seatsOf(r)) throw "This table is full";
+      tx.update(ref, {
+        players: [...r.players, entry], playerIds: [...r.playerIds, uid],
+        [`scores.${uid}`]: 0, [`seen.${uid}`]: serverTimestamp(), log: `${name} sat down`,
+      });
+    });
+    enterRoom(t.id);
+    setTimeout(clearGhostSeats, 1500); // in case my old table still lists me
+    sendNotify("sit", t.id);
+    return true;
+  } catch (e) { toast(errMsg(e)); return false; }
+}
+
+// Walk to the chair I tapped and sit in it. If I was sitting somewhere else, I stand up first
+// (that chair is freed); moving to another chair at the same table just changes chairs.
+async function takeSeat(t, seatIndex) {
+  if (blockedCheck() || !myName()) return;
+  const pos = floorLayout.tables.get(t.id)?.seatPos[seatIndex];
+  if (!pos) return;
+  if (myLobbyTable() && myLobbyTable() !== t.id) { const old = myLobbyTable(); me.seated = false; leaveRoom(); await leaveTable(old); } // switch tables
+  const sameTable = myLobbyTable() === t.id;
+  // no walking: sit straight down
+  me.x = pos.x; me.y = pos.y;
+  if (await sitAt(t, seatIndex)) { me.seated = true; writePresence(); renderFloor(); }
+  else if (sameTable) { me.seated = true; renderFloor(); }
+}
+
+// Quick seat: the fullest table of that game with a free seat, otherwise an empty one.
+function findSeat(game) {
+  if (blockedCheck() || !myName()) return;
+  if (myLobbyTable()) return toast("You're already at a table");
+  const options = LOBBY_TABLES.filter((t) => t.game === game).map(tableState)
+    .filter((r) => r.status === "lobby" && r.playerIds.length < seatsOf(r))
+    .sort((a, b) => b.playerIds.length - a.playerIds.length);
+  if (!options.length) return toast(`All ${GAME_NAME[game]} tables are busy right now`);
+  const chairs = seatMap(options[0]);
+  let free = 0;
+  while (chairs.has(free)) free++;
+  takeSeat(options[0], free);
+}
+
+// Play: anyone at the table can start once 2 or more are seated.
+function startTable() {
+  if (!myLobbyTable()) return;
+  if (room.players.length < 2) return toast("Wait for at least one more player to sit down");
+  dealRound();
+}
+
+// ----- "Select a table": four simple cards (tap one to take a chair there) -----
+function renderTableCards(tables) {
+  const box = $("tableCards");
+  if (!box) return;
+  box.innerHTML = "";
+  const meEntry = { uid, ...myEntry(myName() || "You") };
+  const myTable = pendingSeat?.id || myLobbyTable();
+  for (const r of tables) {
+    const t = LOBBY_TABLES.find((x) => x.id === r.id);
+    const seats = seatsOf(r);
+    // what to draw: the table as saved, adjusted for a tap that's still being saved
+    let players = r.players.filter((p) => !(pendingSeat && p.uid === uid && r.id !== pendingSeat.id));
+    if (myTable === r.id && !players.some((p) => p.uid === uid)) players = [...players, { ...meEntry, seat: undefined }];
+    const n = players.length;
+    const mine = myTable === r.id;
+    const playing = r.status !== "lobby";
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "rt-card g-" + r.game + (mine ? " mine" : "") + (playing ? " playing" : "") + (n >= seats && !mine ? " full" : "");
+    const rt = document.createElement("div");
+    rt.className = "rt";
+    // chairs around the round table; people fill them in seat order
+    const bySeat = [];
+    const loose = [];
+    for (const p of players) (Number.isInteger(p.seat) && p.seat < seats && !bySeat[p.seat] ? (bySeat[p.seat] = p) : loose.push(p));
+    for (let i = 0; i < seats && loose.length; i++) if (!bySeat[i]) bySeat[i] = loose.shift();
+    for (let i = 0; i < seats; i++) {
+      const ang = Math.PI / 2 + (i * 2 * Math.PI) / seats;
+      const ch = document.createElement("span");
+      const p = bySeat[i];
+      ch.className = "rt-chair" + (p ? " taken" : "") + (p?.uid === uid ? " me" : "");
+      ch.style.left = `${50 + 41 * Math.cos(ang)}%`;
+      ch.style.top = `${50 + 41 * Math.sin(ang)}%`;
+      if (p) ch.append(avatarEl(p, "avatar small"));
+      ch.title = p ? (p.uid === uid ? "You" : p.name) : "Free chair";
+      rt.append(ch);
+    }
+    const felt = document.createElement("div");
+    felt.className = "rt-felt";
+    felt.append(Object.assign(document.createElement("b"), { textContent: `Table ${r.no}` }));
+    if (mine && !playing && n >= 2) {
+      const start = Object.assign(document.createElement("span"), { className: "rt-start", textContent: "▶ Start" });
+      start.onclick = (e) => { e.stopPropagation(); if (!pendingSeat) startTable(); };
+      felt.append(start);
+    } else {
+      felt.append(Object.assign(document.createElement("small"), {
+        textContent: playing ? "Playing" : mine ? "Waiting…" : n >= seats ? "Full" : `${n}/${seats}`,
+      }));
+    }
+    rt.append(felt);
+    const label = Object.assign(document.createElement("div"), {
+      className: "rt-label",
+      textContent: mine ? (n >= 2 ? `✓ Your table · ${n} players` : "✓ Your table · waiting for 1 more") : playing ? "Game on" : n >= seats ? "Full" : "Tap to join",
+    });
+    card.append(rt, label);
+    card.onclick = () => { if (!mine && !playing) sitAnywhere(t); };
+    box.append(card);
+  }
+}
+
+// ----- my table bar (while waiting at a lobby table) -----
+function renderSeatBar() {
+  const bar = $("seatBar");
+  const code = myLobbyTable();
+  bar.hidden = !code;
+  if (!code) return;
+  const n = room.players.length;
+  const name = tableName({ id: roomId, game: gameOf(room), no: room.tableNo });
+  $("seatText").textContent = n < 2
+    ? `You're at ${name} · waiting for another player to sit down…`
+    : `You're at ${name} · ${n}/${seatsOf(room)} seated · anyone here can press Start`;
+  $("seatStart").disabled = n < 2;
+  $("seatStart").textContent = n < 2 ? "Start (needs 2)" : `Start (${n} players)`;
+}
+
+// Every player at a table checks in every 20 seconds (and right away when they come back to the app).
+let checkInSentAt = 0, lastMySeen = 0;
+function checkIn() {
+  if (!room || !roomId || room.status === "closed" || !room.playerIds?.includes(uid)) return;
+  checkInSentAt = Date.now();
+  updateDoc(roomRef(), { heartbeat: serverTimestamp(), [`seen.${uid}`]: serverTimestamp(),
+    ...(room.away?.[uid] ? { [`away.${uid}`]: deleteField() } : {}) }).catch(() => {});
+}
+// leaving the app (home button, screen off, closing it): tell the others straight away
+function markAway() {
+  if (!room || !roomId || room.status === "closed" || !room.playerIds?.includes(uid) || room.away?.[uid]) return;
+  updateDoc(roomRef(), { [`away.${uid}`]: true }).catch(() => {});
+}
+addEventListener("pagehide", markAway);
+// Who is online: green dot = here now, grey = away (app closed, phone locked or no connection).
+function onlineState(u) {
+  if (!room || isBot(u) || !room.playerIds?.includes(u)) return null;
+  if (u === uid) return true;
+  if (room.away?.[u]) return false;
+  return !(isOffline(room, u, roomId) || silentFor(u) > 45_000);
+}
+function markOnline() {
+  if (!room) return;
+  document.querySelectorAll("#seats .seat-tag[data-uid], #players .player[data-uid], #loungeMembers .mem-row[data-uid]").forEach((el) => {
+    const st = onlineState(el.dataset.uid);
+    let dot = el.querySelector(":scope > .odot");
+    if (st === null) { dot?.remove(); el.classList.remove("is-away"); return; }
+    if (!dot) { dot = Object.assign(document.createElement("span"), { className: "odot" }); el.prepend(dot); }
+    dot.className = "odot " + (st ? "on" : "off");
+    dot.title = st ? "Online" : "Away";
+    el.classList.toggle("is-away", !st);
+    if (el.classList.contains("seat-tag")) {
+      let tag = el.querySelector(".away-tag");
+      const slow = st && room.slow?.[el.dataset.uid] && el.dataset.uid !== uid;
+      const txt = !st ? "📵 offline" : slow ? "🐢 slow" : "";
+      if (txt && !tag) { tag = Object.assign(document.createElement("span"), { className: "away-tag" }); el.querySelector(".st-info b")?.after(tag); }
+      if (tag) { if (txt) tag.textContent = txt; else tag.remove(); }
+    }
+  });
+}
+setInterval(markOnline, 5000);
+
+// ----- connection quality -----
+// My moves are timed from sending to the server's OK. Slow answers (or a move still waiting) mean a
+// slow connection: I see a warning, and the others are told so they wait a little longer for me.
+let netSlowUntil = 0, netState = "ok", lastOffNames = "";
+function noteRtt(ms) { if (ms > 2500) netSlowUntil = Date.now() + 20_000; }
+function myNet() {
+  if (!navigator.onLine) return "offline";
+  if (pendingMoves.some((m) => Date.now() - (m.at || 0) > 6000)) return "offline";
+  if (Date.now() < netSlowUntil || pendingMoves.some((m) => Date.now() - (m.at || 0) > 2500)) return "slow";
+  return "ok";
+}
+function netPill() {
+  let el = $("netPill");
+  if (!el) { el = Object.assign(document.createElement("div"), { id: "netPill", className: "net-pill" }); document.body.append(el); }
+  return el;
+}
+function watchNet() {
+  const el = netPill();
+  const inGame = !!room && roomId && room.playerIds?.includes(uid) && ["playing", "ended", "lobby"].includes(room.status) && !$("game").hidden;
+  if (!inGame) { el.hidden = true; return; }
+  const st = myNet();
+  if (st !== netState) {
+    const was = netState; netState = st;
+    // tell the others I'm slow (so they don't skip me too soon), and when I'm fine again
+    if (room.status === "playing" && (st === "slow") !== !!room.slow?.[uid] && st !== "offline")
+      updateDoc(roomRef(), { [`slow.${uid}`]: st === "slow" ? true : deleteField() }).catch(() => {});
+    if (st === "ok" && was !== "ok") toast("✅ Connection is back to normal");
+  }
+  const offline = room.status === "playing" ? room.players.filter((p) => onlineState(p.uid) === false) : [];
+  const slowOnes = room.status === "playing" ? room.players.filter((p) => p.uid !== uid && room.slow?.[p.uid] && onlineState(p.uid) !== false) : [];
+  const names = offline.map((p) => p.name).join(", ");
+  if (names !== lastOffNames) {
+    const added = offline.filter((p) => !lastOffNames.split(", ").includes(p.name));
+    if (added.length) toast(`📵 ${added.map((p) => p.name).join(", ")} went offline`);
+    lastOffNames = names;
+  }
+  let msg = "", cls = "";
+  if (st === "offline") { msg = "📵 No connection · your move will be sent when you're back online"; cls = "bad"; }
+  else if (st === "slow") { msg = "🐢 Slow connection · moves may take a moment"; cls = "warn"; }
+  else if (offline.length) { msg = `📵 ${names} ${offline.length > 1 ? "are" : "is"} offline`; cls = "bad"; }
+  else if (slowOnes.length) { msg = `🐢 ${slowOnes.map((p) => p.name).join(", ")}: slow connection`; cls = "warn"; }
+  el.hidden = !msg;
+  el.textContent = msg;
+  el.className = "net-pill " + cls;
+}
+setInterval(watchNet, 1000);
+addEventListener("offline", watchNet);
+addEventListener("online", () => { netSlowUntil = Date.now() + 5000; watchNet(); });
+setInterval(() => { checkIn(); renderFloor(); }, 20_000);
+onReconnect(() => { checkIn(); if (roomId) watchPresence(roomId, uid); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return markAway();
+  checkIn();
+  if (inLobbyView()) writePresence();
+});
+
+// Remove players who have been offline for over a minute. Any online player at the table does it.
+function removalUpdate(r, out) {
+  const keep = r.players.filter((p) => !out.includes(p.uid));
+  const ids = keep.map((p) => p.uid);
+  const pick = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !out.includes(k)));
+  const names = r.players.filter((p) => out.includes(p.uid)).map((p) => p.name).join(" & ");
+  const upd = {
+    players: keep, playerIds: ids, scores: pick(r.scores), seen: pick(r.seen), almost: pick(r.almost),
+    log: `${names} went offline and left`,
+  };
+  if (out.includes(r.host) && ids.length) upd.host = ids[0];
+  if (r.status === "playing" || r.status === "ended") {
+    if (ids.length < 2) { // not enough players left: stop the game
+      Object.assign(upd, {
+        status: "lobby", gameOver: false, champions: null, gameRound: 0, almost: {},
+        scores: Object.fromEntries(ids.map((id) => [id, 0])),
+        log: `${names} went offline · not enough players, game stopped`,
+      });
+    } else if (r.status === "playing" && r.game === "dhiha") {
+      Object.assign(upd, { status: "lobby", log: `${names} went offline · the DHIHA round stopped (it needs 4 players)` });
+    } else if (r.status === "playing" && r.game === "bondi") {
+      Object.assign(upd, bondiRemoval(r, out, ids, pick));
+    } else if (r.status === "playing") {
+      const cur = r.playerIds[r.turn];
+      if (out.includes(cur)) { // it was their turn: pass it to the next player still here
+        let k = 1;
+        while (out.includes(r.playerIds[(r.turn + k) % r.playerIds.length])) k++;
+        const call = r.game === "call";
+        Object.assign(upd, {
+          turn: ids.indexOf(r.playerIds[(r.turn + k) % r.playerIds.length]),
+          phase: call ? "throw" : "draw", moveId: (r.moveId || 0) + 1,
+          ...(call && r.phase === "draw" ? { lastThrow: r.thrownNow || null, pickable: null, thrownNow: null } : {}),
+        });
+      } else upd.turn = ids.indexOf(cur);
+    }
+  }
+  return upd;
+}
+
+// The holhuashi owner (or whoever runs the table when the owner isn't there) decides about a
+// player who keeps missing turns while offline.
+const isDecider = () => !!room && isLoungeDoc(room) && (ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)));
+function renderOfflineAsk() {
+  const box = $("offlineAsk");
+  const a = room?.status === "playing" ? room.offlineAsk : null;
+  const show = !!a && isDecider() && room.playerIds.includes(a.uid);
+  box.hidden = !show;
+  if (!show) return;
+  $("offlineAskText").textContent = `${nameOf(a.uid)} is offline and has missed their turn${gameOf(room) === "dhiha" ? "" : " twice"}. Remove them from the game?`;
+  $("offlineKeep").textContent = gameOf(room) === "dhiha" ? "Keep · pause & wait" : "Keep · skip their turns";
+}
+async function decideOffline(remove) {
+  const a = room?.offlineAsk;
+  if (!a || !isDecider()) return;
+  $("offlineAsk").hidden = true;
+  try {
+    await runTransaction(db, async (tx) => {
+      const r = (await tx.get(roomRef())).data();
+      if (!r?.offlineAsk || r.offlineAsk.uid !== a.uid) return;
+      if (remove && r.playerIds.includes(a.uid)) tx.update(roomRef(), { ...removalUpdate(r, [a.uid]), offlineAsk: null });
+      else tx.update(roomRef(), {
+        offlineAsk: null, [`keepOffline.${a.uid}`]: true,
+        ...(r.game === "dhiha" ? { paused: { by: uid, at: Date.now() }, log: `⏸ Waiting for ${nameOf(a.uid)} to come back` } : { log: `${nameOf(a.uid)} stays · their turns are skipped while offline` }),
+      });
+    });
+  } catch (e) { toast(errMsg(e)); }
+}
+// When an offline player is back, forget their missed turns.
+setInterval(() => {
+  if (!room || room.host !== uid || room.status !== "playing") return;
+  const back = Object.keys({ ...(room.missed || {}), ...(room.keepOffline || {}) })
+    .filter((u) => room.playerIds.includes(u) && !isOffline(room, u, roomId) && silentFor(u) < 20_000);
+  if (!back.length) return;
+  const upd = {};
+  for (const u of back) { upd[`missed.${u}`] = deleteField(); upd[`keepOffline.${u}`] = deleteField(); }
+  if (room.offlineAsk && back.includes(room.offlineAsk.uid)) upd.offlineAsk = null;
+  updateDoc(roomRef(), upd).catch(() => {});
+}, 8000);
+
+async function kickOffline() {
+  if (!room || !roomId || room.status === "closed" || !room.playerIds?.includes(uid)) return;
+  if (room.paused && room.status === "playing") return; // paused: wait for them
+  if (room.status === "playing" && isLoungeDoc(room)) {
+    const deciderHere = [room.owner, room.host].some((u) => u && room.playerIds.includes(u) && !isOffline(room, u, roomId));
+    if (deciderHere) return; // the owner decides (see offlineAsk)
+  }
+  if (!room.players.some((p) => isOffline(room, p.uid, roomId))) return;
+  const code = roomId;
+  try {
+    let names = "";
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "rooms", code);
+      const r = (await tx.get(ref)).data();
+      if (!r || !r.playerIds.includes(uid) || (r.paused && r.status === "playing")) return;
+      const out = r.playerIds.filter((id) => isOffline(r, id, code));
+      if (!out.length) return;
+      names = r.players.filter((p) => out.includes(p.uid)).map((p) => p.name).join(" & ");
+      tx.update(ref, removalUpdate(r, out));
+    });
+    if (names) toast(`${names} went offline for over a minute and left the table`);
+  } catch { /* someone else removed them first */ }
+}
+setInterval(kickOffline, 10_000);
+// Between rounds: if the host has gone quiet, another player saves the scores and can deal.
+setInterval(() => {
+  if (!room || room.status !== "ended" || !room.playerIds?.includes(uid)) return;
+  if (room.host !== uid && isOffline(room, room.host, roomId)) {
+    if (!room.scored && lastRows && resultsRound === room.round) saveScores();
+    if (!$("results").hidden) renderResults();
+  }
+}, 5_000);
+
+// Remove me from a lobby table I'm no longer at (used when switching tables, and as a safety net).
+async function leaveTable(code) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "rooms", code);
+        const r = (await tx.get(ref)).data();
+        if (!r || r.status !== "lobby" || !r.playerIds.includes(uid)) return;
+        let players = r.players.filter((p) => p.uid !== uid);
+        if (!players.some((p) => !isBot(p.uid))) players = []; // only computer people left: they go too
+        const upd = { players, playerIds: players.map((p) => p.uid), log: `${r.players.find((p) => p.uid === uid)?.name || "Someone"} left` };
+        if (players.length && r.host === uid) { upd.host = players[0].uid; upd.heartbeat = serverTimestamp(); }
+        if (!players.length && !isLoungeDoc(r)) upd.status = "closed";
+        tx.update(ref, upd);
+      });
+      return true;
+    } catch (e) { console.warn("Leaving table", code, e); }
+  }
+  return false;
+}
+// Any lobby table (other than the one I'm at) that still lists me: take me off it.
+function clearGhostSeats() {
+  for (const r of openRooms) {
+    if (r.id !== roomId && LOBBY_TABLES.some((t) => t.id === r.id) && r.status === "lobby" && r.playerIds?.includes(uid)) leaveTable(r.id);
+  }
+}
+setInterval(clearGhostSeats, 10_000);
+
+// Leaving a table frees the seat.
+async function exitRoom() {
+  const code = roomId, wasLobby = room?.status === "lobby";
+  if (room?.practice && room.host === uid) {
+    updateDoc(doc(db, "rooms", code), { status: "closed" }).catch(() => {});
+    leaveRoom();
+    return;
+  }
+  leaveRoom();
+  if (!code || !wasLobby) return;
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "rooms", code);
+      const r = (await tx.get(ref)).data();
+      if (!r || r.status !== "lobby" || !r.playerIds.includes(uid)) return;
+      let players = r.players.filter((p) => p.uid !== uid);
+      if (!players.some((p) => !isBot(p.uid))) players = []; // only computer players left: they go too
+      const upd = {
+        players, playerIds: players.map((p) => p.uid),
+        log: `${r.players.find((p) => p.uid === uid)?.name || "Someone"} left`,
+      };
+      if (!players.length) { if (!isLoungeDoc(r)) upd.status = "closed"; } // a holhuashi stays open, empty
+      else if (r.host === uid) { upd.host = players[0].uid; upd.heartbeat = serverTimestamp(); }
+      tx.update(ref, upd);
+    });
+  } catch (e) { console.warn("Leaving the table", e); }
+}
+
+// ----- three screens: home, lobby (…/#lobby), and the card table -----
+let lobbyOpen = false;
+function updateView() {
+  const atGame = room && !(isLobbyRoom(room) && room.status === "lobby");
+  const atLobby = !atGame && (lobbyOpen || (room && isLobbyRoom(room)));
+  const wasLobby = inLobbyView();
+  $("lobby").hidden = atGame || atLobby;
+  $("lobbyScreen").hidden = !atLobby;
+  $("game").hidden = !atGame;
+  if (atLobby && !wasLobby) {
+    walkerEls.forEach((el) => el.remove()); walkerEls.clear();
+    if (room && me.seated) {
+      if (LOBBY_TABLES.some((t) => t.id === roomId)) lobbyGame = gameOf(room);
+      layoutFloor(LOBBY_TABLES.map(tableState));
+      const L = floorLayout.tables.get(roomId), i = mySeat(room);
+      if (L?.seatPos[i]) { me.x = L.seatPos[i].x; me.y = L.seatPos[i].y; }
+    }
+    renderFloor();
+    writePresence();
+  }
+  if (!atLobby && wasLobby) clearPresence();
+  if (!atLobby && !atGame) renderMyLounges();
+  renderSeatBar();
+}
+
+function openLobby(game = lobbyGame) {
+  if (blockedCheck() || !myName()) return;
+  lobbyGame = game;
+  lobbyOpen = true;
+  me = { x: 44 + Math.random() * 12, y: 92, seated: false }; // walk in through the entrance
+  if (location.hash !== lobbyHash()) history.pushState(null, "", lobbyHash());
+  updateView();
+  renderFloor();
+  scrollTo(0, 0);
+}
+
+// Leave this lobby (standing up first if I'm sitting) and walk into another one.
+async function switchLobby(game) {
+  if (game === lobbyGame && inLobbyView()) return;
+  if (myLobbyTable()) { me.seated = false; await exitRoom(); }
+  walkerEls.forEach((el) => el.remove()); walkerEls.clear();
+  lobbyGame = game;
+  me = { x: 44 + Math.random() * 12, y: 92, seated: false };
+  history.replaceState(null, "", lobbyHash());
+  updateView();
+  renderFloor();
+  writePresence();
+  toast(`Welcome to the ${GAME_NAME[game]} Aammu Jagaha`);
+}
+
+async function closeLobby() {
+  if (myLobbyTable()) await exitRoom();
+  lobbyOpen = false;
+  if (location.hash) history.pushState(null, "", location.pathname);
+  updateView();
+}
+
+addEventListener("popstate", () => {
+  const g = lobbyFromHash(location.hash);
+  if (g && !lobbyOpen) openLobby(g);
+  else if (g && g !== lobbyGame && !room) switchLobby(g);
+  else if (!location.hash && lobbyOpen && !room) { lobbyOpen = false; updateView(); }
+  else if (!location.hash && myLobbyTable()) closeLobby();
+});
+
+// ---------- playing against the computer ----------
+// A practice game is a private room with you and 1–3 computer players ("bot-1", "bot-2", …).
+// Your own screen plays for the computer players: their hands are stored like anyone else's,
+// and only you (the host) can read them. Practice games don't count toward career points.
+const isBot = (id) => typeof id === "string" && id.startsWith("bot-");
+const BOT_NAMES = ["Ali", "Sara", "Omar", "Lina", "Zaid", "Mira", "Hassan", "Aisha", "Ibrahim", "Mariyam", "Ahmed", "Fathimath",
+  "Shifa", "Nazim", "Riyaz", "Hawwa", "Naseer", "Zeena", "Shamil", "Aminath"];
+const BOT_FACES = ["😀", "😎", "🙂", "😄", "🧔", "👩", "👨", "🧕", "👦", "👧", "🧑", "👱"];
+const botFace = () => BOT_FACES[Math.floor(Math.random() * BOT_FACES.length)];
+// A game with any computer player in it is just for fun: no holhuashi points, no career points.
+const hasBots = (r) => !!r?.playerIds?.some(isBot);
+const noPoints = (r) => !!r?.practice || hasBots(r);
+
+// Holhuashi owner: fill a free seat with a computer player (or take one away) before the game starts.
+const canManageBots = () => !!room && isLoungeDoc(room) && room.status === "lobby"
+  && (ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)));
+async function addBot(silent = false) {
+  if (!canManageBots()) return;
+  if (room.players.length >= (room.maxPlayers || 6)) return toast("All seats are taken");
+  const used = new Set(room.players.map((p) => p.name));
+  const name = [...BOT_NAMES].sort(() => Math.random() - 0.5).find((n) => !used.has(n)) || "Player " + (room.players.length + 1);
+  let id; do { id = "bot-" + Math.random().toString(36).slice(2, 6); } while (room.playerIds.includes(id));
+  const upd = {
+    players: [...room.players, { uid: id, name, avatar: botFace(), rank: null, badges: 0 }],
+    playerIds: [...room.playerIds, id], [`scores.${id}`]: 0,
+    log: `${name} (computer) sat down · games with the computer give no points`,
+  };
+  if (isDhiha()) { const tm = dhihaTeams(); const free = tm.A.length < 2 ? "A" : tm.B.length < 2 ? "B" : null; if (free) upd[`teams.${id}`] = free; }
+  return updateDoc(roomRef(), upd).catch((e) => toast(errMsg(e)));
+}
+// Not enough people? Fill the empty places with computer players in one tap.
+async function fillWithBots() {
+  if (!canManageBots()) return;
+  const need = (isDhiha() ? 4 : 2) - room.players.length;
+  if (need <= 0) return;
+  const used = new Set(room.players.map((p) => p.name));
+  const names = BOT_NAMES.filter((n) => !used.has(n)).sort(() => Math.random() - 0.5);
+  const bots = [], teams = { ...(room.teams || {}) };
+  for (let i = 0; i < need; i++) {
+    let id; do { id = "bot-" + Math.random().toString(36).slice(2, 6); } while (room.playerIds.includes(id) || bots.some((b) => b.uid === id));
+    bots.push({ uid: id, name: names[i] || `Player ${i + 1}`, avatar: botFace(), rank: null, badges: 0 });
+    if (isDhiha()) {
+      const a = room.playerIds.concat(bots.map((b) => b.uid)).filter((u) => teams[u] === "A").length;
+      teams[id] = a < 2 ? "A" : "B";
+    }
+  }
+  const upd = {
+    players: [...room.players, ...bots], playerIds: [...room.playerIds, ...bots.map((b) => b.uid)],
+    ...Object.fromEntries(bots.map((b) => [`scores.${b.uid}`, 0])),
+    log: `🤖 ${bots.map((b) => b.name).join(" & ")} joined · games with the computer give no points`,
+  };
+  if (isDhiha()) bots.forEach((b) => (upd[`teams.${b.uid}`] = teams[b.uid]));
+  await updateDoc(roomRef(), upd).catch((e) => toast(errMsg(e)));
+}
+function removeBot(id) {
+  if (!canManageBots() || !isBot(id)) return;
+  updateDoc(roomRef(), {
+    players: room.players.filter((p) => p.uid !== id), playerIds: room.playerIds.filter((u) => u !== id),
+    [`scores.${id}`]: deleteField(), [`teams.${id}`]: deleteField(), log: `${nameOf(id)} (computer) left`,
+  }).catch((e) => toast(errMsg(e)));
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// What a player took from the thrown pile / threw away, kept short (premium card tracker).
+function trackUpd(who, kind, cards) {
+  const t = room.track?.[who] || {};
+  const took = [...(t.took || [])], threw = [...(t.threw || [])];
+  (kind === "took" ? took : threw).push(...cards);
+  return { [`track.${who}`]: { took: took.slice(-4), threw: threw.slice(-8) } };
+}
+let practiceDealPending = null, botKey = null;
+
+async function startPractice(game, bots, level = "medium") {
+  if (blockedCheck()) return;
+  const name = myName();
+  if (!name) return;
+  if (myLobbyTable()) await exitRoom();
+  $("botModal").hidden = true;
+  try {
+    let code;
+    do { code = "P" + randomCode().slice(1); } while ((await getDoc(doc(db, "rooms", code))).exists());
+    const ref = doc(db, "rooms", code);
+    await setDoc(ref, {
+      host: uid, status: "lobby", practice: true, public: false, game, botLevel: level,
+      players: [myEntry(name)], playerIds: [uid], scores: { [uid]: 0 },
+      round: 0, moveId: 0, gameRound: 0, maxPlayers: bots + 1,
+      endMode: "rounds", roundsLimit: LOBBY_ROUNDS,
+      target: targetFor(game),
+      seen: { [uid]: serverTimestamp() }, heartbeat: serverTimestamp(), createdAt: serverTimestamp(),
+      log: `Practice ${GAME_NAME[game]} vs the computer`,
+    });
+    const robots = [...BOT_NAMES].sort(() => Math.random() - 0.5).slice(0, bots)
+      .map((n, i) => ({ uid: `bot-${i + 1}`, name: n, avatar: botFace(), rank: null, badges: 0 }));
+    await updateDoc(ref, {
+      players: [myEntry(name), ...robots], playerIds: [uid, ...robots.map((r) => r.uid)],
+      ...Object.fromEntries(robots.map((r) => [`scores.${r.uid}`, 0])),
+    });
+    lobbyOpen = false;
+    practiceDealPending = code;
+    enterRoom(code);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+// Called whenever the room changes: if it's a computer player's turn, play it after a short pause.
+async function maybeBotMove() {
+  if (!room || room.status !== "playing" || room.host !== uid || room.paused || roomStale) return;
+  const bot = room.playerIds[room.turn];
+  if (!isBot(bot)) return;
+  const key = `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}`;
+  if (botKey === key) return;
+  botKey = key;
+  await sleep(350 + Math.random() * 350); // "thinking"
+  if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}` !== key) return;
+  try {
+    const cards = (await getDoc(handRef(bot))).data()?.cards || [];
+    botKnown = botLevel() === "hard" ? await knownHands(bot, cards) : null;
+    if (gameOf(room) === "dhiha") await botDhiha(bot, cards);
+    else if (gameOf(room) === "bondi") await botBondi(bot, cards);
+    else if (gameOf(room) === "call") await botCall(bot, cards);
+    else await botDigu(bot, cards);
+  } catch (e) { console.warn("Computer player move failed", e); botKey = null; }
+}
+
+// Hard computer players play with what this phone can see: every computer player's hand, and my
+// own hand (I'm the one running them). Other people's hands stay hidden.
+let botKnown = null;
+async function knownHands(bot, cards) {
+  const out = { [bot]: cards };
+  const pk = (u, c) => [...c, ...(isBondi() ? (room.pickups?.[u] || []).filter((x) => !c.includes(x)) : [])];
+  out[bot] = pk(bot, cards);
+  for (const u of room.playerIds) {
+    if (u === bot) continue;
+    if (u === uid) { out[u] = pk(u, [...hand]); continue; }
+    if (!isBot(u)) continue;
+    try { out[u] = pk(u, (await getDoc(handRef(u))).data()?.cards || []); } catch {}
+  }
+  return out;
+}
+// "last online" for the admin list: stamped when the app opens, then every 3 minutes while it's in use
+let seenStampAt = 0;
+function stampSeen(force) {
+  if (!uid || amBlocked || document.hidden || (!force && Date.now() - seenStampAt < 170_000)) return;
+  seenStampAt = Date.now();
+  if (usingRealtime()) setDoc(doc(db, "lastSeen", uid), { t: serverTimestamp() }).catch(() => {}); // free to write often
+  else setDoc(doc(db, "users", uid), { lastSeen: serverTimestamp() }, { merge: true }).catch(() => {});
+}
+setInterval(() => stampSeen(false), 60_000);
+document.addEventListener("visibilitychange", () => stampSeen(false));
+const botName = (id) => room.players.find((p) => p.uid === id)?.name || "Computer";
+
+function botCommit(roomUpd, bot, cards) {
+  const b = moveBatch();
+  b.update(roomRef(), roomUpd);
+  if (cards) b.update(handRef(bot), { cards });
+  return b.commit().catch((e) => { if (e?.message !== "STALE") throw e; });
+}
+
+// DIGU computer: take the thrown card if it helps, otherwise the middle pile; then throw the card
+// that leaves the fewest leftover points, or call DIGU when it can.
+const botLevel = () => room?.botLevel || "medium";
+async function botDigu(bot, cards) {
+  const level = botLevel();
+  if (room.phase === "draw" && level === "easy") { // easy: usually just takes from the middle pile
+    let deck = [...room.deck], discard = [...room.discard], card, from;
+    const top = discard[discard.length - 1];
+    if (top && Math.random() < 0.25) { card = discard.pop(); from = "the thrown card"; }
+    else {
+      if (!deck.length) { if (discard.length <= 1) return; ({ deck, discard } = C.reshuffleDiscard(discard)); }
+      card = deck.pop(); from = "from the pile";
+    }
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+      ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
+  }
+  if (room.phase === "discard" && level === "easy") { // easy: throws a random card that isn't in a set
+    const lay = C.bestLayout(cards);
+    const loose = lay.leftover.length ? lay.leftover : cards;
+    const c = loose[Math.floor(Math.random() * loose.length)];
+    const rest = cards.filter((x) => x !== c);
+    const win = C.findWinningLayout(rest);
+    const upd = { discard: [...room.discard, c], ...trackUpd(bot, "threw", [c]) };
+    if (win) Object.assign(upd, { status: "ended", winner: bot, diguCard: c, diguStyle: null, winnerSets: win.map((s) => s.join(",")), log: `${botName(bot)} called DIGU!` });
+    else { Object.assign(upd, nextTurn(`${botName(bot)} threw a card`)); if (!room.deck.length && upd.discard.length > 1) Object.assign(upd, C.reshuffleDiscard(upd.discard)); }
+    return botCommit(upd, bot, rest);
+  }
+  if (room.phase === "draw" && level === "hard") { // hard: peeks at the next card of the middle pile
+    const top = room.discard?.[room.discard.length - 1];
+    let deck = [...room.deck], discard = [...room.discard];
+    if (!deck.length && discard.length > 1) ({ deck, discard } = C.reshuffleDiscard(discard));
+    const next = deck[deck.length - 1];
+    const fromTop = top ? C.diguBestAfter([...cards, top]) : null;
+    const fromDeck = next ? C.diguBestAfter([...cards, next]) : null;
+    const rank = (o) => (!o ? Infinity : o.win ? -1 : o.pts);
+    let card, from;
+    if (fromTop && (rank(fromTop) < rank(fromDeck) || !fromDeck)) { discard = [...room.discard]; deck = [...room.deck]; card = discard.pop(); from = "the thrown card"; }
+    else if (next) { card = deck.pop(); from = "from the pile"; }
+    else return;
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+      ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
+  }
+  if (room.phase === "draw") {
+    const top = room.discard?.[room.discard.length - 1];
+    const now = C.bestLayout(cards).points;
+    const withTop = top ? Math.min(...[...cards, top].map((c) => C.bestLayout([...cards, top].filter((x) => x !== c)).points)) : Infinity;
+    let deck = [...room.deck], discard = [...room.discard], card, from;
+    if (top && withTop < now) { card = discard.pop(); from = "the thrown card"; }
+    else {
+      if (!deck.length) {
+        if (discard.length <= 1) return;
+        ({ deck, discard } = C.reshuffleDiscard(discard));
+      }
+      card = deck.pop(); from = "from the pile";
+    }
+    return botCommit({ deck, discard, phase: "discard", log: `${botName(bot)} took ${from}`,
+      ...(from === "the thrown card" ? trackUpd(bot, "took", [card]) : {}) }, bot, [...cards, card]);
+  }
+  // throw
+  let best = null;
+  const meI = room.playerIds.indexOf(bot), nxt = room.playerIds[nextActiveIdx(room, meI)];
+  const wants = level !== "easy" ? room.track?.[nxt]?.took || [] : [];
+  const helpsNext = (c) => { const s = C.parse(c); return wants.some((id) => { const t = C.parse(id); return t.r === s.r || (t.s === s.s && Math.abs(t.r - s.r) <= 2); }); };
+  for (const c of cards) {
+    const rest = cards.filter((x) => x !== c);
+    const sets = C.findWinningLayout(rest);
+    if (sets) { best = { c, rest, sets }; break; }
+    const pts = C.bestLayout(rest).points + (helpsNext(c) ? 12 : 0);
+    if (!best || pts < best.pts || (pts === best.pts && C.points(c) > C.points(best.c))) best = { c, rest, pts };
+  }
+  const upd = { discard: [...room.discard, best.c], ...trackUpd(bot, "threw", [best.c]) };
+  if (best.sets) {
+    Object.assign(upd, {
+      status: "ended", winner: bot, diguCard: best.c, diguStyle: null,
+      winnerSets: best.sets.map((s) => s.join(",")), log: `${botName(bot)} called DIGU!`,
+    });
+  } else {
+    Object.assign(upd, nextTurn(`${botName(bot)} threw a card`));
+    if (!room.deck.length && upd.discard.length > 1) Object.assign(upd, C.reshuffleDiscard(upd.discard));
+  }
+  return botCommit(upd, bot, best.rest);
+}
+
+// CALL computer: CALL when its count is low enough; otherwise throw its highest group of
+// same-number cards, then take the last player's card if it's small or pairs up, else the pile.
+async function botCall(bot, cards) {
+  const level = botLevel();
+  if (room.phase === "throw") {
+    const v = C.handValue(cards);
+    const othersMin = Math.min(...activeIds(room).filter((u) => u !== bot).map((u) => room.ccount?.[u] ?? 5));
+    // hard: knows the counts of every hand this phone can see
+    const seenVals = botKnown ? activeIds(room).filter((u) => u !== bot && botKnown[u]).map((u) => C.handValue(botKnown[u])) : [];
+    const allSeen = botKnown && activeIds(room).filter((u) => u !== bot).every((u) => botKnown[u]);
+    const callNow = level === "easy" ? v <= 3
+      : level === "hard" && allSeen ? v <= C.CALL_LIMIT && v < Math.min(...seenVals)
+      : level === "hard" ? v <= C.CALL_LIMIT && v < Math.min(99, ...seenVals) && (v <= 3 || othersMin >= 3 || (v <= 5 && othersMin >= 2))
+      : v <= C.CALL_LIMIT && (v <= 3 || othersMin >= 3 || (v <= 5 && othersMin >= 2));
+    if (callNow) {
+      return botCommit({
+        status: "ended", winner: bot, diguCard: null, winnerSets: null, diguStyle: null,
+        log: `${botName(bot)} called CALL with ${v}!`,
+      });
+    }
+    const groups = {};
+    for (const c of cards) (groups[C.parse(c).r] ||= []).push(c);
+    const ids = level === "easy" ? [cards[Math.floor(Math.random() * cards.length)]]
+      : Object.values(groups).sort((a, b) => C.callValue(b[0]) * b.length - C.callValue(a[0]) * a.length)[0];
+    const prevLast = room.lastThrow?.length ? room.lastThrow[room.lastThrow.length - 1] : null;
+    const pickable = prevLast && room.discard.includes(prevLast) ? prevLast : null;
+    const upd = {
+      discard: [...room.discard, ...ids], phase: "draw", pickable, thrownNow: ids, [`ccount.${bot}`]: cards.length - ids.length,
+      log: `${botName(bot)} threw ${ids.length > 1 ? `${ids.length} × ${C.label(C.parse(ids[0]).r)}` : "a card"}`,
+    };
+    if (!room.deck.length) {
+      const pool = room.discard.filter((c) => c !== pickable);
+      if (pool.length) { upd.deck = C.shuffle(pool); upd.discard = [...(pickable ? [pickable] : []), ...ids]; }
+    }
+    return botCommit(upd, bot, cards.filter((c) => !ids.includes(c)));
+  }
+  // take
+  let deck = [...room.deck], discard = [...room.discard], card, from;
+  const p = room.pickable;
+  const pairs = p && cards.some((c) => C.parse(c).r === C.parse(p).r);
+  const peek = level === "hard" ? deck[deck.length - 1] : null; // hard: knows the next card of the pile
+  const keepVal = (c) => (cards.some((x) => C.parse(x).r === C.parse(c).r) ? 0 : C.callValue(c));
+  if (peek && p && discard.includes(p)) {
+    if (keepVal(p) <= keepVal(peek)) { discard.splice(discard.lastIndexOf(p), 1); card = p; from = "the last thrown card"; }
+    else { card = deck.pop(); from = "from the pile"; }
+  } else if (p && discard.includes(p) && level !== "easy" && (C.callValue(p) <= 4 || pairs)) {
+    discard.splice(discard.lastIndexOf(p), 1); card = p; from = "the last thrown card";
+  } else if (deck.length) { card = deck.pop(); from = "from the pile"; }
+  else return;
+  return botCommit({
+    deck, discard, lastThrow: room.thrownNow || null, pickable: null, thrownNow: null,
+    [`ccount.${bot}`]: cards.length + 1,
+    ...nextTurn(`${botName(bot)} took ${from}`),
+  }, bot, [...cards, card]);
+}
+
+// Offer it when nobody else is around.
+function renderBotOffer() {
+  const others = [...presence.entries()].filter(([id, pr]) => id !== uid && presenceFresh(pr) && inMyLobby(pr)).length;
+  $("aloneBanner").hidden = others > 0;
+}
+
+function openBotModal() {
+  if (blockedCheck() || !myName()) return;
+  $("botModal").hidden = false;
+}
+
+// ---------- holhuashis (registered players' own tables) ----------
+// A holhuashi has a name and a code that lasts until its owner deletes it. Anyone with the code can
+// come back any time, and you can play as many games there as you like.
+const isLoungeDoc = (r) => !!r && r.public === false && !r.practice;
+// the owner (older holhuashis without one: whoever runs it)
+const ownsLounge = (r) => isLoungeDoc(r) && (r.owner ? r.owner === uid : r.host === uid);
+
+// Where the holhuashi is. Everyone starts on the beach; the owner unlocks richer places by rank.
+const PLACES = [
+  { id: "hut",    name: "Thatched hut",      icon: "🛖", rank: 0, decor: ["🪔", "🥥", "🧺", "🌿"] },
+  { id: "beach",  name: "Beach holhuashi",   icon: "🏝️", rank: 1, decor: ["🌴", "🌴", "🐚", "🥥"] },
+  { id: "villa",  name: "Water villa deck",  icon: "🌅", rank: 2, decor: ["🌺", "🪴", "🌴", "🌺"] },
+  { id: "palace", name: "Island guesthouse", icon: "🏡", rank: 3, decor: ["🪴", "🌿", "🪴", "🌴"] },
+  { id: "yacht",  name: "Royal yacht",       icon: "🛥️", rank: 4, decor: ["⚓", "🛟", "🍾", "🌺"] },
+  { id: "resort", name: "Resort hotel",      icon: "🏨", rank: 5, decor: ["🌺", "🍹", "🌴", "🍹"] },
+];
+const placeOf = (r) => PLACES.find((p) => p.id === r?.theme) || PLACES[0];
+function setPlace(id) {
+  const pl = PLACES.find((p) => p.id === id);
+  if (!pl || !room || !ownsLounge(room)) return;
+  if (myRank() < pl.rank) return toast(`🔒 ${pl.name} unlocks at ${P.RANKS[pl.rank].icon} ${P.RANKS[pl.rank].name} rank (${P.RANKS[pl.rank].at} points)`);
+  updateDoc(roomRef(), { theme: id, log: `Moved to the ${pl.name}` }).catch((e) => toast(errMsg(e)));
+}
+function rememberLounge(code, name) {
+  let list = [];
+  try { list = JSON.parse(load("thaas-lounges") || "[]"); } catch {}
+  list = [{ code, name }, ...list.filter((l) => l.code !== code)].slice(0, 12);
+  store("thaas-lounges", JSON.stringify(list));
+}
+function forgetLounge(code) {
+  let list = [];
+  try { list = JSON.parse(load("thaas-lounges") || "[]"); } catch {}
+  store("thaas-lounges", JSON.stringify(list.filter((l) => l.code !== code)));
+}
+
+// Home screen: the holhuashis I own (any device) and the ones I've been to (this device).
+let myLoungesAt = 0;
+let myLoungesUid = null;
+async function renderMyLounges(force = false) {
+  const box = $("myLounges");
+  if (!box || !uid) return;
+  if (myLoungesUid !== uid) { force = true; myLoungesUid = uid; } // just signed in (or out): refresh straight away
+  if (!force && Date.now() - myLoungesAt < 3000) return;
+  myLoungesAt = Date.now();
+  if (!box.children.length && (isRegistered() || load("thaas-lounges"))) {
+    box.hidden = false;
+    box.innerHTML = '<p class="my-lounges-head">My holhuashis</p><p class="muted small-note">Loading…</p>';
+  }
+  const found = new Map();
+  try {
+    if (isRegistered()) {
+      const [mine, joined] = await Promise.all([
+        getDocs(query(collection(db, "rooms"), where("owner", "==", uid))),
+        getDocs(query(collection(db, "rooms"), where("members", "array-contains", uid))).catch(() => ({ forEach() {} })),
+      ]);
+      mine.forEach((d) => found.set(d.id, d.data()));
+      joined.forEach((d) => { if (isLoungeDoc(d.data())) found.set(d.id, d.data()); });
+    }
+    let seen = [];
+    try { seen = JSON.parse(load("thaas-lounges") || "[]"); } catch {}
+    await Promise.all(seen.filter((l) => !found.has(l.code)).map(async (l) => {
+      const d = await getDoc(doc(db, "rooms", l.code)).catch(() => null);
+      if (d?.exists() && isLoungeDoc(d.data())) found.set(l.code, d.data());
+      else if (d && !d.exists()) forgetLounge(l.code);
+    }));
+  } catch (e) { console.warn("My holhuashis", e); }
+  const list = [...found.entries()].filter(([, r]) => r.status !== "deleted" && r.status !== "closed" && !(r.removed || []).includes(uid));
+  box.innerHTML = "";
+  box.hidden = !list.length;
+  if (!list.length) return;
+  box.append(Object.assign(document.createElement("p"), { className: "my-lounges-head", textContent: "My holhuashis" }));
+  for (const [code, r] of list) {
+    const row = document.createElement("div");
+    row.className = "my-lounge";
+    const info = document.createElement("div");
+    const nm = document.createElement("b");
+    nm.textContent = (r.owner === uid ? "⭐ " : "") + (r.name || "Holhuashi");
+    const sub = document.createElement("small");
+    const n = r.playerIds?.length || 0;
+    const lp = loungePoints(r);
+    sub.textContent = `⭐ ${lp.points} pts · ${lp.mood} · ${GAME_NAME[gameOf(r)]} · ${r.status === "lobby" ? (n ? `${n} inside` : "empty") : r.paused ? "⏸ paused game · tap to continue" : "playing now"}`;
+    info.append(nm, sub);
+    const go = Object.assign(document.createElement("button"), { className: "primary small", textContent: r.playerIds?.includes(uid) ? "Back in" : "Enter" });
+    go.onclick = () => joinRoom(code);
+    row.append(info, go);
+    if (r.owner === uid) {
+      const del = Object.assign(document.createElement("button"), { className: "ghost small danger", textContent: "🗑", title: "Delete this holhuashi" });
+      del.onclick = () => deleteLoungeByCode(code, r.name);
+      row.append(del);
+    }
+    box.append(row);
+  }
+}
+
+// ---------- holhuashi members (owner) ----------
+// Once someone joins with the invite code they're a member and can come back any time without it.
+// The owner can remove a member (they then can't come back, even with an old code) or let them back.
+function memberName(u) {
+  return room.memberInfo?.[u]?.name || room.players.find((p) => p.uid === u)?.name || room.board?.[u]?.name || "Player";
+}
+function renderMembers() {
+  const box = $("loungeMembers");
+  const show = !!room && isLoungeDoc(room) && ownsLounge(room) && room.status === "lobby";
+  box.hidden = !show;
+  if (!show) return;
+  const key = JSON.stringify([room.members, room.removed, room.memberInfo, room.playerIds]);
+  if (box._key === key) return;
+  box._key = key;
+  box.innerHTML = "";
+  const members = (room.members || []).filter((u) => u !== uid && !isBot(u));
+  box.append(Object.assign(document.createElement("p"), { className: "mem-head", textContent: `👥 Members (${members.length}) · they come back without a code` }));
+  if (!members.length) box.append(Object.assign(document.createElement("small"), { className: "muted", textContent: "No members yet · share your invite code" }));
+  for (const u of members) {
+    const row = document.createElement("div");
+    row.className = "mem-row";
+    row.dataset.uid = u;
+    const here = room.playerIds.includes(u);
+    row.append(avatarEl({ uid: u, name: memberName(u), avatar: room.memberInfo?.[u]?.avatar || room.board?.[u]?.avatar }, "avatar small"),
+      Object.assign(document.createElement("span"), { textContent: memberName(u) + (here ? " · here" : "") }));
+    const x = Object.assign(document.createElement("button"), { type: "button", className: "ghost small danger", textContent: "Remove" });
+    x.onclick = () => removeMember(u);
+    row.append(x);
+    box.append(row);
+  }
+  const gone = room.removed || [];
+  if (gone.length) {
+    box.append(Object.assign(document.createElement("p"), { className: "mem-head", textContent: `🚫 Removed (${gone.length})` }));
+    for (const u of gone) {
+      const row = document.createElement("div");
+      row.className = "mem-row removed";
+      row.append(Object.assign(document.createElement("span"), { textContent: memberName(u) }));
+      const back = Object.assign(document.createElement("button"), { type: "button", className: "ghost small", textContent: "Allow back" });
+      back.onclick = () => updateDoc(roomRef(), { removed: arrayRemove(u), members: arrayUnion(u), log: `${memberName(u)} can come back again` }).catch((e) => toast(errMsg(e)));
+      row.append(back);
+      box.append(row);
+    }
+  }
+}
+async function removeMember(u) {
+  if (!ownsLounge(room) || room.status !== "lobby") return toast("End the game first, then remove members");
+  const nm = memberName(u);
+  if (!confirm(`Remove ${nm} from this holhuashi? They won't be able to come back unless you allow them.`)) return;
+  const upd = { members: arrayRemove(u), removed: arrayUnion(u), log: `${nm} was removed from the holhuashi` };
+  if (room.playerIds.includes(u)) {
+    upd.players = room.players.filter((p) => p.uid !== u);
+    upd.playerIds = room.playerIds.filter((x) => x !== u);
+  }
+  try {
+    const b = writeBatch(db);
+    b.update(roomRef(), upd);
+    b.delete(doc(db, "rooms", roomId, "joins", u)); // their saved invite key no longer lets them in
+    await b.commit();
+    toast(`${nm} removed`);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+function renameLounge() {
+  const name = $("loungeNameEdit").value.trim().slice(0, 30);
+  if (!name) return toast("Give your holhuashi a name");
+  if (!ownsLounge(room)) return;
+  updateDoc(roomRef(), { name, log: `Holhuashi renamed to ${name}` }).then(() => { rememberLounge(roomId, name); toast("Holhuashi renamed"); })
+    .catch((e) => toast(errMsg(e)));
+}
+
+async function deleteLounge() {
+  if (!ownsLounge(room)) return;
+  if (room.status === "playing") return toast("Finish this game first, then delete");
+  if (!confirm(`Delete "${room.name || "your holhuashi"}"? Its code will stop working.`)) return;
+  const code = roomId;
+  try {
+    await updateDoc(roomRef(), { status: "deleted", players: [], playerIds: [], log: "The owner deleted this holhuashi" });
+    forgetLounge(code);
+    leaveRoom();
+    toast("Holhuashi deleted");
+    renderMyLounges(true);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+// ---- invites (only the owner can read or change the private key) ----
+let myInvite = { code: null, key: null, loading: false };
+async function loadInvite(force = false) {
+  if (!roomId || (!force && (myInvite.code === roomId || myInvite.loading))) return;
+  myInvite.loading = true;
+  const code = roomId;
+  try {
+    let snap = await getDoc(inviteRef(code));
+    if (!snap.exists()) { await setDoc(inviteRef(code), { key: randomKey() }); snap = await getDoc(inviteRef(code)); } // older holhuashis
+    myInvite = { code, key: snap.data().key, loading: false };
+    // older holhuashis: everyone who's already been in counts as invited
+    if (room && isLoungeDoc(room) && (!room.members || !room.owner)) {
+      updateDoc(roomRef(), { owner: room.owner || uid, members: arrayUnion(uid, ...room.playerIds), lounge: true }).catch(() => {});
+    }
+    render();
+  } catch (e) { myInvite.loading = false; console.warn("Invite code", e); }
+}
+async function newInviteCode() {
+  if (!ownsLounge(room)) return;
+  if (!confirm("Make a new invite code? The old one stops working (players already invited can still come back).")) return;
+  try {
+    const key = randomKey();
+    await setDoc(inviteRef(roomId), { key });
+    myInvite = { code: roomId, key, loading: false };
+    toast(`New invite code: ${roomId}-${key}`);
+    render();
+  } catch (e) { toast(errMsg(e)); }
+}
+
+// ---- holhuashi points: how many players and how active it is ----
+function loungePoints(r) {
+  const members = (r.members || r.playerIds || []).length;
+  const games = r.stats?.games || 0, rounds = r.stats?.rounds || 0;
+  const last = tsMs(r.stats?.lastPlayed);
+  const days = last ? (Date.now() - last) / 86400000 : Infinity;
+  const mood = !last ? "🌱 New" : days < 1 ? "🔥 Hot" : days < 7 ? "✨ Active" : "😴 Quiet";
+  const bonus = days < 1 ? 100 : days < 7 ? 30 : 0;
+  return { points: members * 20 + rounds * 5 + games * 25 + bonus, members, games, rounds, mood };
+}
+
+// Delete one of my holhuashis from the home screen (without going in).
+async function deleteLoungeByCode(code, name) {
+  if (!confirm(`Delete "${name || "this holhuashi"}"? Its code will stop working.`)) return;
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "rooms", code);
+      const r = (await tx.get(ref)).data();
+      if (!r || r.owner !== uid) throw "Only the owner can delete it";
+      if (r.status === "playing") throw "A game is on there right now · try again when it ends";
+      // I may need to step in first: the rules let a player change a room they're in
+      const ids = r.playerIds.includes(uid) ? r.playerIds : [...r.playerIds, uid];
+      tx.update(ref, { status: "deleted", playerIds: ids, players: r.players, log: "The owner deleted this holhuashi" });
+    });
+    await updateDoc(doc(db, "rooms", code), { players: [], playerIds: [] }).catch(() => {});
+    forgetLounge(code);
+    toast("Holhuashi deleted");
+    renderMyLounges(true);
+  } catch (e) { toast(typeof e === "string" ? e : errMsg(e)); }
+}
+
+// ---------- holhuashi chat ----------
+// Messages live on the holhuashi itself (the newest 50), so everyone inside sees them straight away.
+// You can delete your own; the holhuashi owner can delete any.
+const CHAT_MAX = 50;
+let chatKey = null, chatSeen = 0, lastChatAt = 0;
+let chatOpen = false;
+function renderChat() {
+  const box = $("loungeChat");
+  const show = !!room && isLoungeDoc(room) && room.playerIds.includes(uid) && !$("game").hidden;
+  $("chatBtn").hidden = !show;
+  box.hidden = !show || !chatOpen;
+  if (!show) { chatKey = null; return; }
+  box.open = true;
+  const msgs = room.chat || [];
+  if (chatOpen) chatSeen = msgs.length;
+  const unread = Math.max(0, msgs.length - chatSeen);
+  $("chatBtnBadge").hidden = !unread;
+  $("chatBtnBadge").textContent = unread;
+  const key = JSON.stringify(msgs.map((m) => m.id)) + amAdmin + (room.owner === uid);
+  if (key === chatKey) return;
+  chatKey = key;
+  const list = $("chatList");
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 30;
+  list.innerHTML = "";
+  if (!msgs.length) list.append(Object.assign(document.createElement("p"), { className: "muted small-note", textContent: "No messages yet · say hi 👋" }));
+  for (const m of msgs) {
+    const row = document.createElement("div");
+    row.className = "chat-msg" + (m.uid === uid ? " mine" : "");
+    const who = Object.assign(document.createElement("b"), { textContent: m.uid === uid ? "You" : m.name });
+    const time = Object.assign(document.createElement("small"), { textContent: new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+    const text = Object.assign(document.createElement("span"), { textContent: m.text });
+    row.append(who, text, time);
+    if (m.uid === uid || room.owner === uid || amAdmin) {
+      const del = Object.assign(document.createElement("button"), { type: "button", className: "chat-del", textContent: "✕", title: "Delete message" });
+      del.onclick = () => updateDoc(roomRef(), { chat: arrayRemove(m) }).catch((e) => toast(errMsg(e)));
+      row.append(del);
+    }
+    list.append(row);
+  }
+  if (atBottom || msgs[msgs.length - 1]?.uid === uid) list.scrollTop = list.scrollHeight;
+}
+async function sendChat(e) {
+  e.preventDefault();
+  if (!room || !isLoungeDoc(room) || blockedCheck()) return;
+  if (premiumGate()) return needPremium("Chat is");
+  const text = $("chatText").value.trim().slice(0, 200);
+  if (!text) return;
+  if (Date.now() - lastChatAt < 1500) return toast("Slow down 🙂");
+  lastChatAt = Date.now();
+  const msg = { id: Math.random().toString(36).slice(2, 10), uid, name: nameOf(uid), text, at: Date.now() };
+  $("chatText").value = "";
+  try {
+    const chat = room.chat || [];
+    // keep the newest 50: drop the oldest when it gets long
+    if (chat.length >= CHAT_MAX) await updateDoc(roomRef(), { chat: [...chat.slice(-(CHAT_MAX - 1)), msg] });
+    else await updateDoc(roomRef(), { chat: arrayUnion(msg) });
+  } catch (err) { toast(errMsg(err)); $("chatText").value = text; }
+}
+
+// ---------- notice board in the lobby ----------
+// Anyone can pin a short message that everyone in the lobbies sees; you can delete your own
+// (admins can delete any). The newest 30 are shown.
+let notes = [], unsubNotes = null, lastNoteAt = 0;
+function watchNotes() {
+  if (unsubNotes || !uid) return;
+  unsubNotes = onSnapshot(collection(db, "lobbyNotes"), (snap) => {
+    notes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderNotes();
+  }, (e) => { console.warn("Notice board", e); $("noteList").innerHTML = '<p class="muted small-note">The notice board needs the latest Firebase rules (republish firestore.rules).</p>'; });
+}
+const noteTime = (n) => tsMs(n.at) || Date.now();
+function ago(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`;
+}
+function renderNotes() {
+  const box = $("noteList");
+  if (!box) return;
+  box.innerHTML = "";
+  const shown = [...notes].sort((a, b) => noteTime(b) - noteTime(a)).slice(0, 30);
+  if (!shown.length) box.append(Object.assign(document.createElement("p"), { className: "muted small-note", textContent: "No messages yet · be the first to leave one!" }));
+  for (const n of shown) {
+    const row = document.createElement("div");
+    row.className = "note" + (n.uid === uid ? " mine" : "");
+    const head = document.createElement("div");
+    head.className = "note-head";
+    head.append(avatarEl({ uid: n.uid, name: n.name, avatar: n.avatar }, "avatar small"),
+      Object.assign(document.createElement("b"), { textContent: n.name || "Player" }),
+      Object.assign(document.createElement("small"), { textContent: `${n.lobby ? GAME_NAME[n.lobby] + " lobby · " : ""}${ago(noteTime(n))}` }));
+    if (n.uid === uid || amAdmin) {
+      const del = Object.assign(document.createElement("button"), { className: "note-del", textContent: "✕", title: "Delete this message" });
+      del.onclick = () => deleteDoc(doc(db, "lobbyNotes", n.id)).catch((e) => toast(errMsg(e)));
+      head.append(del);
+    }
+    row.append(head, Object.assign(document.createElement("p"), { textContent: n.text }));
+    box.append(row);
+  }
+}
+async function postNote(e) {
+  e.preventDefault();
+  if (blockedCheck()) return;
+  const text = $("noteText").value.trim().slice(0, 200);
+  if (!text) return;
+  if (Date.now() - lastNoteAt < 10000) return toast("Wait a few seconds before posting again");
+  const name = myName();
+  if (!name) return;
+  lastNoteAt = Date.now();
+  const e2 = myEntry(name);
+  try {
+    await setDoc(doc(db, "lobbyNotes", `${uid.slice(0, 6)}-${Date.now().toString(36)}`), {
+      uid, name: e2.name, avatar: e2.avatar || null, text, lobby: lobbyGame, at: serverTimestamp(),
+    });
+    $("noteText").value = "";
+  } catch (err) { lastNoteAt = 0; toast(errMsg(err)); }
+}
+const LOUNGE_ROUND_CHOICES = [3, 5, 8, 10];
+const DEFAULT_LOUNGE_ROUNDS = 5;
+
+function createLounge() {
+  if (!isRegistered()) return toast("🔒 Sign in to create your own holhuashi.");
+  createRoom({ isPublic: false, loungeName: $("loungeName").value.trim() }).then(() => { $("loungeName").value = ""; })
+    .catch((e) => toast(errMsg(e)));
+}
+
+function setGame(game) {
+  if (room.host !== uid || room.status !== "lobby" || isLobbyRoom(room) || gameOf(room) === game) return;
+  if (game === "dhiha" && !isLoungeDoc(room)) return toast("DHIHA can only be played in a holhuashi");
+  if (game === "dhiha" && room.players.length > 4) return toast("DHIHA is for exactly 4 players · there are more than 4 here");
+  updateDoc(roomRef(), { game, target: targetFor(game), ...(game === "dhiha" ? { maxPlayers: 4 } : gameOf(room) === "dhiha" ? { maxPlayers: 6 } : {}) }).catch((e) => toast(errMsg(e)));
+}
+
+function setEndMode(mode) {
+  if (room.host !== uid || room.status !== "lobby" || isLobbyRoom(room)) return;
+  updateDoc(roomRef(), { endMode: mode }).catch((e) => toast(errMsg(e)));
+}
+
+function setRoundsLimit(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n < 1 || n > 50) return toast("Pick between 1 and 50 rounds");
+  if (room.host !== uid || room.status !== "lobby") return;
+  updateDoc(roomRef(), { roundsLimit: n }).catch((e) => toast(errMsg(e)));
+}
+
+// When does this game end? Lobby: 4 rounds. Lounge: the owner's choice of points or rounds.
+// CALL played to a points target: whoever reaches the target is out; the others play on until
+// only one player is left, and they win.
+const callElim = (r) => !!r && gameOf(r) === "call" && !isLobbyRoom(r) && r.endMode !== "rounds";
+const outOf = (r) => (callElim(r) ? r.eliminated || [] : []);
+const activeIds = (r) => r.playerIds.filter((u) => !outOf(r).includes(u));
+function nextActiveIdx(r, from) {
+  const ids = r.playerIds, n = ids.length, out = outOf(r);
+  for (let k = 1; k <= n; k++) { const i = (from + k) % n; if (!out.includes(ids[i])) return i; }
+  return (from + 1) % n;
+}
+function gameFinished(r, totals) {
+  if (isLobbyRoom(r)) return (r.gameRound || 0) >= LOBBY_ROUNDS;
+  if (r.endMode === "rounds") return (r.gameRound || 0) >= (r.roundsLimit || DEFAULT_LOUNGE_ROUNDS);
+  const target = r.target || DEFAULT_TARGET;
+  if (callElim(r)) return r.playerIds.filter((u) => (totals[u] ?? 0) < target).length <= 1;
+  return Object.values(totals).some((t) => t >= target);
+}
+function roundsTotal(r) {
+  if (isLobbyRoom(r)) return LOBBY_ROUNDS;
+  return r.endMode === "rounds" ? r.roundsLimit || DEFAULT_LOUNGE_ROUNDS : null;
+}
+
+let enteredAt = 0;
+function enterRoom(code) {
+  roomId = code;
+  enteredAt = Date.now();
+  getDoc(doc(db, "rooms", code)).then((d) => { const r = d.data(); if (isLoungeDoc(r)) rememberLounge(code, r.name || "Holhuashi"); }).catch(() => {});
+  const lt = LOBBY_TABLES.find((t) => t.id === code);
+  if (lt) { lobbyOpen = true; me.seated = true; lobbyGame = lt.game; }
+  location.hash = code;
+  $("roomCode").textContent = code;
+  unsubRoom?.(); unsubHand?.();
+  lastReactionId = undefined;
+  heapKey = null;
+  watchPresence(code, uid);
+  unsubRoom = onSnapshot(roomRef(), (snap) => {
+    if (!snap.exists()) { toast("Room was deleted"); return leaveRoom(); }
+    lastRoomEvent = Date.now();
+    roomConfirmed = !snap.metadata?.hasPendingWrites && !snap.metadata?.fromCache;
+    // a copy saved on the phone (e.g. just woke up / came back online): look, but don't play on it
+    if (snap.metadata?.fromCache) { if (!roomStale) refreshRoom(); } else roomStale = false;
+    const prev = room;
+    const fresh = snap.data();
+    // right after sitting down, the phone may first show an old copy of the table (from before I
+    // sat): wait for the real one instead of saying "you're not in this room"
+    if (!fresh.playerIds.includes(uid) && !prev && Date.now() - enteredAt < 8000) return;
+    serverRoom = fresh;
+    room = withPending(fresh);
+    if (!room.playerIds.includes(uid)) {
+      if ((room?.removed || []).includes(uid)) { forgetLounge(roomId); toast("🚫 The owner removed you from this holhuashi"); }
+      else toast(prev?.playerIds?.includes(uid) ? "You were offline for over a minute, so you left the table" : "You're not in this room");
+      return leaveRoom();
+    }
+    // the server just stamped my check-in: learn its clock (phones' clocks can be off)
+    const mySeen = tsMs(room.seen?.[uid]);
+    if (mySeen && mySeen !== lastMySeen && !snap.metadata?.hasPendingWrites && Date.now() - checkInSentAt < 8000) {
+      lastMySeen = mySeen; serverOffset = mySeen - Date.now(); serverTimeKnown = true;
+    }
+    if (!prev) checkIn();
+    if (practiceDealPending === roomId && room.status === "lobby" && room.playerIds.length > 1 && room.host === uid) {
+      practiceDealPending = null;
+      setTimeout(dealRound, 50);
+    }
+    setTimeout(maybeBotMove, 0);
+    const sameRound = prev && prev.round === room.round;
+    // someone just called DIGU or CALL: the big moment, on everyone's screen
+    if (sameRound && prev.status === "playing" && room.status === "ended") playShout(room);
+    if (prev && room.gameOver && room.champions?.length && !prev.gameOver) celebrateWinner(room);
+
+    // reactions (skip the one already there when I open the room)
+    const rx = room.reaction;
+    if (lastReactionId !== undefined && rx && rx.id !== lastReactionId) showBubble(rx.uid, rx.text);
+    lastReactionId = rx?.id ?? null;
+    // someone just said they're one card from DIGU
+    if (sameRound && room.status === "playing") {
+      for (const p of room.playerIds) {
+        if (room.almost?.[p] && !prev.almost?.[p]) {
+          showBubble(p, "1 card! 🔥", true);
+          showBanner(p === uid ? "📢 You told everyone: 1 card to DIGU!" : `📢 ${nameOf(p)}: 1 card to DIGU!`);
+        }
+      }
+    }
+
+    cardMoves(prev);
+    if (isBondi() && sameRound && room.status !== "lobby") bondiMoments(prev);
+    if (isDhiha() && sameRound && room.status !== "lobby") dhihaMoments(prev);
+    // CALL: someone threw a set (2+ cards of the same number) → claps for everyone
+    if (isCall() && sameRound && room.thrownNow?.length > 1 && JSON.stringify(room.thrownNow) !== JSON.stringify(prev.thrownNow)) {
+      const who = room.playerIds[room.turn];
+      const n = room.thrownNow.length, r = C.label(C.parse(room.thrownNow[0]).r);
+      funMoment("👏", `${who === uid ? "You" : nameOf(who)} threw a set of ${n} × ${r}!`, ["👏", "👏", "🙌", "✨"], "clap");
+    }
+    applyPickup();
+    updateView();
+    render();
+    afterUpdate();
+    renderFloor();
+    if (!prev && inLobbyView()) writePresence(); // now that the table has loaded, show me sitting in it
+    // a full lobby table starts by itself
+    if (isLobbyRoom(room) && room.status === "lobby" && room.host === uid
+        && room.players.length >= seatsOf(room) && enterRoom.autoStarted !== `${roomId}-${room.round}`) {
+      enterRoom.autoStarted = `${roomId}-${room.round}`;
+      dealRound();
+    }
+    if (room.status === "ended" && resultsRound !== room.round) {
+      resultsRound = room.round;
+      clearTimeout(resultsTimer);
+      // let everyone watch the DIGU card flip first (no wait if I just opened the page)
+      resultsTimer = setTimeout(showResults, prev ? RESULTS_DELAY : 0);
+    }
+    if (room.status === "ended") {
+      if (!room.scored && lastRows && resultsRound === room.round && (room.host === uid || isOffline(room, room.host, roomId))) saveScores();
+      if (!$("results").hidden) renderResults(); // totals / game-over update when the host saves scores
+    }
+    if (room.status !== "ended") { resultsRound = 0; lastRows = null; clearTimeout(resultsTimer); $("results").hidden = true; }
+  }, (e) => toast(errMsg(e)));
+  unsubHand = onSnapshot(handRef(), (snap) => {
+    handLoaded = !snap.metadata?.hasPendingWrites && !snap.metadata?.fromCache;
+    serverHand = snap.exists() ? snap.data().cards : [];
+    const cards = pendingHand() || serverHand;
+    // keep my own arrangement: existing cards stay in place, new ones go on the end
+    const added = cards.filter((c) => !hand.includes(c));
+    hand = [...hand.filter((c) => cards.includes(c)), ...added];
+    if ((isBondi() || isDhiha()) && added.length) hand = C.sortBondi(hand); // grouped by suit
+    applyPickup();
+    if (!hand.includes(selected)) selected = null;
+    render();
+    afterUpdate();
+  });
+}
+
+function hideTableOverlays() {
+  if ($("leaveBtn").parentElement === $("bottomBack")) $("game").querySelector(".top").prepend($("leaveBtn"));
+  for (const id of ["seats", "bottomBar", "turnGlow", "premTools", "tipBubble", "premiumPanel", "premiumPanelR", "pauseBtn", "endGameBtn", "offlineAsk", "pauseBar", "loungeChat", "chatBtn"]) {
+    const el = $(id); if (el) el.hidden = true;
+  }
+  $("seats").innerHTML = ""; $("seats")._key = null; $("turnGlow")._key = null;
+  $("game").classList.remove("in-play");
+  chatOpen = false; tipOpen = false;
+}
+function leaveRoom() {
+  stopPresence();
+  hideTableOverlays();
+  pendingMoves = []; serverRoom = null; serverHand = [];
+  $("loungeChat").hidden = true; chatKey = null;
+  setTimeout(() => { if (!room) renderMyLounges(true); }, 300); // back home: show my holhuashis straight away
+  unsubRoom?.(); unsubHand?.();
+  unsubRoom = unsubHand = null;
+  clearTimeout(resultsTimer);
+  roomId = null; room = null; hand = [];
+  me.seated = false;
+  history.replaceState(null, "", lobbyOpen ? lobbyHash() : location.pathname);
+  $("results").hidden = true;
+  updateView();
+  renderFloor();
+}
+
+// ---------- host actions ----------
+function setTarget(value) {
+  const t = Math.round(Number(value));
+  const lo = isDhiha() ? 1 : 50;
+  if (!Number.isFinite(t) || t < lo || t > 100000) return toast(`Pick a target between ${lo} and 100000`);
+  if (room.host !== uid || room.status !== "lobby") return;
+  updateDoc(roomRef(), { target: t }).catch((e) => toast(errMsg(e)));
+}
+
+function setMaxPlayers(n) {
+  if (room.host !== uid || room.status !== "lobby") return;
+  if (n < room.players.length) return toast(`${room.players.length} players are already in`);
+  if (isLobbyRoom(room) && n > LOBBY_MAX) return toast(`Lobby tables seat up to ${LOBBY_MAX}`);
+  updateDoc(roomRef(), { maxPlayers: n }).catch((e) => toast(errMsg(e)));
+}
+
+// Game over: back to the lobby with everyone at 0, so the host can pick a new target.
+function playAgain() {
+  if (room.host !== uid && !isLobbyRoom(room) && !isOffline(room, room.host, roomId)) return;
+  const scores = Object.fromEntries(room.playerIds.map((p) => [p, 0]));
+  if (room.practice) { // vs the computer: just deal a new game
+    practiceDealPending = roomId;
+    updateDoc(roomRef(), { status: "lobby", scores, gameOver: false, champions: null, gameRound: 0, almost: {}, eliminated: [], log: "New game vs the computer" })
+      .catch((e) => toast(errMsg(e)));
+    return;
+  }
+  updateDoc(roomRef(), {
+    status: "lobby", scores, gameOver: false, champions: null, gameRound: 0, eliminated: [], outRound: {},
+    lastChampions: room.champions || null, almost: {},
+    log: isLobbyRoom(room) ? "Back in the Aammu Jagaha: press Play to go again" : "New game: pick the settings and deal",
+  }).catch((e) => toast(errMsg(e)));
+}
+
+async function dealRound() {
+  if (room.gameOver) return;
+  if (room.status === "ended" && !room.scored) { await saveScores(); if (!room.scored) await new Promise((r) => setTimeout(r, 600)); }
+  // at a lobby table, anyone who has left the lobby since sitting down is let go before dealing
+  if (isLobbyRoom(room) && room.status === "lobby") {
+    // only players who are still checking in on this table (bots and me always count)
+    const here = room.players.filter((p) => !isOffline(room, p.uid, roomId));
+    if (here.length !== room.players.length) {
+      if (here.length < 2) return toast("Wait for at least one more player to sit down");
+      await updateDoc(roomRef(), {
+        players: here, playerIds: here.map((p) => p.uid),
+        scores: Object.fromEntries(here.map((p) => [p.uid, room.scores?.[p.uid] || 0])),
+      }).catch(() => {});
+      room = { ...room, players: here, playerIds: here.map((p) => p.uid) };
+    }
+  }
+  // holhuashi without enough people: computer players fill the empty places (no points for that game)
+  const need = isDhiha() ? 4 : 2;
+  if (isLoungeDoc(room) && room.status === "lobby" && room.playerIds.length < need) {
+    if (!canManageBots()) return toast(`Need ${need - room.playerIds.length} more player${need - room.playerIds.length > 1 ? "s" : ""} · only the owner can add computer players`);
+    toast("🤖 Not enough players · computer players are joining (no points for this game)");
+    await fillWithBots();
+    for (let i = 0; i < 20 && room.playerIds.length < need; i++) await sleep(150);
+    if (room.playerIds.length < need) return toast("Couldn't add computer players · try again");
+  }
+  const n = room.playerIds.length;
+  if (n < 2) return toast("Need at least 2 players");
+  if (gameOf(room) === "bondi") return dealBondi();
+  if (gameOf(room) === "dhiha") return dealDhiha();
+  // DIGU: 10 cards each (two decks for 5–6 players). CALL: 5 cards each, one deck is enough.
+  const call = gameOf(room) === "call";
+  const handSize = call ? C.CALL_HAND_SIZE : C.HAND_SIZE;
+  const deck = C.shuffle(C.buildDeck(!call && n >= 5 ? 2 : 1));
+  const batch = writeBatch(db);
+  const out = outOf(room);
+  for (const p of room.playerIds) {
+    batch.set(handRef(p), { cards: out.includes(p) ? [] : deck.splice(0, handSize) });
+  }
+  const round = (room.round || 0) + 1;
+  batch.update(roomRef(), {
+    status: "playing",
+    host: uid, // whoever presses Play runs this game (deals rounds, saves scores)
+    deck,
+    discard: [],                   // the thrown pile starts empty in both games
+    ccount: call ? Object.fromEntries(room.playerIds.map((p) => [p, out.includes(p) ? 0 : handSize])) : null,
+    turn: out.includes(room.playerIds[(round - 1) % n]) ? nextActiveIdx(room, (round - 1) % n) : (round - 1) % n, // starter rotates
+    phase: call ? "throw" : "draw", // CALL: throw first, then take; DIGU: take first, then throw
+    lastThrow: null, pickable: null, thrownNow: null,
+    moveId: 0,
+    reshuffles: 0,
+    almost: {},
+    track: {},
+    winner: null,
+    winnerSets: null,
+    diguCard: null,
+    scored: false,
+    round,
+    gameRound: (room.gameRound || 0) + 1,
+    log: roundsTotal(room) ? `Round ${(room.gameRound || 0) + 1} of ${roundsTotal(room)}` : `Round ${round} dealt`,
+  });
+  try { await batch.commit(); sendNotify(room?.gameRound > 1 ? "round" : "start"); } catch (e) { toast(errMsg(e)); }
+}
+
+// ---------- BONDI ----------
+// The whole deck is dealt out; whoever has K♠ leads. Follow the suit that was led. If everyone
+// follows, those cards are set aside and the highest card leads next. If someone can't follow,
+// they play any card and the trick stops: the cards go to whoever played the highest card of the
+// led suit, and that player leads. First out of cards scores 0, then 10, 20, …; lowest total wins.
+// Picked-up cards wait in room.pickups until the player's own screen (or, for the computer,
+// the host's) moves them into their hand — only you can write your own hand.
+const SUIT_WORD = { S: "spades", H: "hearts", D: "diamonds", C: "clubs" };
+const cardName = (id) => C.label(C.parse(id).r) + C.SUIT_SYMBOL[C.parse(id).s];
+const ordinal = (n) => n + ({ 1: "st", 2: "nd", 3: "rd" }[n] || "th");
+function trickLeader() {
+  const t = room.trick || [];
+  if (!t.length) return null;
+  const s = C.suitOf(t[0].card);
+  return t.filter((x) => C.suitOf(x.card) === s).reduce((a, b) => (C.bondiRank(b.card) > C.bondiRank(a.card) ? b : a)).uid;
+}
+// true while cards I've been given haven't reached my hand yet, or my hand hasn't caught up with
+// the table (the two arrive separately) — I can't play until it's all in step
+const pendingPickup = () => isBondi() && ((room.pickups?.[uid] || []).some((c) => !hand.includes(c))
+  || (room.status === "playing" && room.counts && hand.length !== room.counts[uid]));
+
+async function dealBondi() {
+  const ids = room.playerIds, n = ids.length;
+  const deck = C.shuffle(C.buildDeck(1));
+  const hands = Object.fromEntries(ids.map((p) => [p, []]));
+  deck.forEach((c, i) => hands[ids[i % n]].push(c));
+  const starter = ids.findIndex((p) => hands[p].includes(C.BONDI_FIRST));
+  const batch = writeBatch(db);
+  for (const p of ids) batch.set(handRef(p), { cards: hands[p] });
+  const round = (room.round || 0) + 1;
+  batch.update(roomRef(), {
+    status: "playing", host: uid, deck: [], discard: [], turn: starter, phase: "play",
+    trick: [], trickSize: n, out: [], aside: 0, pickups: {}, voids: {}, lastTrick: null, order: null,
+    counts: Object.fromEntries(ids.map((p) => [p, hands[p].length])),
+    lastThrow: null, pickable: null, thrownNow: null, moveId: 0, reshuffles: 0, almost: {},
+    winner: null, winnerSets: null, diguCard: null, scored: false, round,
+    gameRound: (room.gameRound || 0) + 1,
+    log: `${roundsTotal(room) ? `Round ${(room.gameRound || 0) + 1} of ${roundsTotal(room)} · ` : ""}${nameOf(ids[starter])} has K♠ and starts`,
+  });
+  try { await batch.commit(); sendNotify(room?.gameRound > 1 ? "round" : "start"); } catch (e) { toast(errMsg(e)); }
+}
+
+// What a computer player (or my timed-out turn) knows: who still plays this trick, who has run out of what.
+function bondiCtx(r, who) {
+  const counts = r.counts || {}, played = (r.trick || []).map((t) => t.uid);
+  const n = r.playerIds.length, seat = r.playerIds.indexOf(who), later = [];
+  for (let k = 1; k < n; k++) {
+    const u = r.playerIds[(seat + k) % n];
+    if (counts[u] > 0 && !played.includes(u) && u !== who) later.push(u);
+  }
+  const left = Math.max(0, (r.trickSize || n) - played.length - 1); // how many play after me this trick
+  return { me: who, voids: r.voids || {}, others: r.playerIds.filter((u) => u !== who && counts[u] > 0), later: later.slice(0, left),
+    level: isBot(who) && r.botLevel === "easy" ? "easy" : "hard" };
+}
+
+const bondiState = (r) => ({
+  playerIds: r.playerIds, counts: r.counts || {}, trick: r.trick || [],
+  trickSize: r.trickSize || r.playerIds.length, out: r.out || [], aside: r.aside || 0,
+});
+
+// Turn the rules' result into the room fields to save, with a line for the log.
+function bondiUpdate(r, res, who, card, timedOut = false) {
+  const moveId = (r.moveId || 0) + 1;
+  const upd = { counts: res.counts, trick: res.trick, moveId };
+  if (res.trickSize != null) upd.trickSize = res.trickSize;
+  if (res.out) upd.out = res.out;
+  if (res.aside != null) upd.aside = res.aside;
+  if (res.lastTrick) upd.lastTrick = { ...res.lastTrick, id: `${r.round}-${moveId}` };
+  if (res.pickup) upd[`pickups.${res.pickup.uid}`] = arrayUnion(...res.pickup.cards);
+  let log = card ? `${nameOf(who)} ${timedOut ? "ran out of time and played" : "played"} ${cardName(card)}` : `${nameOf(who)} was skipped`;
+  const ev = res.event;
+  if (ev?.kind === "cut") {
+    log = `${nameOf(ev.by)} had no ${SUIT_WORD[ev.suit]} and cut! ${nameOf(ev.to)} picks up ${ev.n} cards`;
+    upd[`voids.${ev.by}`] = arrayUnion(ev.suit);
+  }
+  if (ev?.kind === "clear") log = `Everyone followed ${SUIT_WORD[ev.suit]} · cards set aside`;
+  if (res.over) {
+    Object.assign(upd, { status: "ended", winner: res.order[0], order: res.order, diguCard: null, winnerSets: null, diguStyle: null });
+    log += ` · round over`;
+  } else {
+    upd.turn = res.turn;
+    if (ev) log += ` · ${nameOf(r.playerIds[res.turn])} leads`;
+  }
+  upd.log = log;
+  return upd;
+}
+
+function bondiThrow(card, timedOut) {
+  const trick = room.trick || [];
+  if (!C.bondiLegal(hand, trick).includes(card)) {
+    const s = C.suitOf(trick[0].card);
+    return toast(`You have ${SUIT_WORD[s]}: play a ${C.SUIT_SYMBOL[s]} card`);
+  }
+  if (!claimAction()) return;
+  const res = C.bondiPlay(bondiState(room), uid, card);
+  const b = moveBatch();
+  b.update(handRef(), { cards: hand.filter((c) => c !== card) });
+  b.update(roomRef(), bondiUpdate(room, res, uid, card, timedOut));
+  previewThrow([card]);
+  selected = null;
+  lastDrawn = null;
+  commit(b, res.over ? "ended" : "turn");
+}
+
+// Cards I've been given: move them into my hand.
+function applyPickup() {
+  const mine = room?.pickups?.[uid];
+  if (!isBondi() || !mine || applyPickup.busy) return;
+  applyPickup.busy = true;
+  const add = mine.filter((c) => !hand.includes(c));
+  // wait until my hand is up to date (it arrives separately from the table)
+  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid]) { applyPickup.busy = false; return; }
+  const b = writeBatch(db);
+  if (add.length) b.update(handRef(), { cards: [...hand, ...add] });
+  b.update(roomRef(), { [`pickups.${uid}`]: deleteField() });
+  b.commit().catch((e) => toast(errMsg(e))).finally(() => { applyPickup.busy = false; });
+}
+
+async function botBondi(bot, cards) {
+  const got = room.pickups?.[bot] || [];
+  const held = [...cards, ...got.filter((c) => !cards.includes(c))];
+  if (!held.length) return;
+  const card = botLevel() === "hard" && botKnown
+    ? C.bondiHardCard(held, bondiState(room), bot, { known: botKnown, voids: room.voids || {}, humans: room.playerIds.filter((u) => !isBot(u)), budgetMs: 250 })
+    : C.bondiBotCard(held, room.trick || [], bondiCtx(room, bot));
+  const res = C.bondiPlay(bondiState(room), bot, card);
+  const upd = bondiUpdate(room, res, bot, card);
+  if (room.pickups?.[bot]) upd[`pickups.${bot}`] = deleteField();
+  await botCommit(upd, bot, held.filter((c) => c !== card));
+}
+
+// Someone went offline mid-round: their cards leave with them.
+function bondiRemoval(r, out, ids, pick) {
+  const counts = pick(r.counts);
+  const trick = (r.trick || []).filter((t) => !out.includes(t.uid));
+  const active = ids.filter((u) => counts[u] > 0);
+  const upd = { counts, trick, out: (r.out || []).filter((u) => !out.includes(u)), moveId: (r.moveId || 0) + 1 };
+  if (active.length <= 1) {
+    return { ...upd, status: "ended", order: [...upd.out, ...active], winner: upd.out[0] || active[0], diguStyle: null };
+  }
+  const played = trick.map((t) => t.uid);
+  upd.trickSize = Math.max(1, played.length + active.filter((u) => !played.includes(u)).length);
+  const cur = r.playerIds[r.turn];
+  if (out.includes(cur) || !trick.length && (r.trick || []).length) {
+    // pass the turn on to the next player still here who hasn't played this trick
+    let k = 1;
+    while (k < r.playerIds.length) {
+      const u = r.playerIds[(r.turn + k) % r.playerIds.length];
+      if (!out.includes(u) && counts[u] > 0 && !played.includes(u)) break;
+      k++;
+    }
+    upd.turn = ids.indexOf(r.playerIds[(r.turn + k) % r.playerIds.length]);
+  } else upd.turn = ids.indexOf(cur);
+  if (upd.turn < 0) upd.turn = ids.indexOf(active[0]);
+  return upd;
+}
+
+// The middle of the table: the cards played in this trick, each with who played it.
+// Between tricks, the last trick stays there, faded, until the next card comes down.
+function renderTrick() {
+  const pile = $("discardPile");
+  const live = room.trick || [];
+  const last = room.lastTrick;
+  const showing = live.length ? live : last ? last.cards.map((card, i) => ({ card, uid: last.players[i] })) : [];
+  const key = `${room.round}|${room.status}|${JSON.stringify(showing)}|${last?.id}`;
+  if (key === heapKey) return;
+  const prevCount = heapTop?.round === room.round ? heapTop.n : 0;
+  heapKey = key;
+  heapTop = { round: room.round, n: live.length };
+  pile.innerHTML = "";
+  pile.classList.toggle("trick-done", !live.length && !!last);
+  if (!showing.length) { pile.innerHTML = '<div class="card empty"></div>'; return; }
+  const n = showing.length;
+  showing.forEach((t, i) => {
+    const slot = document.createElement("div");
+    slot.className = "trick-slot";
+    slot.style.setProperty("--i", i - (n - 1) / 2);
+    slot.style.zIndex = i + 1;
+    const el = cardEl(t.card);
+    el.classList.add("trick-card");
+    if (arriving.has(t.card)) el.classList.add("arriving");
+    if (live.length && i === n - 1 && n > prevCount && !el.classList.contains("arriving")) el.classList.add("landing");
+    if (!live.length && last?.cut === t.uid) el.classList.add("cut-card");
+    slot.append(el, Object.assign(document.createElement("small"), { textContent: t.uid === uid ? "You" : nameOf(t.uid) }));
+    pile.append(slot);
+  });
+  if (!live.length && last) {
+    const note = document.createElement("div");
+    note.className = "trick-note" + (last.to ? " cut" : "");
+    note.textContent = isDhiha() ? `✓ Deck to ${teamName(last.team)}${last.tens ? " · 🔟" : ""}`
+      : last.to ? `✋ Cut! → ${last.to === uid ? "you pick up" : nameOf(last.to) + " picks up"}` : "✓ Set aside";
+    pile.append(note);
+  }
+}
+
+// ---------- DHIHA (team game, holhuashis only) ----------
+// 4 players, 2 teams (they pick in the holhuashi; teammates sit opposite), 13 cards each.
+// Follow suit; the first player who can't sets the Hukum (trump). Each complete trick (a "deck")
+// goes to the team of whoever won it. 3 tens wins the round; at 2 tens each, 7 decks wins.
+function dhihaTeams(r = room) {
+  const t = r.teams || {};
+  const A = r.playerIds.filter((u) => t[u] === "A"), B = r.playerIds.filter((u) => t[u] === "B");
+  return { A, B, ok: r.playerIds.length === 4 && A.length === 2 && B.length === 2 };
+}
+function pickTeam(team) {
+  if (!room || room.status !== "lobby") return;
+  const now = dhihaTeams();
+  if (now[team].length >= 2 && room.teams?.[uid] !== team) return toast(`${teamName(team)} is full`);
+  updateDoc(roomRef(), { [`teams.${uid}`]: team }).catch((e) => toast(errMsg(e)));
+}
+
+async function dealDhiha() {
+  if (room.playerIds.length !== 4) return toast("DHIHA needs exactly 4 players");
+  const teams = { ...(room.teams || {}) };
+  for (const u of room.playerIds) if (teams[u] !== "A" && teams[u] !== "B") delete teams[u];
+  for (const u of room.playerIds.filter((x) => isBot(x) && !teams[x])) {
+    const a = room.playerIds.filter((x) => teams[x] === "A").length;
+    teams[u] = a < 2 ? "A" : "B";
+  }
+  const tm = dhihaTeams({ ...room, teams });
+  if (!tm.ok) return toast("Pick teams first: 2 players in Team 1 and 2 in Team 2");
+  // teammates sit opposite: Team 1, Team 2, Team 1, Team 2
+  const order = [tm.A[0], tm.B[0], tm.A[1], tm.B[1]];
+  const players = order.map((u) => room.players.find((p) => p.uid === u));
+  const deck = C.shuffle(C.buildDeck(1));
+  const batch = writeBatch(db);
+  order.forEach((u, i) => batch.set(handRef(u), { cards: deck.slice(i * 13, i * 13 + 13) }));
+  const round = (room.round || 0) + 1;
+  const turn = Math.floor(Math.random() * 4); // a random player starts
+  batch.update(roomRef(), {
+    status: "playing", host: uid, players, playerIds: order, teams, deck: [], discard: [], turn, phase: "play",
+    trick: [], hukum: null, hukumBy: null, decks: { A: [], B: [] }, lastTrick: null, dhihaResult: null, dvoids: {},
+    lastThrow: null, pickable: null, thrownNow: null, moveId: 0, almost: {}, winner: null, winnerSets: null,
+    diguCard: null, scored: false, round, gameRound: (room.gameRound || 0) + 1,
+    log: `${roundsTotal(room) ? `Round ${(room.gameRound || 0) + 1} of ${roundsTotal(room)} · ` : ""}${nameOf(order[turn])} starts`,
+  });
+  try { await batch.commit(); sendNotify(room?.gameRound > 1 ? "round" : "start"); } catch (e) { toast(errMsg(e)); }
+}
+
+function dhihaThrow(card, timedOut) {
+  const trick = room.trick || [];
+  if (!C.dhihaLegal(hand, trick).includes(card)) {
+    const s = C.suitOf(trick[0].card);
+    return toast(`You have ${SUIT_WORD[s]}: play a ${C.SUIT_SYMBOL[s]} card`);
+  }
+  if (!claimAction()) return;
+  const upd = dhihaMoveUpdate(uid, card, timedOut);
+  const b = moveBatch();
+  b.update(handRef(), { cards: hand.filter((c) => c !== card) });
+  b.update(roomRef(), upd);
+  selected = null;
+  lastDrawn = null;
+  previewThrow([card]);
+  commit(b, upd.status === "ended" ? "ended" : "turn");
+}
+async function botDhiha(bot, cards) {
+  const seen = [...(room.decks?.A || []), ...(room.decks?.B || [])].flatMap((d) => d.split(","));
+  const level = botLevel();
+  const card = level === "easy" ? C.dhihaAutoCard(cards, room.trick || [], room.hukum)
+    : level === "hard" ? C.dhihaHardCard(cards, room.trick || [], room.hukum, { me: bot, teams: room.teams, playerIds: room.playerIds,
+      seen, voids: room.dvoids || {}, decksA: room.decks?.A || [], decksB: room.decks?.B || [], budgetMs: 250, known: botKnown || {} })
+    : C.dhihaBotCard(cards, room.trick || [], room.hukum, { me: bot, teams: room.teams, playerIds: room.playerIds,
+      seen, voids: room.dvoids || {} });
+  if (!card) return;
+  await botCommit(dhihaMoveUpdate(bot, card, false), bot, cards.filter((c) => c !== card));
+}
+function dhihaMoveUpdate(who, card, timedOut) {
+  const trick = room.trick || [];
+  const res = C.dhihaPlay({ playerIds: room.playerIds, teams: room.teams, trick, hukum: room.hukum, decks: room.decks }, who, card);
+  const moveId = (room.moveId || 0) + 1;
+  const upd = { trick: res.trick, hukum: res.hukum, turn: res.turn, moveId,
+    log: `${nameOf(who)} ${timedOut ? "ran out of time and played" : "played"} ${cardName(card)}` };
+  if (trick.length && C.suitOf(card) !== C.suitOf(trick[0].card)) upd[`dvoids.${who}`] = arrayUnion(C.suitOf(trick[0].card));
+  if (res.event?.kind === "hukum") { upd.hukumBy = who; upd.log += ` · Hukum is now ${C.SUIT_SYMBOL[res.hukum]}!`; }
+  if (res.decks) {
+    upd.decks = res.decks;
+    upd.lastTrick = { cards: res.won.cards, players: [...trick.map((t) => t.uid), who], team: res.won.team, winner: res.won.winner, tens: res.won.tens, id: `${room.round}-${moveId}` };
+    upd.log = `${nameOf(res.won.winner)} won the deck for ${teamName(res.won.team)}${res.won.tens ? ` · with ${res.won.tens > 1 ? res.won.tens + " tens" : "a 10"}!` : ""}`;
+  }
+  if (res.over) {
+    const champs = room.playerIds.filter((u) => room.teams[u] === res.over.team);
+    Object.assign(upd, { status: "ended", winner: champs[0], dhihaResult: res.over, diguStyle: null });
+    upd.log += ` · ${teamName(res.over.team)} wins the round`;
+  }
+  return upd;
+}
+
+// The two teams' piles: decks with a 10 lie face up (the 10 on top); the rest are face down.
+function renderDhihaPiles() {
+  const box = $("dhihaPiles");
+  const show = isDhiha() && room.status !== "lobby";
+  box.hidden = !show;
+  $("hukumBadge").hidden = !show;
+  if (!show) return;
+  const key = JSON.stringify([room.decks, room.hukum, room.teams, room.round]);
+  if (box._key === key) return;
+  box._key = key;
+  box.innerHTML = "";
+  for (const team of ["A", "B"]) {
+    const decks = (room.decks?.[team] || []).map((d) => d.split(","));
+    const tens = decks.flat().filter((c) => C.parse(c).r === 10);
+    const mine = room.teams?.[uid] === team;
+    const el = document.createElement("div");
+    el.className = "team-pile team-" + team + (mine ? " mine" : "");
+    el.id = "teamPile-" + team;
+    const names = room.playerIds.filter((u) => room.teams?.[u] === team).map((u) => (u === uid ? "You" : nameOf(u))).join(" & ");
+    el.append(Object.assign(document.createElement("div"), { className: "tp-head", textContent: `${teamName(team)} · ${names}` }));
+    // every deck in the order it was won, each one lying a little lower and to the side of the last:
+    // decks with a 10 face up (the 10 on top), the others face down. A badge shows how many.
+    const row = document.createElement("div");
+    row.className = "tp-row tp-stack";
+    decks.forEach((d, i) => {
+      const ten = d.find((c) => C.parse(c).r === 10);
+      const c = ten ? cardEl(ten, { small: true }) : document.createElement("div");
+      if (!ten) c.className = "card back small";
+      c.classList.add("tp-deck");
+      if (ten) c.classList.add("tp-ten");
+      c.style.setProperty("--i", i);
+      row.append(c);
+    });
+    row.style.setProperty("--n", decks.length);
+    if (decks.length) row.append(Object.assign(document.createElement("span"), { className: "tp-count", textContent: decks.length }));
+    else row.append(Object.assign(document.createElement("small"), { className: "tp-empty", textContent: "no decks yet" }));
+    el.append(row, Object.assign(document.createElement("div"), { className: "tp-stats", textContent: `🔟 ${tens.length} · ${decks.length} deck${decks.length === 1 ? "" : "s"}` }));
+    box.append(el);
+  }
+  const hb = $("hukumBadge");
+  hb.className = "hukum-badge" + (room.hukum ? " set " + (["H", "D"].includes(room.hukum) ? "red" : "black") : "");
+  hb.textContent = room.hukum ? `Hukum ${C.SUIT_SYMBOL[room.hukum]}` : "Hukum: not chosen yet";
+}
+
+function dhihaMoments(prev) {
+  if (room.hukum && !prev.hukum) {
+    showBanner(`🔥 Hukum is ${C.SUIT_SYMBOL[room.hukum]} · chosen by ${room.hukumBy === uid ? "you" : nameOf(room.hukumBy)}`);
+    showBubble(room.hukumBy, `Hukum ${C.SUIT_SYMBOL[room.hukum]}!`, true);
+  }
+  const t = room.lastTrick;
+  if (t?.id && t.id !== prev.lastTrick?.id) {
+    setTimeout(() => sweepTrick(t), 650);
+    if (t.tens) setTimeout(() => funMoment("🔟", `${teamName(t.team)} got ${t.tens > 1 ? t.tens + " tens" : "a 10"}! (${t.winner === uid ? "you" : nameOf(t.winner)})`, ["🔟", "✨", "👏", "🎉"], "clap"), 900);
+  }
+}
+
+function playDhihaEnd(r) {
+  const res = r.dhihaResult || {};
+  const names = r.playerIds.filter((u) => r.teams?.[u] === res.team).map((u) => (u === uid ? "You" : r.players.find((p) => p.uid === u)?.name || "?")).join(" & ");
+  const fx = document.createElement("div");
+  fx.className = "shout-fx is-digu";
+  const word = shoutEl(null, `${teamName(res.team)}!`);
+  word.classList.add("fx-word");
+  const who = document.createElement("div");
+  who.className = "fx-who";
+  who.textContent = `🏆 ${names} win the round · ${res.how === "decks" ? `${res.count?.[res.team]} decks` : `${res.tens?.[res.team]} tens`} · +${res.points} point${res.points > 1 ? "s" : ""}`;
+  fx.append(Object.assign(document.createElement("div"), { className: "fx-rays" }), word, who);
+  confetti(fx, false);
+  shakeAndFade(fx);
+}
+
+// In the holhuashi before a DHIHA game: everyone picks a team.
+function dhihaTeamPicker() {
+  const wrap = document.createElement("section");
+  wrap.className = "team-picker";
+  const tm = dhihaTeams();
+  wrap.append(Object.assign(document.createElement("h3"), { textContent: tm.ok ? "✓ Teams are ready · the owner can press Start" : "Pick your team (2 players each)" }));
+  const cols = document.createElement("div");
+  cols.className = "tp-cols";
+  for (const team of ["A", "B"]) {
+    const col = document.createElement("div");
+    col.className = "tp-col team-" + team;
+    col.append(Object.assign(document.createElement("b"), { textContent: teamName(team) }));
+    for (const u of tm[team]) {
+      const p = room.players.find((x) => x.uid === u);
+      const row = document.createElement("div");
+      row.className = "tp-member";
+      row.append(avatarEl(p, "avatar small"), Object.assign(document.createElement("span"), { textContent: u === uid ? "You" : p.name }));
+      col.append(row);
+    }
+    for (let i = tm[team].length; i < 2; i++) col.append(Object.assign(document.createElement("div"), { className: "tp-member empty", textContent: "free place" }));
+    if (room.teams?.[uid] !== team && tm[team].length < 2) {
+      const btn = Object.assign(document.createElement("button"), { type: "button", className: "primary small", textContent: `Join ${teamName(team)}` });
+      btn.onclick = () => pickTeam(team);
+      col.append(btn);
+    }
+    cols.append(col);
+  }
+  wrap.append(cols);
+  if (room.players.length !== 4) wrap.append(Object.assign(document.createElement("p"), { className: "tp-note", textContent: `DHIHA needs exactly 4 players · ${room.players.length} here now` }));
+  return wrap;
+}
+
+// ---------- turn actions ----------
+// Moves are written straight from the local copy of the game (no server round trip first),
+// so they show on your screen instantly.
+const nameOf = (u) => room.players.find((p) => p.uid === u)?.name || "?";
+const isMyTurn = () => room?.status === "playing" && !room.paused && room.playerIds[room.turn] === uid;
+// The holhuashi owner can pause a game (e.g. while someone is offline). While paused nobody can play,
+// the turn clock stops and offline players are not removed. If the owner isn't at the table, the host can.
+const canPause = () => !!room && isLoungeDoc(room) && room.status === "playing"
+  && (ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)));
+function togglePause() {
+  if (!canPause()) return;
+  const off = room.players.filter((p) => isOffline(room, p.uid, roomId) || silentFor(p.uid) > 30_000).map((p) => p.name);
+  updateDoc(roomRef(), room.paused
+    ? { paused: null, host: uid, heartbeat: serverTimestamp(), moveId: (room.moveId || 0) + 1, log: `▶ ${myName()} resumed the game` }
+    : { paused: { by: uid, at: Date.now() }, log: `⏸ ${myName()} paused the game${off.length ? ` · waiting for ${off.join(" & ")}` : ""}` })
+    .catch((e) => toast(errMsg(e)));
+}
+// End the game now (no points for an unfinished game): back to the holhuashi.
+function endGameNow() {
+  if (!room || !isLoungeDoc(room) || !["playing", "ended"].includes(room.status)) return;
+  if (!(ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)))) return;
+  if (!confirm("End this game now? It stops here and nobody gets points for it.")) return;
+  updateDoc(roomRef(), {
+    status: "lobby", paused: null, eliminated: [], scores: Object.fromEntries(room.playerIds.map((p) => [p, 0])),
+    gameOver: false, champions: null, gameRound: 0, almost: {}, trick: [], lastTrick: null, host: uid,
+    log: `⏹ ${myName()} ended the game`,
+  }).then(() => { $("results").hidden = true; }).catch((e) => toast(errMsg(e)));
+}
+function renderPause() {
+  const btn = $("pauseBtn"), bar = $("pauseBar");
+  const playing = room?.status === "playing";
+  const off = playing ? room.players.filter((p) => p.uid !== uid && (isOffline(room, p.uid, roomId) || silentFor(p.uid) > 30_000)) : [];
+  btn.hidden = !canPause() || $("game").hidden;
+  btn.textContent = room?.paused ? "▶" : "⏸";
+  btn.setAttribute("aria-label", room?.paused ? "Resume" : "Pause");
+  btn.classList.toggle("alert", !room?.paused && off.length > 0);
+  btn.title = off.length ? `${off.map((p) => p.name).join(" & ")} offline` : "";
+  $("endGameBtn").hidden = $("game").hidden || !(canPause() || (room?.status === "ended" && !room.gameOver && isLoungeDoc(room) && ownsLounge(room)));
+  bar.hidden = !(playing && room.paused);
+  if (bar.hidden) return;
+  const who = room.paused.by === uid ? "You" : nameOf(room.paused.by);
+  bar.textContent = `⏸ ${who} paused the game` + (off.length ? ` · waiting for ${off.map((p) => p.name).join(" & ")}` : " · everyone is here");
+  bar.append(Object.assign(document.createElement("small"), { textContent: "Everything is saved · you can leave and come back later, the game continues from this card" }));
+}
+// DIGU turn: take a card ("draw"), then throw one ("discard").
+// CALL turn: throw first ("throw"), then take a card ("draw") — the previous player's last thrown
+// card (room.pickable) or the top of the middle pile.
+const canDraw = () => !isBondi() && isMyTurn() && room.phase === "draw" && (isCall() || hand.length <= C.HAND_SIZE);
+// DIGU: holding 11 cards in the "take" step (e.g. my turn was skipped right after I took one): just throw
+const holdingExtra = () => gameOf(room) === "digu" && room.phase === "draw" && hand.length > C.HAND_SIZE;
+const canThrow = () => isMyTurn() && (isDhiha() ? room.phase === "play" : isBondi() ? room.phase === "play" && !pendingPickup()
+  : room.phase === (isCall() ? "throw" : "discard") || holdingExtra());
+const mustThrowFirst = () => isCall() && isMyTurn() && room.phase === "throw";
+
+let actedAt = 0;
+// After the phone sleeps or loses connection, it first shows its saved copy of the table. Moves made
+// on that old copy would overwrite the real game (and leave others unable to play), so nothing is
+// played until the server has sent the current table.
+let roomStale = false, hiddenAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (room && roomId && Date.now() - hiddenAt > 10_000) refreshRoom();
+});
+addEventListener("online", () => { if (room && roomId) refreshRoom(); });
+function refreshRoom() {
+  roomStale = true;
+  const code = roomId;
+  const done = () => { if (roomId === code) roomStale = false; };
+  checkServerRoom().then(done, done);
+  setTimeout(done, 6000); // never stay locked
+}
+// Ask the server for the table. If it's ahead of what my screen shows, my live connection has
+// stalled: reconnect it (this is the "they see it's my turn but I don't" problem).
+let lastRoomEvent = 0, resyncing = false, handLoaded = false, roomConfirmed = false;
+async function checkServerRoom() {
+  if (!room || !roomId || resyncing) return;
+  const code = roomId;
+  const s = await getDoc(roomRef());
+  if (!s.exists() || roomId !== code || !room) return;
+  const d = s.data();
+  const ahead = d.round !== room.round || (d.moveId || 0) !== (room.moveId || 0) || d.turn !== room.turn
+    || d.status !== room.status || d.phase !== room.phase;
+  if (s.metadata?.fromCache) { kickConnection(); return; } // couldn't reach the server: restart the connection
+  if (ahead) {
+    resyncing = true;
+    console.warn("Table was out of date: reconnecting");
+    try { enterRoom(code); } finally { setTimeout(() => (resyncing = false), 3000); }
+  }
+}
+// watchdog: during a game something happens at least every turn (50 s); if my screen has heard
+// nothing for longer than that, check with the server
+setInterval(() => {
+  if (!room || !roomId || room.status !== "playing" || room.paused || document.hidden) return;
+  if (Date.now() - lastRoomEvent > TURN_MS + GRACE_MS + 6000) { lastRoomEvent = Date.now(); checkServerRoom().catch(() => {}); }
+}, 5000);
+function claimAction() {
+  if (roomStale) { toast("Reconnecting… one moment"); return false; }
+  const key = `${room.round}-${room.moveId || 0}-${room.phase}`;
+  // a double tap is blocked, but a move that never went through (phone was offline) doesn't lock me out
+  if (actedKey === key && Date.now() - actedAt < 4000) return false;
+  actedKey = key;
+  actedAt = Date.now();
+  return true;
+}
+
+// Save a move. Once the server has it, optionally tell the other players' phones (push).
+// ---------- instant feedback while the server confirms a move ----------
+// The moment I tap, my card flies to the pile (or a card flies into my hand) with a little burst
+// of sparkles. The card stays faint in my hand until the server says OK; if it's refused, it comes back.
+function sparkleAt(target) {
+  if (!target) return;
+  const r = target.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const marks = ["✨", "⭐", "✦", "✧", "💫", "✨"];
+  for (let i = 0; i < 7; i++) {
+    const s = document.createElement("span");
+    s.className = "sparkle";
+    s.textContent = marks[i % marks.length];
+    Object.assign(s.style, { left: cx + "px", top: cy + "px" });
+    document.body.append(s);
+    const a = (i / 7) * Math.PI * 2 + Math.random() * 0.5, d = 40 + Math.random() * 30;
+    s.animate([
+      { transform: "translate(-50%,-50%) scale(.4)", opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d}px)) scale(1.1)`, opacity: 0 },
+    ], { duration: 650, easing: "cubic-bezier(.2,.8,.3,1)" }).onfinish = () => s.remove();
+  }
+  if (target !== $("hand")) { target.classList.remove("pile-pop"); void target.offsetWidth; target.classList.add("pile-pop"); }
+}
+let sendingIds = [];
+function previewThrow(ids) {
+  const pile = $("discardPile");
+  ids.forEach((id, i) => {
+    const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`);
+    if (el) {
+      flyCard(el, pile, id, { delay: i * 70 });
+      el.classList.add("sending");
+    }
+  });
+  sendingIds = ids;
+  setTimeout(() => sparkleAt(pile), 560 + ids.length * 70);
+}
+function previewDraw(from, card) {
+  const src = from === "discard" ? $("discardPile") : $("deck");
+  flyCard(src, $("hand"), from === "discard" ? card : null, { back: from !== "discard" });
+  setTimeout(() => sparkleAt($("hand")), 520);
+}
+function undoPreview() {
+  document.querySelectorAll("#hand .card.sending").forEach((el) => el.classList.remove("sending"));
+  sendingIds = [];
+}
+
+// A move is saved only if the table is still exactly where my screen thinks it is (same round,
+// turn, step and move number). If another phone already moved on, my move is refused and my
+// screen catches up, instead of two phones overwriting each other (which left players seeing
+// different turns, or someone stuck on "take a card").
+// Speed: my screen shows my move straight away (I can take and then throw without waiting); the
+// checked saves go to the server one after another in the background. If the server refuses one,
+// my screen goes back to the real table.
+let serverRoom = null, serverHand = [], pendingMoves = [], moveChain = Promise.resolve();
+const isSentinel = (v) => v && typeof v === "object" && ("_methodName" in v || "__union" in v || "__inc" in v || "__del" in v || "__remove" in v || "__ts" in v);
+function applyLocal(obj, data) {
+  const res = { ...obj };
+  for (const [k, v] of Object.entries(data)) {
+    if (isSentinel(v)) continue; // server-side values (counters, list adds…) arrive with the server copy
+    const parts = k.split(".");
+    let o = res;
+    for (const p of parts.slice(0, -1)) { o[p] = { ...(o[p] || {}) }; o = o[p]; }
+    o[parts[parts.length - 1]] = v;
+  }
+  return res;
+}
+function withPending(fresh) {
+  let r = fresh;
+  for (const m of pendingMoves) for (const d of m.room) r = applyLocal(r, d);
+  return r;
+}
+function pendingHand() {
+  for (let i = pendingMoves.length - 1; i >= 0; i--) if (pendingMoves[i].hand) return pendingMoves[i].hand;
+  return null;
+}
+function setHandCards(cards) {
+  const added = cards.filter((c) => !hand.includes(c));
+  hand = [...hand.filter((c) => cards.includes(c)), ...added];
+  if (!hand.includes(selected)) selected = null;
+}
+function moveBatch() {
+  const exp = room ? { round: room.round, moveId: room.moveId || 0, turn: room.turn, phase: room.phase || null, status: room.status } : null;
+  const ref0 = roomRef(), myHand = handRef().path;
+  const ops = [];
+  return {
+    update(ref, data) { ops.push(["u", ref, data]); return this; },
+    set(ref, data, opt) { ops.push(["s", ref, data, opt]); return this; },
+    delete(ref) { ops.push(["d", ref]); return this; },
+    commit() {
+      tagMove(ops, ref0);
+      // 1) show it now
+      const entry = { at: Date.now(), room: ops.filter(([k, ref]) => k === "u" && ref.path === ref0.path).map(([, , d]) => d), hand: null };
+      const h = ops.find(([k, ref]) => k !== "d" && ref.path === myHand);
+      if (h && Array.isArray(h[2]?.cards)) entry.hand = h[2].cards;
+      pendingMoves.push(entry);
+      const before = room;
+      if (room) room = withPending(serverRoom || room);
+      // a computer player's move (run on my phone): animate it now, like anyone else's
+      try { if (before && room) cardMoves(before); } catch {}
+      if (entry.hand) setHandCards(entry.hand);
+      try { render(); } catch {}
+      // 2) save it, after any of my earlier moves
+      const run = () => runTransaction(db, async (tx) => {
+        const r = (await tx.get(ref0)).data();
+        if (!r || !exp || r.round !== exp.round || (r.moveId || 0) !== exp.moveId || r.turn !== exp.turn
+          || (r.phase || null) !== exp.phase || r.status !== exp.status) throw new Error("STALE");
+        for (const [k, ref, d, o] of ops) {
+          if (k === "u") tx.update(ref, d); else if (k === "s") tx.set(ref, d, o || {}); else tx.delete(ref);
+        }
+      });
+      const p = moveChain.catch(() => {}).then(run);
+      moveChain = p;
+      const drop = () => { pendingMoves = pendingMoves.filter((m) => m !== entry); noteRtt(Date.now() - entry.at); };
+      p.then(drop, () => {
+        // refused (or failed): forget all my pending moves and show the real table again
+        pendingMoves = [];
+        if (serverRoom) room = serverRoom;
+        setHandCards(serverHand);
+        try { render(); } catch {}
+      });
+      return p;
+    },
+  };
+}
+function commit(batch, notifyKind = null) {
+  const code = roomId;
+  let done = false;
+  // A move that hasn't reached the server after 6 s: the phone's connection has stalled (my screen
+  // would move on while everyone else still sees my turn). Restart the connection so it goes through.
+  const watchdog = setTimeout(() => { if (!done) kickConnection("Slow connection · sending your move again…"); }, 6000);
+  batch.commit()
+    .then(() => { done = true; clearTimeout(watchdog); sendingIds = []; if (notifyKind) sendNotify(notifyKind, code); })
+    .catch((e) => {
+      done = true; clearTimeout(watchdog); actedKey = null;
+      undoPreview();
+      if (e?.message === "STALE") { toast("The table moved on · updated"); lastDrawn = null; }
+      else toast(errMsg(e));
+      checkServerRoom().catch(() => {});
+    });
+}
+let kicking = false;
+async function kickConnection(msg) {
+  if (kicking) return;
+  kicking = true;
+  if (msg) toast(msg);
+  try { await disableNetwork(db); await enableNetwork(db); } catch {}
+  setTimeout(() => { kicking = false; checkServerRoom().catch(() => {}); }, 1500);
+}
+
+// DIGU / CALL: each move says exactly what happened (who took from where, what was thrown, whether
+// the thrown cards became a new middle pile). Every screen animates these, once each, in order,
+// instead of guessing from differences (which could show one player taking from both piles).
+function tagMove(ops, ref0) {
+  if (!room || (gameOf(room) !== "digu" && gameOf(room) !== "call")) return;
+  const ru = ops.find(([k, ref]) => k === "u" && ref.path === ref0.path);
+  const handOp = ops.find(([k, ref, d]) => k === "u" && ref.path !== ref0.path && Array.isArray(d?.cards));
+  if (!ru || !handOp) return;
+  const d = ru[2];
+  if (!d.deck && !d.discard) return;
+  const oldDeck = room.deck || [], oldDis = room.discard || [];
+  const newDis = d.discard || oldDis;
+  const drawn = handOp[2].cards.find((c) => oldDeck.includes(c) || oldDis.includes(c));
+  const thrown = [...newDis, ...(d.deck || [])].filter((c) => !oldDis.includes(c) && !oldDeck.includes(c) && c !== drawn);
+  const shuffled = !!d.deck && d.deck.length > oldDeck.length - (drawn && oldDeck.includes(drawn) ? 1 : 0);
+  if (!drawn && !thrown.length && !shuffled) return;
+  const list = (room.fx || []).filter((e) => e.r === room.round);
+  const n = list.reduce((m, e) => Math.max(m, e.n), 0) + 1;
+  const ev = { r: room.round, n, u: room.playerIds[room.turn] };
+  if (drawn) { ev.d = oldDis.includes(drawn) ? "take" : "deck"; if (ev.d === "take") ev.c = drawn; }
+  if (thrown.length) ev.t = thrown;
+  if (shuffled) { ev.s = 1; ev.old = [...oldDis, ...thrown].slice(-8); }
+  d.fx = [...list.slice(-4), ev];
+}
+
+function nextTurn(log) {
+  return {
+    turn: nextActiveIdx(room, room.turn),
+    phase: isCall() ? "throw" : "draw",
+    moveId: (room.moveId || 0) + 1,
+    log,
+  };
+}
+
+function draw(from) {
+  if (mustThrowFirst()) return toast("Throw a card first");
+  if (isMyTurn() && holdingExtra()) return toast(`You already have ${hand.length} cards · throw one away`);
+  if (!canDraw()) { // say why nothing happens, and make sure my screen is up to date
+    if (room?.status === "playing" && !isMyTurn()) toast(room.paused ? "The game is paused" : `It's ${nameOf(room.playerIds[room.turn])}'s turn`);
+    else if (isMyTurn() && room.phase !== "draw") toast("You've taken a card · now throw one");
+    checkServerRoom().catch(() => {});
+    return;
+  }
+  if (isCall()) return callDraw(from);
+  let deck = [...room.deck], discard = [...room.discard], card, reshuffled = false;
+  if (from === "discard") {
+    if (!discard.length) return toast("Nothing has been thrown yet · take from the middle pile");
+    card = discard.pop();
+  } else {
+    if (!deck.length) { // safety net; normally reshuffled already when the pile ran out
+      if (discard.length <= 1) return toast("No cards left to draw");
+      ({ deck, discard } = C.reshuffleDiscard(discard));
+      reshuffled = true;
+    }
+    card = deck.pop();
+  }
+  if (!claimAction()) return;
+  const b = moveBatch();
+  b.update(roomRef(), {
+    deck, discard, phase: "discard",
+    log: `${nameOf(uid)} took ${from === "discard" ? "the discard" : "from the pile"}`,
+    ...(reshuffled ? { reshuffles: (room.reshuffles || 0) + 1 } : {}),
+    ...(from === "discard" ? trackUpd(uid, "took", [card]) : {}),
+  });
+  b.update(handRef(), { cards: [...hand, card] });
+  previewDraw(from, card);
+  lastDrawn = card;
+  selected = null;
+  callSel.clear();
+  commit(b);
+}
+
+// CALL, second half of the turn: take the previous player's last thrown card, or one from the
+// middle pile. That ends the turn.
+function callDraw(from) {
+  let deck = [...room.deck], discard = [...room.discard], card;
+  if (from === "discard") {
+    const i = room.pickable ? discard.lastIndexOf(room.pickable) : -1;
+    if (i < 0) return toast("There's no card from the last player to take · take from the middle pile");
+    card = discard.splice(i, 1)[0];
+  } else {
+    if (!deck.length) return toast("No cards left to draw");
+    card = deck.pop();
+  }
+  if (!claimAction()) return;
+  const b = moveBatch();
+  b.update(roomRef(), {
+    deck, discard, lastThrow: room.thrownNow || null, pickable: null, thrownNow: null,
+    [`ccount.${uid}`]: hand.length + 1,
+    ...nextTurn(`${nameOf(uid)} took ${from === "discard" ? "the last thrown card" : "from the pile"}`),
+  });
+  b.update(handRef(), { cards: [...hand, card] });
+  previewDraw(from, card);
+  lastDrawn = card;
+  selected = null;
+  callSel.clear();
+  commit(b, "turn");
+}
+
+// CALL, first half of the turn: throw one card, or several of the same number together.
+// The previous player's last thrown card stays available to take (it's under mine).
+function callThrow(ids, timedOut) {
+  if (!claimAction()) return;
+  const rest = hand.filter((c) => !ids.includes(c));
+  const prevLast = room.lastThrow?.length ? room.lastThrow[room.lastThrow.length - 1] : null;
+  const pickable = prevLast && room.discard.includes(prevLast) ? prevLast : null;
+  const what = ids.length > 1 ? `${ids.length} × ${C.label(C.parse(ids[0]).r)}` : "a card";
+  const upd = {
+    discard: [...room.discard, ...ids], phase: "draw", pickable, thrownNow: ids, [`ccount.${uid}`]: rest.length,
+    log: timedOut ? `${nameOf(uid)} ran out of time` : `${nameOf(uid)} threw ${what}`,
+  };
+  // middle pile is empty: shuffle the older thrown cards into a new pile (keep the takeable one)
+  if (!room.deck.length) {
+    const pool = room.discard.filter((c) => c !== pickable);
+    if (pool.length) {
+      upd.deck = C.shuffle(pool);
+      upd.discard = [...(pickable ? [pickable] : []), ...ids];
+      upd.log += " · thrown cards shuffled into a new middle pile";
+      upd.reshuffles = (room.reshuffles || 0) + 1;
+    }
+  }
+  const b = moveBatch();
+  b.update(handRef(), { cards: rest });
+  b.update(roomRef(), upd);
+  previewThrow(ids);
+  selected = null;
+  callSel.clear();
+  lastDrawn = null;
+  commit(b);
+}
+
+// DIGU: throw one card; a throw that leaves a winning hand calls DIGU automatically.
+// CALL: throw one card, or several cards of the same number together.
+// DIGU: it's my turn but I haven't taken a card yet
+const needsDrawFirst = () => gameOf(room) === "digu" && isMyTurn() && room.phase === "draw" && !holdingExtra();
+function takeFirstHint() {
+  nudge("✋", "Take a card first", "from the middle pile or the last thrown card", true);
+}
+
+function throwCard(cardIds, timedOut = false) {
+  if (needsDrawFirst()) return takeFirstHint();
+  const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
+  if (!canThrow() || !ids.length || !ids.every((c) => hand.includes(c))) return;
+  if (isBondi()) return bondiThrow(ids[0], timedOut);
+  if (isDhiha()) return dhihaThrow(ids[0], timedOut);
+  const call = isCall();
+  if (call ? !C.canThrowTogether(ids) : ids.length !== 1) return toast("Only cards of the same number can be thrown together");
+  if (call) return callThrow(ids, timedOut);
+  const rest = hand.filter((c) => !ids.includes(c));
+  const sets = call ? null : C.findWinningLayout(rest);
+  if (!claimAction()) return;
+  const upd = { discard: [...room.discard, ...ids], ...trackUpd(uid, "threw", ids) };
+  const what = ids.length > 1 ? `${ids.length} × ${C.label(C.parse(ids[0]).r)}` : "a card";
+  Object.assign(upd, sets
+    ? endUpdate(sets, ids[0])
+    : nextTurn(timedOut ? `${nameOf(uid)} ran out of time` : `${nameOf(uid)} threw ${what}`));
+  // Middle pile is empty: shuffle the discards into a new pile right away, in a new order.
+  if (!sets && !room.deck.length && upd.discard.length > 1) {
+    Object.assign(upd, C.reshuffleDiscard(upd.discard));
+    upd.log += " · discard pile shuffled into a new middle pile";
+    upd.reshuffles = (room.reshuffles || 0) + 1;
+  }
+  // I said "1 card to DIGU" but this throw broke it: take the badge down
+  if (!call && !sets && room.almost?.[uid] && !isOneAway(rest)) upd[`almost.${uid}`] = false;
+  const b = moveBatch();
+  b.update(handRef(), { cards: rest });
+  b.update(roomRef(), upd);
+  if (!sets) previewThrow(ids); // a DIGU card is slapped down instead
+  selected = null;
+  callSel.clear();
+  lastDrawn = null;
+  commit(b, sets ? "ended" : "turn");
+}
+
+// CALL: at the start of your turn, with a count of 7 or less, end the round.
+const canCall = () => isCall() && isMyTurn() && room.phase === "throw" && hand.length > 0 && C.handValue(hand) <= C.CALL_LIMIT;
+function onCall() {
+  if (!isCall() || !isMyTurn()) return;
+  if (room.phase !== "throw") return toast("You can only CALL at the start of your turn, before throwing");
+  const v = C.handValue(hand);
+  if (v > C.CALL_LIMIT) return toast(`You can CALL with ${C.CALL_LIMIT} or less. Your count is ${v}.`);
+  if (!claimAction()) return;
+  const b = moveBatch();
+  b.update(roomRef(), {
+    status: "ended", winner: uid, diguCard: null, winnerSets: null,
+    diguStyle: { font: myPrefs().font, color: myPrefs().color },
+    log: `${nameOf(uid)} called CALL with ${v}!`,
+  });
+  commit(b, "ended");
+}
+
+// Which card to throw for a DIGU right now (the tapped card first), or null.
+function diguThrow() {
+  if (!canThrow()) return null;
+  const order = selected ? [selected, ...hand.filter((c) => c !== selected)] : hand;
+  return order.find((c) => C.findWinningLayout(hand.filter((x) => x !== c))) || null;
+}
+
+function onDigu() {
+  if (!isMyTurn()) return;
+  if (room.phase === "draw") {
+    const sets = C.findWinningLayout(hand);
+    if (!sets) return toast("Your hand isn't 3 + 3 + 4 sets yet");
+    if (!claimAction()) return;
+    const b = moveBatch();
+    b.update(roomRef(), endUpdate(sets, null));
+    return commit(b, "ended");
+  }
+  const c = diguThrow();
+  if (!c) return toast("Not a DIGU yet");
+  throwCard(c);
+}
+
+function endUpdate(sets, cardId) {
+  // Firestore can't store arrays inside arrays, so each set is a comma-joined string
+  return {
+    status: "ended", winner: uid, diguCard: cardId,
+    diguStyle: { font: myPrefs().font, color: myPrefs().color }, // everyone sees the winner's shout style
+    winnerSets: sets.map((s) => s.join(",")), log: `${nameOf(uid)} called DIGU!`,
+  };
+}
+
+// ---------- "1 card to DIGU" ----------
+function isOneAway(cards) {
+  const key = [...cards].sort().join();
+  if (oneAwayCache.key === key) return oneAwayCache.value;
+  const value = C.oneAway(cards);
+  Object.assign(oneAwayCache, { key, value });
+  return value;
+}
+
+// The check takes a moment, so it runs just after the screen updates, not during it.
+function oneAwayNow() {
+  if (hand.length !== C.HAND_SIZE) return false;
+  const key = [...hand].sort().join();
+  if (oneAwayCache.key === key) return oneAwayCache.value;
+  if (!oneAwayCache.pending) {
+    oneAwayCache.pending = true;
+    setTimeout(() => { oneAwayCache.pending = false; isOneAway(hand); render(); }, 30);
+  }
+  return false;
+}
+
+function announceAlmost() {
+  if (!room || room.status !== "playing" || room.almost?.[uid] || !oneAwayNow()) return;
+  updateDoc(roomRef(), { [`almost.${uid}`]: true }).catch((e) => toast(errMsg(e)));
+}
+
+// ---------- reactions ----------
+function sendReaction(text) {
+  if (!roomId) return;
+  const now = Date.now();
+  if (now - lastReactAt < 1200) return toast("Slow down 🙂");
+  lastReactAt = now;
+  $("reactTray").hidden = true;
+  updateDoc(roomRef(), {
+    reaction: { uid, text, id: Math.random().toString(36).slice(2) },
+  }).catch((e) => toast(errMsg(e)));
+}
+
+function showBubble(fromUid, text, special = false) {
+  const b = document.createElement("div");
+  b.className = "bubble" + (special ? " special" : "") + (/^\p{Extended_Pictographic}+$/u.test(text) ? " emoji" : "");
+  const who = document.createElement("small");
+  const pl = room?.players.find((p) => p.uid === fromUid);
+  who.textContent = (pl?.avatar ? pl.avatar + " " : "") + nameOf(fromUid);
+  b.append(who, document.createTextNode(text));
+  const chip = seatEl(fromUid);
+  const r = chip?.getBoundingClientRect();
+  if (r && r.width) {
+    b.style.left = Math.min(Math.max(r.left + r.width / 2, 70), innerWidth - 70) + "px";
+    b.style.top = r.bottom + 8 + "px";
+  } else { b.style.left = "50%"; b.style.top = "70px"; }
+  document.body.append(b);
+  setTimeout(() => b.remove(), 3200);
+}
+
+// ---------- 50-second timer ----------
+// Your own screen plays for you when your time runs out: if you haven't drawn, your turn is passed;
+// if you have, the card you just picked up (or your worst card) is thrown away.
+// If a player's device is offline, the others skip them a few seconds later.
+function autoPlay() {
+  if (isDhiha()) { if (hand.length) throwCard(C.dhihaAutoCard(hand, room.trick || [], room.hukum), true); return; }
+  if (isBondi()) { // out of time: play the card the computer would
+    if (!pendingPickup() && hand.length) throwCard(C.bondiBotCard(hand, room.trick || [], bondiCtx(room, uid)), true);
+    return;
+  }
+  if (isCall()) { // out of time: throw the highest card if not thrown yet, then take from the middle pile
+    if (room.phase === "throw") {
+      throwCard([hand.reduce((a, b) => (C.callValue(b) > C.callValue(a) ? b : a))], true);
+      setTimeout(() => { if (canDraw()) draw("deck"); }, 600);
+    } else draw("deck");
+    return;
+  }
+  if (room.phase === "draw") {
+    if (!claimAction()) return;
+    const b = moveBatch();
+    b.update(roomRef(), nextTurn(`${nameOf(uid)} ran out of time`));
+    return commit(b, "turn");
+  }
+  if (isCall()) { // throw the highest card
+    return throwCard([hand.reduce((a, b) => (C.callValue(b) > C.callValue(a) ? b : a))], true);
+  }
+  let card = diguThrow();
+  if (!card) card = hand.includes(lastDrawn) ? lastDrawn : worstCard();
+  throwCard(card, true);
+}
+
+function worstCard() {
+  const { leftover } = C.bestLayout(hand);
+  const pool = leftover.length ? leftover : hand;
+  return pool.reduce((a, b) => (C.points(b) > C.points(a) ? b : a));
+}
+
+async function skipOfflinePlayer() {
+  const { round } = room, moveId = room.moveId || 0;
+  try {
+    let skipped = false;
+    await runTransaction(db, async (tx) => {
+      const r = (await tx.get(roomRef())).data();
+      if (r.status !== "playing" || r.paused || r.round !== round || (r.moveId || 0) !== moveId) return; // already moved on
+      const who = r.playerIds[r.turn];
+      const away = isOffline(r, who, roomId) || silentFor(who) > 30_000;
+      const missed = (r.missed?.[who] || 0) + (away ? 1 : 0);
+      // holhuashi: the 2nd time an offline player misses their turn, the owner decides: remove or keep
+      const ask = isLoungeDoc(r) && away && !r.keepOffline?.[who] && !r.offlineAsk && (missed >= 2 || r.game === "dhiha")
+        ? { offlineAsk: { uid: who, at: Date.now() } } : {};
+      if (r.game === "dhiha") { // a team game can't skip anyone: ask the owner (or, outside holhuashis, wait)
+        if (ask.offlineAsk) { tx.update(roomRef(), ask); skipped = true; }
+        return;
+      }
+      const extra = { ...(away ? { [`missed.${who}`]: missed } : {}), ...ask };
+      if (r.game === "bondi") { // passed over for the rest of this trick
+        tx.update(roomRef(), { ...bondiUpdate(r, C.bondiSkip(bondiState(r), who), who, null), ...extra });
+        skipped = true;
+        return;
+      }
+      const call = r.game === "call";
+      tx.update(roomRef(), {
+        ...extra,
+        turn: nextActiveIdx(r, r.turn),
+        phase: call ? "throw" : "draw",
+        ...(call && r.phase === "draw" ? { lastThrow: r.thrownNow || null, pickable: null, thrownNow: null } : {}),
+        moveId: moveId + 1,
+        log: `${nameOf(r.playerIds[r.turn])} ran out of time`,
+      });
+      skipped = true;
+    });
+    if (skipped) sendNotify("turn");
+  } catch { /* someone else skipped first */ }
+}
+
+function tick() {
+  if (room) renderPremiumPanel(); // cheap: only redraws when something changed (e.g. a card was selected)
+  const box = $("timer");
+  if (!room || room.status !== "playing") { box.hidden = true; turnKey = null; $("deckRing").hidden = true; renderPause(); return; }
+  renderPause();
+  if (room.paused) {
+    box.hidden = false; turnKey = null;
+    $("timerText").textContent = "⏸ Paused";
+    $("timerBar").style.transform = "scaleX(1)";
+    box.classList.remove("low", "mine");
+    return;
+  }
+  const key = `${room.round}-${room.moveId || 0}`;
+  if (key !== turnKey) { turnKey = key; turnSeenAt = Date.now(); }
+  const left = TURN_MS - (Date.now() - turnSeenAt);
+  const secs = Math.max(0, Math.ceil(left / 1000));
+  box.hidden = false;
+  $("timerText").textContent = isMyTurn() ? `${secs}s left` : `${nameOf(room.playerIds[room.turn])} · ${secs}s`;
+  $("timerBar").style.transform = `scaleX(${Math.max(0, left / TURN_MS)})`;
+  box.classList.toggle("low", secs <= 10);
+  box.classList.toggle("mine", isMyTurn());
+  const col = turnColour(left / TURN_MS);
+  const frac = Math.max(0, Math.min(1, left / TURN_MS));
+  for (const el of [$("seats"), box, $("table")]) { el.style.setProperty("--tc", col.solid); el.style.setProperty("--tcs", col.soft); el.style.setProperty("--tcf", col.faint); }
+  // the countdown runs round the middle-pile card (or the cards on the table when there's no pile)
+  const ring = $("deckRing"), deckEl = $("deck");
+  const target = deckEl.offsetParent && !deckEl.parentElement.hidden ? deckEl : $("discardPile");
+  const tr = $("table").getBoundingClientRect(), dr = target.getBoundingClientRect();
+  if (dr.width) {
+    Object.assign(ring.style, { left: dr.left - tr.left - 6 + "px", top: dr.top - tr.top - 6 + "px", width: dr.width + 12 + "px", height: dr.height + 12 + "px" });
+    ring.style.setProperty("--p", frac.toFixed(3));
+    ring.style.setProperty("--tc", col.solid);
+    ring.hidden = false;
+  }
+  const tp = document.querySelector(".seat-path.turn");
+  if (tp) {
+    const L = tp._len || (tp._len = tp.getTotalLength());
+    tp.style.strokeDasharray = `${L} ${L}`;
+    tp.style.strokeDashoffset = String(L * (1 - frac));
+  }
+  const st = document.querySelector(".seat-tag.turn .st-time");
+  if (st) st.textContent = `${secs}s`;
+  const chipTime = document.querySelector(".player.active .ptime");
+  if (chipTime) chipTime.textContent = `${secs}s`;
+
+  if (isMyTurn()) remindMe(key, secs);
+
+  if (timeoutFired === key) return;
+  if (roomStale) return; // wait for the current table before acting on timeouts
+  if (isMyTurn() && left <= 0) { if (pendingMoves.length) return; timeoutFired = key; autoPlay(); } // my move is still on its way: don't play for me
+  else if (!isMyTurn() && left <= -GRACE_MS - (room.slow?.[room.playerIds[room.turn]] ? 20_000 : 0)) { // a slow connection gets 20 s more
+    timeoutFired = key; skipOfflinePlayer(); // their time ran out (they're offline or away): next player
+  }
+}
+setInterval(tick, 200);
+
+// If I was skipped after drawing, I still hold 11 cards: go straight to throwing one away.
+function afterUpdate() {
+  // DIGU: my turn shows "throw" but I only hold 10 cards (my move and a skip crossed): back to "take"
+  if (gameOf(room) === "digu" && isMyTurn() && room.phase === "discard" && hand.length === C.HAND_SIZE && handLoaded && roomConfirmed && claimAction()) {
+    const b = moveBatch();
+    b.update(roomRef(), { phase: "draw", log: `${nameOf(uid)}: take a card` });
+    commit(b);
+    return;
+  }
+  if (!isCall() && isMyTurn() && room.phase === "draw" && hand.length > C.HAND_SIZE && claimAction()) {
+    const b = moveBatch();
+    b.update(roomRef(), { phase: "discard" });
+    commit(b);
+  }
+}
+
+// ---------- reminders ----------
+// A bouncing emoji with a short message just above my cards.
+function nudge(emoji, text, sub = "", warn = false) {
+  document.querySelector(".nudge")?.remove();
+  const n = document.createElement("div");
+  n.className = "nudge" + (warn ? " warn" : "");
+  n.innerHTML = `<span class="nudge-emoji"></span><span class="nudge-text"><b></b><small></small></span>`;
+  n.querySelector(".nudge-emoji").textContent = emoji;
+  n.querySelector("b").textContent = text;
+  n.querySelector("small").textContent = sub;
+  const h = $("hand").getBoundingClientRect();
+  n.style.top = Math.max(60, h.top - 16) + "px";
+  document.body.append(n);
+  try { navigator.vibrate?.(60); } catch {}
+  setTimeout(() => n.remove(), 3200);
+}
+
+// What should I be doing right now?
+function whatToDo() {
+  if (isDhiha()) {
+    const t = room.trick || [];
+    if (!t.length) return ["Play a card!", "you lead · any card"];
+    const s = C.suitOf(t[0].card);
+    return hand.some((c) => C.suitOf(c) === s) ? [`Play a ${C.SUIT_SYMBOL[s]} card!`, "follow the suit"]
+      : room.hukum ? [`No ${C.SUIT_SYMBOL[s]}? Play Hukum ${C.SUIT_SYMBOL[room.hukum]} to win it`, "or any other card"] : ["Choose the Hukum!", "the card you play sets it"];
+  }
+  if (isBondi()) {
+    const t = room.trick || [];
+    if (!t.length) return ["Play a card!", "you lead · any card"];
+    const s = C.suitOf(t[0].card);
+    return hand.some((c) => C.suitOf(c) === s) ? [`Play a ${C.SUIT_SYMBOL[s]} card!`, "follow the suit"] : ["Cut with any card!", `no ${C.SUIT_SYMBOL[s]} left`];
+  }
+  if (isCall()) return room.phase === "throw"
+    ? [canCall() ? "Throw a card or CALL!" : "Throw a card first!", "tap a card, then tap it again"]
+    : ["Now take a card!", "the last thrown card or the middle pile"];
+  return room.phase === "draw"
+    ? ["Take a card!", "from the middle pile or the last thrown card"]
+    : ["Throw a card away!", "tap a card, then tap it again"];
+}
+
+let remindKey = null;
+function remindMe(key, secs) {
+  if (remindKey?.key !== key) remindKey = { key, done: new Set(), phase: room.phase, since: Date.now() };
+  if (remindKey.phase !== room.phase) Object.assign(remindKey, { phase: room.phase, since: Date.now() });
+  const idle = (Date.now() - remindKey.since) / 1000;
+  // 🤔 after 20 seconds of doing nothing (once per step); ⏰ with 10 seconds left (once per turn)
+  const at = secs <= 10 ? "hurry" : idle >= 20 ? "think-" + room.phase : null;
+  if (!at || remindKey.done.has(at)) return;
+  remindKey.done.add(at);
+  const [text, sub] = whatToDo();
+  if (at === "hurry") nudge("⏰", `Hurry! ${secs}s left`, text, true);
+  else nudge("🤔", text, sub);
+}
+
+// ---------- results & scoring ----------
+// DIGU caller: +100 bonus + their card values. Others: cards in sets minus leftover cards,
+// or -100 if they have no set at all. First to the target ends the game; highest total wins.
+async function saveScores() {
+  const rows = lastRows;
+  // only ever save the results worked out for THIS round (never the previous round's)
+  if (!rows || !room || room.status !== "ended" || rows.round !== room.round) return;
+  // the host adds this round's points to the running totals, once, and checks for game over.
+  // If the host has gone offline, any player still here does it instead (so scores are never lost).
+  if (!room.scored && (room.host === uid || isOffline(room, room.host, roomId))) {
+    try {
+      await runTransaction(db, async (tx) => {
+        const r = (await tx.get(roomRef())).data();
+        if (r.scored || r.round !== resultsRound || rows.round !== r.round) return;
+        const upd = { scored: true };
+        const totals = {};
+        rows.forEach((row) => {
+          if (row.pts) upd[`scores.${row.uid}`] = increment(row.pts); // 0 points: nothing added
+          totals[row.uid] = (r.scores?.[row.uid] || 0) + (row.pts || 0);
+        });
+        if (callElim(r)) { // CALL to a target: reaching it puts you out
+          const target = r.target || DEFAULT_TARGET;
+          const gone = r.playerIds.filter((u) => totals[u] >= target && !(r.eliminated || []).includes(u));
+          if (gone.length) { upd.eliminated = arrayUnion(...gone); gone.forEach((u) => (upd[`outRound.${u}`] = r.round)); upd.log = `${gone.map((u) => r.players.find((p) => p.uid === u)?.name || "?").join(" & ")} reached ${target} and ${gone.length > 1 ? "are" : "is"} out`; }
+        }
+        const fun = noPoints(r); // played with the computer: no holhuashi points
+        if (isLoungeDoc(r) && !fun) { upd["stats.rounds"] = increment(1); upd["stats.lastPlayed"] = serverTimestamp(); }
+        if (gameFinished(r, totals)) {
+          const top = (lowWins(gameOf(r)) ? Math.min : Math.max)(...Object.values(totals)); // CALL, BONDI: lowest wins
+          upd.gameOver = true;
+          if (isLoungeDoc(r) && !fun) {
+            upd["stats.games"] = increment(1);
+            // the holhuashi leaderboard: +1 game for everyone who played, +1 win for the winner(s)
+            const champs = Object.keys(totals).filter((u) => totals[u] === top);
+            for (const p of r.players) {
+              if (isBot(p.uid)) continue;
+              upd[`board.${p.uid}.name`] = p.name;
+              upd[`board.${p.uid}.avatar`] = p.avatar || null;
+              upd[`board.${p.uid}.games`] = increment(1);
+              if (champs.includes(p.uid)) upd[`board.${p.uid}.wins`] = increment(1);
+            }
+          }
+          upd.champions = Object.keys(totals).filter((u) => totals[u] === top);
+          if (isLoungeDoc(r) && !fun) {
+            upd.lastGame = {
+              game: gameOf(r), at: Date.now(), champions: upd.champions, low: lowWins(gameOf(r)),
+              results: r.players.filter((p) => !isBot(p.uid)).map((p) => ({ uid: p.uid, name: p.name, avatar: p.avatar || null, total: totals[p.uid] ?? 0 })),
+            };
+          }
+        }
+        tx.update(roomRef(), upd);
+      });
+    } catch (e) { toast(errMsg(e)); }
+  }
+}
+
+async function showResults() {
+  if (!room || room.status !== "ended") return;
+  let snaps;
+  try { snaps = await getDocs(collection(db, "rooms", roomId, "hands")); }
+  catch (e) { return toast(errMsg(e)); }
+  const hands = {};
+  snaps.forEach((s) => (hands[s.id] = s.data().cards));
+
+  if (gameOf(room) === "dhiha") {
+    const res = room.dhihaResult || C.dhihaResult(room.decks || { A: [], B: [] });
+    lastRows = room.players.map((p) => {
+      const team = room.teams?.[p.uid];
+      const won = team === res.team;
+      const decks = (room.decks?.[team] || []).map((d) => d.split(","));
+      return { ...p, dhiha: true, team, won, pts: won ? res.points : 0,
+        tens: res.tens?.[team] ?? 0, deckCount: res.count?.[team] ?? decks.length,
+        sets: decks.filter((d) => d.some((c) => C.parse(c).r === 10)), leftover: [] };
+    });
+    lastRows.dhiha = res;
+  } else if (gameOf(room) === "bondi") {
+    const order = room.order || [];
+    const sc = C.bondiScores(order);
+    lastRows = room.players.map((p) => {
+      const held = hands[p.uid] || [];
+      const left = [...held, ...(room.pickups?.[p.uid] || []).filter((c) => !held.includes(c))];
+      const place = order.indexOf(p.uid) + 1;
+      return { ...p, pts: sc[p.uid] ?? order.length * C.BONDI_STEP, bondi: true, place: place || order.length + 1,
+        last: !place || place === order.length, sets: left.length ? [C.sortBondi(left)] : [], leftover: [] };
+    });
+  } else if (gameOf(room) === "call") {
+    // players already out before this round (not the ones this round's points just put out)
+    const out = outOf(room).filter((u) => (room.outRound?.[u] ?? -1) < room.round);
+    const cs = C.callScores(Object.fromEntries(room.players.filter((p) => !out.includes(p.uid)).map((p) => [p.uid, hands[p.uid] || []])), room.winner);
+    lastRows = room.players.map((p) => (out.includes(p.uid)
+      ? { ...p, pts: 0, count: 0, how: "out", call: true, out: true, sets: [], leftover: [] }
+      : { ...p, ...cs.result[p.uid], call: true, sets: hands[p.uid]?.length ? [C.sortByRank(hands[p.uid])] : [], leftover: [] }));
+    lastRows.caught = cs.caught;
+    lastRows.catchers = cs.catchers;
+  } else {
+    lastRows = room.players.map((p) => {
+      const winnerSets = p.uid === room.winner ? room.winnerSets.map((s) => s.split(",")) : null;
+      return { ...p, ...C.roundScore(hands[p.uid] || [], winnerSets) };
+    });
+  }
+  lastRows.round = room.round; // these results belong to this round only
+  const rows = lastRows;
+  const mine = rows.find((r) => r.uid === uid);
+  if (!mine?.out) recordRound(mine);
+
+  await saveScores();
+  renderResults();
+  $("results").hidden = false;
+}
+
+function renderResults() {
+  if (!lastRows || !room) return;
+  const target = room.target || DEFAULT_TARGET;
+  // until the host has saved this round, show totals with this round added
+  const totalOf = (u) => (room.scores?.[u] || 0) + (room.scored ? 0 : lastRows.find((r) => r.uid === u)?.pts || 0);
+  const totals = Object.fromEntries(lastRows.map((r) => [r.uid, totalOf(r.uid)]));
+  const low = lowWins(gameOf(room));
+  const top = (low ? Math.min : Math.max)(...Object.values(totals));
+  const rounds = roundsTotal(room);
+  const over = room.gameOver || gameFinished(room, totals);
+  const champs = room.champions || Object.keys(totals).filter((u) => totals[u] === top);
+  if (room.gameOver) recordWin();
+
+  const list = $("resultsList");
+  list.innerHTML = "";
+  [...lastRows].sort((a, b) => (low ? a.pts - b.pts : b.pts - a.pts)).forEach((row) => {
+    const div = document.createElement("div");
+    const good = row.dhiha ? row.won : low ? row.pts === 0 : row.uid === room.winner;
+    const bad = low ? row.how === "caught" || (row.bondi && row.last && row.pts > 0) : row.pts < 0;
+    div.className = "result-row" + (good ? " winner" : "") + (bad ? " negative" : "");
+    const head = document.createElement("div");
+    head.className = "result-head";
+    const name = document.createElement("strong");
+    name.textContent = row.name + (row.uid === uid ? " (you)" : "") + (row.digu ? " · DIGU" : "") + (row.bondi && row.place === 1 ? " · 🏆" : "")
+      + (row.how === "won" || row.how === "caught" ? " · CALL" : "");
+    const pts = document.createElement("span");
+    pts.className = "round-pts";
+    pts.textContent = (row.pts > 0 ? "+" : "") + row.pts;
+    const who = room.players.find((p) => p.uid === row.uid) || row;
+    head.append(avatarEl(who, "avatar small"), name, pts);
+    const how = document.createElement("div");
+    how.className = "breakdown";
+    how.textContent = row.dhiha
+      ? `${teamName(row.team)} · 🔟 ${row.tens} · ${row.deckCount} decks${row.won ? ` · ${{ all4: "all four 10s", tens: "3 tens", decks: "7+ decks" }[lastRows.dhiha?.how] || ""}` : ""}`
+      : row.bondi
+      ? (row.place === 1 ? "🏆 Out first · round winner"
+        : row.last ? `Loser · ${row.sets[0]?.length ? `left holding ${row.sets[0].length} cards` : "out last"}`
+        : `${ordinal(row.place)} out`)
+      : row.call
+      ? ({ won: `Called with ${row.count} · lowest`, caught: `Called with ${row.count} · caught! +${C.CALL_PENALTY}`,
+           "caught-caller": `Count ${row.count} · caught the CALL`, count: `Count ${row.count}`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
+      : row.digu
+      ? `DIGU bonus +${C.DIGU_BONUS} · cards +${row.setPts}`
+      : row.noSets
+        ? `No sets: ${C.NO_SET_PENALTY}`
+        : `Sets +${row.setPts} · leftover −${row.leftPts}`;
+    how.append(Object.assign(document.createElement("b"), { textContent: `Total ${totals[row.uid]}` }));
+    div.append(head, how);
+
+    const cardsWrap = document.createElement("div");
+    cardsWrap.className = "result-cards";
+    row.sets.forEach((s) => {
+      const g = document.createElement("div");
+      g.className = "set";
+      s.forEach((c) => g.append(cardEl(c, { small: true })));
+      cardsWrap.append(g);
+    });
+    if (row.leftover.length) {
+      const g = document.createElement("div");
+      g.className = "set leftover";
+      row.leftover.forEach((c) => g.append(cardEl(c, { small: true })));
+      cardsWrap.append(g);
+    }
+    div.append(cardsWrap);
+    list.append(div);
+  });
+
+  $("resultsTitle").textContent = over
+    ? `🏆 ${champs.map(nameOf).join(" & ")} ${champs.length > 1 ? "win" : "wins"} the game!`
+    : isDhiha()
+      ? `🏆 ${teamName(lastRows.dhiha?.team)} wins the round! +${lastRows.dhiha?.points} point${lastRows.dhiha?.points > 1 ? "s" : ""} each`
+    : isBondi()
+      ? `🏆 ${room.winner === uid ? "You" : nameOf(room.winner)} went out first and ${room.winner === uid ? "win" : "wins"} the round!`
+    : low
+      ? (lastRows.caught
+        ? `${nameOf(room.winner)} called CALL, but ${lastRows.catchers.map(nameOf).join(" & ")} had less!`
+        : `${nameOf(room.winner)} called CALL and won the round!`)
+      : `${nameOf(room.winner)} called DIGU!`;
+  const boardNote = isLoungeDoc(room) && hasBots(room) ? " · 🤖 played with the computer: no points"
+    : over && isLoungeDoc(room) && !room.practice
+    ? ` · 🏆 +1 holhuashi point to ${champs.map((u) => (u === uid ? "you" : nameOf(u))).join(" & ")}` : "";
+  $("resultsSub").textContent = rounds
+    ? (over ? `Final score ${top} after ${rounds} rounds` : `Round ${room.gameRound || 1} of ${rounds} · leader has ${top}${isBondi() ? " · points count against you, lowest total wins" : low ? " (lowest wins)" : ""}`)
+    : (over ? `Final score ${top} · playing to ${target}` : `Playing to ${target} · leader has ${top}`);
+  if (boardNote) $("resultsSub").textContent += boardNote;
+  $("results").classList.toggle("game-over", over);
+  const host = room.host === uid;
+  const hostGone = !host && isOffline(room, room.host, roomId);
+  $("nextRoundBtn").hidden = !(host || hostGone) || over;
+  const lobbyTable = isLobbyRoom(room);
+  $("playAgainBtn").hidden = !over || (!host && !lobbyTable);
+  $("playAgainBtn").textContent = lobbyTable ? "Back to the Aammu Jagaha" : "New game";
+  $("waitNext").hidden = host || hostGone || (over && lobbyTable);
+  $("waitNext").textContent = over ? "Waiting for the host to start a new game…" : "Waiting for the host to deal the next round…";
+}
+
+// ---------- games played, career points & badges ----------
+// Every finished round counts toward unlocks for everyone (guests too).
+// Registered players also add the round's points to their career total, which sets their rank.
+function recordRound(myRow) {
+  if (!uid || !roomId || !myRow) return;
+  const key = `${roomId}-${room.round}`;
+  if (recordRound.done === key) return;
+  recordRound.done = key;
+  const reg = isRegistered();
+  runTransaction(db, async (tx) => {
+    const ref = doc(db, "users", uid);
+    const d = (await tx.get(ref)).data() || {};
+    if (d.lastCounted === key) return;
+    const upd = { gamesPlayed: (d.gamesPlayed || 0) + 1, lastCounted: key };
+    if (reg && !noPoints(room)) { // games with the computer don't count toward rank
+      // CALL is lowest-wins, so it earns career points for a low score: 0 pts = +50, 50 pts or more = 0
+      // CALL / BONDI: a round never adds rank points (a 0 adds nothing); winning the whole game gives +50
+      const earned = myRow.dhiha ? myRow.pts * 40 : myRow.call || myRow.bondi ? 0 : myRow.pts;
+      upd.careerPoints = (d.careerPoints || 0) + earned;
+      if (!myRow.call && !myRow.bondi && !myRow.dhiha) upd.bestRound = Math.max(d.bestRound || 0, myRow.pts);
+      if (myRow.digu) upd.digus = (d.digus || 0) + 1;
+    }
+    tx.set(ref, upd, { merge: true });
+  }).catch(() => { recordRound.done = null; });
+}
+
+function recordWin() {
+  if (!uid || !isRegistered() || noPoints(room) || !room?.champions?.includes(uid)) return;
+  const key = `${roomId}-${room.round}-win`;
+  if (recordWin.done === key) return;
+  recordWin.done = key;
+  runTransaction(db, async (tx) => {
+    const ref = doc(db, "users", uid);
+    const d = (await tx.get(ref)).data() || {};
+    if (d.lastWin === key) return;
+    const bonus = lowWins(gameOf(room)) ? 50 : 0; // CALL / BONDI game winner
+    tx.set(ref, { gameWins: (d.gameWins || 0) + 1, lastWin: key, ...(bonus ? { careerPoints: (d.careerPoints || 0) + bonus } : {}) }, { merge: true });
+  }).catch(() => { recordWin.done = null; });
+}
+
+// ---------- accounts ----------
+const isRegistered = () => !!auth.currentUser && !auth.currentUser.isAnonymous;
+const myRank = () => (isRegistered() ? P.rankIndex(profile.careerPoints || 0) : 0);
+const myPrefs = () => P.allowedPrefs(profile.prefs, myRank(), isRegistered(), isPremium());
+
+// What other players see about me in the room.
+function myEntry(name) {
+  const reg = isRegistered();
+  return {
+    uid, name,
+    avatar: reg ? profile.avatar || P.AVATARS[0] : null,
+    rank: reg ? myRank() : null,
+    badges: reg ? P.earnedBadges(profile).length : 0,
+    photoV: reg && hasPhoto() ? profile.photoV : null, // others load the picture from my profile
+    prem: premiumPaid() || null,
+  };
+}
+const hasPhoto = () => !!(profile.usePhoto && profile.photo);
+
+// Keep my name / avatar / rank in the room up to date (e.g. after ranking up).
+function syncMyEntry() {
+  if (!roomId || !room) return;
+  const cur = room.players.find((p) => p.uid === uid);
+  if (!cur) return;
+  const want = myEntry(isRegistered() ? profile.name || cur.name : cur.name);
+  const same = ["name", "avatar", "rank", "badges", "photoV"].every((k) => (cur[k] ?? null) === (want[k] ?? null));
+  if (same) return;
+  runTransaction(db, async (tx) => {
+    const r = (await tx.get(roomRef())).data();
+    tx.update(roomRef(), { players: r.players.map((p) => (p.uid === uid ? { ...want, seat: p.seat ?? null } : p)) });
+  }).catch(() => {});
+}
+
+let unsubUser = null;
+function watchMyStats() {
+  unsubUser?.();
+  gamesPlayed = null;
+  unsubUser = onSnapshot(doc(db, "users", uid), (snap) => {
+    const d = snap.data() || {};
+    const before = profile;
+    profile = d;
+    if (snap.metadata?.fromCache === false || !snap.metadata) {
+      ensureProfile(d, snap.exists());
+      if (snap.exists() && watchMyStats.seen !== uid && !amBlocked) { // "last seen" for the admin list
+        watchMyStats.seen = uid;
+        stampSeen(true);
+      }
+    }
+    const n = d.gamesPlayed || 0;
+    if (gamesPlayed !== null && n > gamesPlayed) {
+      const fresh = REACTIONS.filter(([, at]) => at > gamesPlayed && at <= n).map(([t]) => t);
+      if (SORT_UNLOCK > gamesPlayed && SORT_UNLOCK <= n) fresh.push("Sort by suit & number");
+      const newBadges = P.earnedBadges(d).filter((b) => !b.test(before));
+      fresh.push(...newBadges.map((b) => `${b.icon} ${b.name}`));
+      const r0 = P.rankIndex(before.careerPoints || 0), r1 = P.rankIndex(d.careerPoints || 0);
+      if (isRegistered() && r1 > r0) fresh.push(`${P.RANKS[r1].icon} ${P.RANKS[r1].name} rank`);
+      if (fresh.length) setTimeout(() => toast(`🔓 Unlocked: ${fresh.join("  ")}`), RESULTS_DELAY + 400);
+    }
+    gamesPlayed = n;
+    $("gamesPlayed").textContent = `Games played: ${n}`;
+    applyLook();
+    renderAccount();
+    renderTray();
+    if (!$("profileModal").hidden) renderProfile();
+    if (room) { syncMyEntry(); render(); }
+  });
+}
+
+// A registered account must have a profile document. If sign-up didn't manage to create it
+// (e.g. the rules weren't published yet), create it now so saving a name or picture works.
+function ensureProfile(d, exists) {
+  if (!isRegistered() || (exists && d.registered) || amBlocked) return;
+  if (ensureProfile.busy === uid) return;
+  ensureProfile.busy = uid;
+  setDoc(doc(db, "users", uid), {
+    registered: true,
+    name: d.name || auth.currentUser.displayName || load("digu-name") || "Player",
+    avatar: d.avatar || P.AVATARS[0],
+    prefs: d.prefs || P.DEFAULT_PREFS,
+  }, { merge: true })
+    .then(() => { ensureProfile.busy = null; })
+    .catch((e) => { ensureProfile.busy = null; toast(errMsg(e)); });
+}
+
+// My table and card-back colours (my own screen only).
+function applyLook() {
+  const prefs = myPrefs();
+  const t = P.byId(P.TABLES, prefs.table);
+  const s = document.documentElement.style;
+  s.setProperty("--felt-light", t.c[0]);
+  s.setProperty("--felt", t.c[1]);
+  s.setProperty("--felt-dark", t.c[2]);
+  s.setProperty("--back", P.byId(P.DECKS, prefs.deck).bg);
+}
+
+// Profile pictures live in each player's profile; rooms only carry a version number,
+// so the (small) picture is downloaded once per player and cached.
+const photoCache = new Map(); // uid -> { v, url, loading }
+function photoFor(p) {
+  if (!p.photoV) return null;
+  if (p.uid === uid) return hasPhoto() ? profile.photo : null;
+  const c = photoCache.get(p.uid);
+  if (c?.v === p.photoV) return c.url;
+  if (!c?.loading) {
+    photoCache.set(p.uid, { v: c?.v, url: c?.url, loading: true });
+    getDoc(doc(db, "users", p.uid)).then((snap) => {
+      photoCache.set(p.uid, { v: p.photoV, url: snap.data()?.photo || null });
+      if (room) render();
+    }).catch(() => photoCache.set(p.uid, { v: p.photoV, url: null }));
+  }
+  return c?.url || null;
+}
+
+function fillAvatar(a, p) {
+  const url = photoFor(p);
+  a.textContent = "";
+  a.classList.toggle("guest", !p.avatar && !url);
+  a.classList.toggle("photo", !!url);
+  if (url) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "";
+    a.append(img);
+  } else a.textContent = p.avatar || (p.name || "?").trim().charAt(0).toUpperCase();
+}
+
+function avatarEl(p, cls = "avatar") {
+  const a = document.createElement("span");
+  a.className = cls;
+  fillAvatar(a, p);
+  return a;
+}
+
+const meForAvatar = () => ({ uid, name: profile.name, avatar: profile.avatar || P.AVATARS[0], photoV: hasPhoto() ? profile.photoV || 1 : null });
+
+// Upload: crop to a square and shrink to 160px so it stays small (about 10 KB).
+async function uploadPhoto(file) {
+  if (!file) return;
+  if (!isRegistered()) return toast("Register to add a profile picture");
+  if (!file.type.startsWith("image/")) return toast("That isn't a picture");
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error("Couldn't read that picture. Try a JPG or PNG."));
+      i.src = url;
+    });
+    const size = 160, side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    canvas.getContext("2d").drawImage(img,
+      (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+    URL.revokeObjectURL(url);
+    let quality = 0.85, data = canvas.toDataURL("image/jpeg", quality);
+    while (data.length > 60000 && quality > 0.4) { quality -= 0.15; data = canvas.toDataURL("image/jpeg", quality); }
+    await savePrefs({ photo: data, photoV: Date.now(), usePhoto: true });
+    toast("Profile picture saved");
+  } catch (e) { toast(errMsg(e)); }
+}
+
+function removePhoto() {
+  savePrefs({ photo: null, photoV: null, usePhoto: false });
+}
+
+// Lobby account bar: guest or registered player.
+function renderAccount() {
+  // signed in / registered just now: show their holhuashis without waiting
+  const regNow = isRegistered();
+  if (renderAccount.reg !== regNow) { renderAccount.reg = regNow; if (!room) setTimeout(() => renderMyLounges(true), 0); }
+  const reg = isRegistered();
+  $("accountGuest").hidden = reg;
+  $("loungeLock").hidden = true;
+  $("holhuashiPanel").hidden = !reg; // guests only see Aammu Jagaha
+  $("createLoungeBtn").classList.toggle("locked-btn", !reg);
+  $("createLoungeBtn").textContent = (reg ? "" : "🔒 ") + tr("holhuashi.create", "Create my holhuashi");
+  $("accountUser").hidden = !reg;
+  $("name").disabled = reg;
+  if (reg) {
+    const prog = P.rankProgress(profile.careerPoints || 0);
+    const rk = P.RANKS[prog.i];
+    fillAvatar($("acctAvatar"), meForAvatar());
+    $("acctName").textContent = profile.name || "Player";
+    $("acctRank").textContent = `${rk.icon} ${rk.name} · ${profile.careerPoints || 0} pts`;
+    $("name").value = profile.name || "";
+  } else {
+    if (!$("name").value.trim()) $("name").value = load("digu-name") || ""; // never overwrite what the player typed
+  }
+}
+
+// Register = turn this guest into a real account (keeps games played), with a name and avatar.
+let pickedAvatar = P.AVATARS[0];
+function openAuth(mode) {
+  $("authModal").hidden = false;
+  $("authModal").dataset.mode = mode;
+  $("authTitle").textContent = mode === "register" ? "Create your account" : tr("auth.signin", "Sign in");
+  $("authSubmit").textContent = mode === "register" ? "Register" : tr("auth.signin", "Sign in");
+  $("authNameRow").hidden = mode !== "register";
+  $("authAvatarRow").hidden = mode !== "register";
+  $("authSwitch").textContent = mode === "register" ? "Already registered? Sign in" : tr("auth.toRegister", "New here? Register");
+  $("authError").textContent = "";
+  if (mode === "register") {
+    $("authName").value = $("name").value.trim();
+    renderAvatarPicker($("authAvatars"), pickedAvatar, (a) => { pickedAvatar = a; });
+  }
+}
+
+function renderAvatarPicker(box, current, onPick) {
+  box.innerHTML = "";
+  for (const a of P.AVATARS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "avatar-pick" + (a === current ? " on" : "");
+    b.textContent = a;
+    b.onclick = () => {
+      box.querySelectorAll(".on").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      onPick(a);
+    };
+    box.append(b);
+  }
+}
+
+const AUTH_ERRORS = {
+  "auth/email-already-in-use": "That email is already registered. Try signing in.",
+  "auth/credential-already-in-use": "That email is already registered. Try signing in.",
+  "auth/invalid-email": "That email doesn't look right.",
+  "auth/weak-password": "Password needs at least 6 characters.",
+  "auth/invalid-credential": "Wrong email or password.",
+  "auth/wrong-password": "Wrong email or password.",
+  "auth/user-not-found": "No account with that email.",
+  "auth/operation-not-allowed": "Email sign-in isn't turned on in Firebase yet (Authentication → Sign-in method → Email/Password).",
+  "auth/too-many-requests": "Too many tries. Wait a minute and try again.",
+};
+
+async function submitAuth(e) {
+  e.preventDefault();
+  const mode = $("authModal").dataset.mode;
+  const email = $("authEmail").value.trim();
+  const pw = $("authPassword").value;
+  $("authError").textContent = "";
+  $("authSubmit").disabled = true;
+  try {
+    // Remember me: stay signed in after closing the browser (otherwise only until it's closed)
+    const remember = $("authRemember").checked;
+    await setPersistence(auth, remember ? browserLocalPersistence : browserSessionPersistence).catch(() => {});
+    if (remember) store("thaas-email", email); else store("thaas-email", "");
+    store("thaas-remember", remember ? "1" : "0");
+    if (mode === "register") {
+      const name = $("authName").value.trim().slice(0, 16);
+      if (!name) throw { code: "x", message: "Choose a name" };
+      const cred = EmailAuthProvider.credential(email, pw);
+      const res = await linkWithCredential(auth.currentUser, cred); // same uid: guest progress is kept
+      await updateProfile(res.user, { displayName: name });
+      await setDoc(doc(db, "users", res.user.uid), {
+        name, avatar: pickedAvatar, registered: true, prefs: P.DEFAULT_PREFS,
+        careerPoints: 0, digus: 0, gameWins: 0, bestRound: 0, createdAt: serverTimestamp(),
+      }, { merge: true });
+      store("digu-name", name);
+      toast(`Welcome, ${name}! ${pickedAvatar}`);
+    } else {
+      await signInWithEmailAndPassword(auth, email, pw);
+      toast("Signed in");
+    }
+    $("authModal").hidden = true;
+    $("authPassword").value = "";
+    renderAccount();
+  } catch (err) {
+    $("authError").textContent = AUTH_ERRORS[err.code] || err.message || "Something went wrong";
+  } finally {
+    $("authSubmit").disabled = false;
+  }
+}
+
+async function logOut() {
+  if (roomId) return toast("Leave the room first");
+  await signOut(auth);
+  profile = {};
+  await signInAnonymously(auth); // back to playing as a guest
+  toast("Signed out. Playing as guest.");
+}
+
+// ---------- admin & blocked players ----------
+// You're an admin if the Firebase console has a document admins/{your player ID}.
+let amAdmin = false, amBlocked = false, unsubBlocked = null;
+let adminUsers = [], adminBanned = new Set(), adminFilter = "all";
+
+function watchRoles() {
+  amAdmin = false;
+  $("adminBtn").hidden = true;
+  watchPremium();
+  getDoc(doc(db, "admins", uid)).then((s) => {
+    amAdmin = s.exists();
+    $("adminBtn").hidden = !amAdmin;
+    renderPremiumEntry();
+  }).catch(() => {});
+  unsubBlocked?.();
+  unsubBlocked = onSnapshot(doc(db, "banned", uid), (s) => {
+    amBlocked = s.exists();
+    $("blockedNote").hidden = !amBlocked;
+    $("lobbyActions").classList.toggle("blocked", amBlocked);
+  }, () => {});
+}
+
+function blockedCheck() {
+  if (amBlocked) { toast("Your account has been blocked by an admin"); return true; }
+  return false;
+}
+
+// ---------- 💎 Premium ----------
+// Hidden until an admin turns it on (config/premium.visible). Players pay (MVR 5 a month, outside the
+// app) and an admin activates it for them (premium/{uid}.until). Admins always see premium tools.
+let premiumCfg = { visible: false, price: "MVR 5 / month", payInfo: "" }, myPremiumUntil = 0, unsubPrem = [];
+const PREMIUM_FEATURES = [
+  ["💬", "Holhuashi chat", "Send messages in your holhuashis (free players can read them)"],
+  ["🏝️", "Unlimited holhuashis", `Free players can own ${2}; Premium players as many as they like`],
+  ["🃏", "Premium card backs", "Lagoon waves, Coral, Starry night, Diamond, Palm leaf, Royal check"],
+  ["🌅", "Premium tables", "Sandbank, Island sunset, Coral reef, Black marble, Emerald"],
+  ["🥳", "More emojis & phrases", "22 extra reactions to send at the table"],
+  ["👁", "DIGU card tracker", "See the last cards each player took from the thrown pile and what they threw"],
+  ["🔎", "What they're collecting", "A rough idea of the sets each player is building (never their exact cards)"],
+  ["⚠️", "Next-player warning", "A heads-up when the card you're about to throw may help the next player"],
+  ["🧠", "Suit memory", "BONDI & DHIHA: who has run out of which suit"],
+  ["🔟", "Tens tracker", "DHIHA: which 10s are still to come"],
+  ["💎", "Premium badge", "A diamond next to your name at every table"],
+];
+const untilMs = (u) => (u?.toMillis ? u.toMillis() : u?.seconds ? u.seconds * 1000 : typeof u === "string" ? Date.parse(u) || 0 : Number(u) || 0);
+const premiumPaid = () => premiumCfg.visible && myPremiumUntil > Date.now();
+const isPremium = () => amAdmin || premiumPaid();
+// Premium limits only apply while Premium is switched on (otherwise there'd be no way to get it).
+const premiumGate = () => premiumCfg.visible && !isPremium();
+const FREE_LOUNGES = 2;
+function needPremium(what) {
+  toast(`💎 ${what} for Premium players (${premiumCfg.price || "MVR 5 / month"})`);
+  setTimeout(openPremium, 600);
+}
+function watchPremium() {
+  unsubPrem.forEach((f) => f()); unsubPrem = [];
+  unsubPrem.push(onSnapshot(doc(db, "config", "premium"), (s) => {
+    premiumCfg = { visible: false, price: "MVR 5 / month", payInfo: "", ...(s.data() || {}) };
+    renderPremiumEntry();
+  }, () => {}));
+  unsubPrem.push(onSnapshot(doc(db, "premium", uid), (s) => {
+    const u = s.data()?.until;
+    myPremiumUntil = untilMs(u);
+    renderPremiumEntry();
+  }, () => {}));
+}
+function renderPremiumEntry() {
+  const b = $("premiumBtn");
+  b.hidden = !premiumCfg.visible; // only when the admin has switched Premium on
+  renderChatGate();
+  applyLook();
+  renderTray();
+  if (!$("profileModal").hidden) renderProfile();
+  b.textContent = premiumPaid() ? "💎 Premium · active" : "💎 Go Premium";
+  b.classList.toggle("active", premiumPaid());
+}
+// Chat: free players can read but not send while Premium is on.
+function renderChatGate() {
+  const gate = premiumGate();
+  const input = $("chatText"), btn = $("chatForm")?.querySelector("button");
+  if (!input) return;
+  input.disabled = gate;
+  if (btn) btn.disabled = gate;
+  input.placeholder = gate ? "💎 Chat is for Premium players" : "Say something…";
+  let up = $("chatPremium");
+  if (gate && !up) {
+    up = Object.assign(document.createElement("button"), { type: "button", id: "chatPremium", className: "premium-btn small", textContent: "💎 Go Premium to chat" });
+    up.onclick = openPremium;
+    $("chatForm").after(up);
+  }
+  if (up) up.hidden = !gate;
+}
+function openPremium() {
+  $("premiumModal").hidden = false;
+  const f = $("premiumFeatures");
+  f.innerHTML = "";
+  for (const [icon, t, d] of PREMIUM_FEATURES) {
+    const li = document.createElement("li");
+    li.append(Object.assign(document.createElement("span"), { className: "pf-icon", textContent: icon }));
+    const tx = document.createElement("div");
+    tx.append(Object.assign(document.createElement("b"), { textContent: t }), Object.assign(document.createElement("small"), { textContent: d }));
+    li.append(tx);
+    f.append(li);
+  }
+  $("premiumPrice").textContent = premiumCfg.price || "MVR 5 / month";
+  $("premiumStatus").textContent = premiumPaid()
+    ? `✅ Active until ${new Date(myPremiumUntil).toLocaleDateString()}`
+    : amAdmin ? "🛡️ You're an admin: premium tools are on for you" : "Not active yet";
+  $("premiumPay").textContent = premiumCfg.payInfo || "Pay MVR 5 to the THAAS admin and send them your player ID below. They'll switch it on for you.";
+  $("premiumId").textContent = uid;
+}
+
+// The tracker panel during a game.
+function renderPremiumPanel() {
+  const box = $("premiumPanel");
+  const g = room ? gameOf(room) : null;
+  const show = !!room && room.status === "playing" && isPremium() && premOpen && ["digu", "bondi", "dhiha"].includes(g);
+  box.hidden = !show;
+  $("premiumPanelR").hidden = !show;
+  if (!show) return;
+  const body = $("premiumBody");
+  const key = JSON.stringify([g, room.track, room.voids, room.dvoids, room.decks, room.turn, selected, room.round, innerWidth]);
+  if (body._key === key) return;
+  body._key = key;
+  body.innerHTML = "";
+  const bodyR = $("premiumBodyR");
+  bodyR.innerHTML = "";
+  // only the players on my left and right (with 2 players, the one opposite)
+  const all = room.playerIds.filter((u) => u !== uid);
+  const sideOf = (u) => seatTagPos(u).side;
+  let others = all.filter((u) => ["left", "right"].includes(sideOf(u)));
+  if (!others.length) others = all;
+  const colFor = (u) => (sideOf(u) === "left" ? body : bodyR);
+  const yOf = (s) => Math.min(...others.filter((u) => sideOf(u) === s).map((u) => seatTagPos(u).y), innerHeight * 0.42);
+  box.style.top = ""; box.style.bottom = innerHeight - yOf("left") + 18 + "px";
+  $("premiumPanelR").style.bottom = innerHeight - yOf("right") + 18 + "px";
+  const me = room.playerIds.indexOf(uid);
+  const next = room.playerIds[(me + 1) % room.playerIds.length];
+  const SYM = C.SUIT_SYMBOL;
+  const chip = (id) => { const c = C.parse(id); return `<span class="pc ${C.isRed(id) ? "red" : ""}">${C.label(c.r)}${SYM[c.s]}</span>`; };
+  if (g === "digu") {
+    $("premiumTitle").textContent = "💎 Card tracker";
+    for (const u of others) {
+      const t = room.track?.[u] || {};
+      const h = C.diguHints(t.took, t.threw);
+      const row = document.createElement("div");
+      row.className = "pt-row" + (u === next ? " next" : "");
+      row.innerHTML = `<div class="pt-name">${u === next ? "▶ " : ""}<b></b>${u === next ? " <small>next</small>" : ""}</div>
+        <div class="pt-line" data-l="⬆"><small>took</small> ${(t.took || []).slice(-3).map(chip).join("") || "<i>nothing yet</i>"}</div>
+        <div class="pt-line" data-l="⬇"><small>threw</small> ${(t.threw || []).slice(-5).map(chip).join("") || "<i>nothing yet</i>"}</div>
+        <div class="pt-hint"></div>`;
+      row.querySelector("b").textContent = nameOf(u);
+      row.querySelector(".pt-hint").textContent = h.want.length ? `🔎 maybe collecting ${h.want.join(" or ")}` + (h.avoid.length ? ` · not ${h.avoid.join(" ")}` : "")
+        : h.avoid.length ? `🔎 probably not collecting ${h.avoid.join(" ")}` : "🔎 no idea yet";
+      colFor(u).append(row);
+    }
+    // heads-up about the card I'm about to throw
+    const sel = selected && hand.includes(selected) ? selected : null;
+    if (sel && isMyTurn() && room.phase === "discard") {
+      const took = room.track?.[next]?.took || [];
+      const s = C.parse(sel);
+      const risky = took.some((id) => { const c = C.parse(id); return c.r === s.r || (c.s === s.s && Math.abs(c.r - s.r) <= 2); });
+      if (risky) body.prepend(Object.assign(document.createElement("div"), { className: "pt-warn", textContent: `⚠️ ${nameOf(next)} might want this card` }));
+    }
+  } else {
+    $("premiumTitle").textContent = "💎 Suit memory";
+    const voids = g === "bondi" ? room.voids || {} : room.dvoids || {};
+    for (const u of others) {
+      const row = document.createElement("div");
+      row.className = "pt-row";
+      const v = voids[u] || [];
+      row.innerHTML = `<div class="pt-name"><b></b></div><div class="pt-line"></div>`;
+      row.querySelector("b").textContent = nameOf(u) + (g === "dhiha" && room.teams?.[u] === room.teams?.[uid] ? " (partner)" : "");
+      row.querySelector(".pt-line").innerHTML = v.length ? `<small>out of</small> ${v.map((s) => `<span class="pc ${["H", "D"].includes(s) ? "red" : ""}">${SYM[s]}</span>`).join("")}` : "<i>has every suit so far</i>";
+      colFor(u).append(row);
+    }
+    if (g === "dhiha") {
+      const gone = new Set([...(room.decks?.A || []), ...(room.decks?.B || [])].flatMap((d) => d.split(",")).concat((room.trick || []).map((t) => t.card)));
+      const left = ["S", "H", "D", "C"].filter((s) => !gone.has(`10-${s}-0`) && !hand.includes(`10-${s}-0`));
+      const mine = hand.filter((c) => C.parse(c).r === 10);
+      body.append(Object.assign(document.createElement("div"), { className: "pt-hint tens",
+        innerHTML: `🔟 still out there: ${left.map((s) => `<span class="pc ${["H", "D"].includes(s) ? "red" : ""}">10${SYM[s]}</span>`).join("") || "<i>none</i>"}` + (mine.length ? ` · you hold ${mine.length}` : "") }));
+    }
+  }
+}
+
+// Admin: premium settings and per-player activation.
+async function savePremiumCfg() {
+  if (!amAdmin) return;
+  try {
+    await setDoc(doc(db, "config", "premium"), {
+      visible: $("premVisible").checked, price: $("premPrice").value.trim() || "MVR 5 / month",
+      payInfo: $("premPayInfo").value.trim(), by: uid, at: serverTimestamp(),
+    });
+    toast("Premium settings saved");
+  } catch (e) { toast(errMsg(e)); }
+}
+let adminPremium = new Map();
+async function grantPremium(u, months) {
+  try {
+    const cur = adminPremium.get(u.id) || 0;
+    const from = Math.max(Date.now(), cur);
+    const until = months > 0 ? from + months * 30 * 86400_000 : 0;
+    if (until) await setDoc(doc(db, "premium", u.id), { until: new Date(until), name: u.name || null, by: uid, at: serverTimestamp() });
+    else await deleteDoc(doc(db, "premium", u.id));
+    if (until) adminPremium.set(u.id, until); else adminPremium.delete(u.id);
+    renderAdmin();
+    toast(until ? `💎 ${u.name || "Player"}: premium until ${new Date(until).toLocaleDateString()}` : `Premium removed for ${u.name || "player"}`);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+async function openAdmin() {
+  if (!amAdmin) return;
+  $("adminModal").hidden = false;
+  $("adminList").innerHTML = '<p class="muted">Loading players…</p>';
+  try {
+    const [users, banned, prem] = await Promise.all([
+      getDocs(collection(db, "users")),
+      getDocs(collection(db, "banned")),
+      getDocs(collection(db, "premium")).catch(() => ({ docs: [] })),
+    ]);
+    adminPremium = new Map(prem.docs.map((d) => { const u = d.data().until; return [d.id, untilMs(u)]; }));
+    $("premVisible").checked = !!premiumCfg.visible;
+    $("premPrice").value = premiumCfg.price || "MVR 5 / month";
+    $("premPayInfo").value = premiumCfg.payInfo || "";
+    adminBanned = new Set(banned.docs.map((d) => d.id));
+    adminUsers = users.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (usingRealtime()) { // "last online" lives in Realtime Database
+      const ls = await getDocs(collection(db, "lastSeen")).catch(() => null);
+      const m = new Map((ls?.docs || []).map((d) => [d.id, d.data()?.t]));
+      for (const u of adminUsers) if (m.get(u.id) && m.get(u.id) > untilMs(u.lastSeen)) u.lastSeen = m.get(u.id);
+    }
+    // players who were blocked after their profile was deleted still show up
+    for (const id of adminBanned) if (!adminUsers.some((u) => u.id === id)) adminUsers.push({ id, deleted: true });
+    renderAdmin();
+  } catch (e) {
+    $("adminList").innerHTML = "";
+    toast(errMsg(e));
+  }
+}
+
+// "online now", "5 min ago", "yesterday 21:04", …
+function seenAgo(ms) {
+  const d = Date.now() - ms;
+  if (d < 4 * 60_000) return "🟢 online now";
+  if (d < 60 * 60_000) return `last online ${Math.round(d / 60_000)} min ago`;
+  if (d < 24 * 3600_000) return `last online ${Math.round(d / 3600_000)} h ago`;
+  const t = new Date(ms);
+  return `last online ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+function renderAdmin() {
+  const q = $("adminSearch").value.trim().toLowerCase();
+  const list = adminUsers
+    .filter((u) => adminFilter === "all"
+      || (adminFilter === "registered" && u.registered)
+      || (adminFilter === "guests" && !u.registered && !u.deleted)
+      || (adminFilter === "blocked" && adminBanned.has(u.id))
+      || (adminFilter === "recent" && untilMs(u.lastSeen)))
+    .filter((u) => !q || (u.name || "").toLowerCase().includes(q) || u.id.toLowerCase().includes(q))
+    .sort((a, b) => adminFilter === "recent" ? untilMs(b.lastSeen) - untilMs(a.lastSeen)
+      : (b.careerPoints || 0) - (a.careerPoints || 0) || (b.gamesPlayed || 0) - (a.gamesPlayed || 0));
+
+  const reg = adminUsers.filter((u) => u.registered).length;
+  $("adminCount").textContent = `${adminUsers.length} players · ${reg} registered · ${adminBanned.size} blocked`;
+  const box = $("adminList");
+  box.innerHTML = "";
+  if (!list.length) box.innerHTML = '<p class="muted">No players match.</p>';
+  for (const u of list) {
+    const row = document.createElement("div");
+    row.className = "admin-row" + (adminBanned.has(u.id) ? " is-blocked" : "");
+    const who = { uid: u.id, name: u.name || (u.registered ? "Player" : "Guest"), avatar: u.registered ? u.avatar : null,
+      photoV: u.usePhoto && u.photo ? u.photoV || 1 : null };
+    if (who.photoV) photoCache.set(u.id, { v: who.photoV, url: u.photo });
+    row.append(avatarEl(who, "avatar"));
+    const info = document.createElement("div");
+    info.className = "admin-info";
+    const rk = P.RANKS[P.rankIndex(u.careerPoints || 0)];
+    const name = document.createElement("strong");
+    name.textContent = u.deleted ? "(profile deleted)" : who.name;
+    const meta = document.createElement("small");
+    meta.textContent = u.deleted ? `ID ${u.id}`
+      : `${u.registered ? `${rk.icon} ${rk.name} · ${u.careerPoints || 0} pts` : "Guest"} · ${u.gamesPlayed || 0} rounds`
+        + (untilMs(u.lastSeen) ? ` · ${seenAgo(untilMs(u.lastSeen))}` : "") + ` · ID ${u.id.slice(0, 8)}…`;
+    info.append(name, meta);
+    if (adminBanned.has(u.id)) info.append(Object.assign(document.createElement("span"), { className: "tag-blocked", textContent: "BLOCKED" }));
+    const pu = adminPremium.get(u.id) || 0;
+    if (pu > Date.now()) info.append(Object.assign(document.createElement("span"), { className: "tag-prem", textContent: `💎 until ${new Date(pu).toLocaleDateString()}` }));
+    if (u.id === uid) info.append(Object.assign(document.createElement("span"), { className: "tag-you", textContent: "YOU" }));
+    row.append(info);
+
+    const btns = document.createElement("div");
+    btns.className = "admin-btns";
+    if (u.id !== uid) {
+      const ban = document.createElement("button");
+      ban.className = "ghost small";
+      ban.textContent = adminBanned.has(u.id) ? "Unblock" : "Block";
+      ban.onclick = () => toggleBlock(u);
+      btns.append(ban);
+    }
+    if (!u.deleted && u.registered) {
+      const pm = document.createElement("button");
+      pm.className = "ghost small prem";
+      pm.textContent = "💎 +1 month";
+      pm.title = "Activate / extend premium for 30 days";
+      pm.onclick = () => grantPremium(u, 1);
+      btns.append(pm);
+      if ((adminPremium.get(u.id) || 0) > Date.now()) {
+        const rm = Object.assign(document.createElement("button"), { className: "ghost small", textContent: "Remove 💎" });
+        rm.onclick = () => grantPremium(u, 0);
+        btns.append(rm);
+      }
+    }
+    if (!u.deleted) {
+      const del = document.createElement("button");
+      del.className = "danger small";
+      del.textContent = "Delete";
+      del.onclick = () => deleteUser(u);
+      btns.append(del);
+    }
+    row.append(btns);
+    box.append(row);
+  }
+}
+
+async function deleteUser(u) {
+  const label = u.name || "this player";
+  const msg = u.id === uid
+    ? "Delete YOUR OWN profile? Your stats, rank and picture will be wiped."
+    : `Delete ${label}'s profile?\n\nTheir name, avatar, picture, points, rank and badges will be wiped. `
+      + "This can't be undone. They can still sign in and start again unless you also block them.";
+  if (!confirm(msg)) return;
+  try {
+    await deleteDoc(doc(db, "users", u.id));
+    adminUsers = adminBanned.has(u.id)
+      ? adminUsers.map((x) => (x.id === u.id ? { id: x.id, deleted: true } : x))
+      : adminUsers.filter((x) => x.id !== u.id);
+    renderAdmin();
+    toast(`Deleted ${label}`);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+async function toggleBlock(u) {
+  const label = u.name || "this player";
+  const blocked = adminBanned.has(u.id);
+  if (!blocked && !confirm(`Block ${label}? They won't be able to create or join rooms or save anything.`)) return;
+  try {
+    if (blocked) {
+      await deleteDoc(doc(db, "banned", u.id));
+      adminBanned.delete(u.id);
+      adminUsers = adminUsers.filter((x) => !(x.id === u.id && x.deleted));
+    } else {
+      await setDoc(doc(db, "banned", u.id), { by: uid, name: u.name || null, at: serverTimestamp() });
+      adminBanned.add(u.id);
+    }
+    renderAdmin();
+    toast(blocked ? `Unblocked ${label}` : `Blocked ${label}`);
+  } catch (e) { toast(errMsg(e)); }
+}
+
+// ---------- profile: rank, badges, avatar, table / deck / DIGU style ----------
+function renderProfile() {
+  const reg = isRegistered();
+  const pts = profile.careerPoints || 0;
+  const prog = P.rankProgress(pts);
+  const rk = P.RANKS[prog.i];
+  fillAvatar($("profAvatar"), meForAvatar());
+  $("photoThumb").innerHTML = "";
+  if (profile.photo) {
+    const img = document.createElement("img");
+    img.src = profile.photo;
+    img.alt = "Your picture";
+    $("photoThumb").append(img);
+  } else $("photoThumb").textContent = "📷";
+  $("photoThumb").classList.toggle("on", hasPhoto());
+  $("photoRemove").hidden = !profile.photo;
+  $("photoUploadLabel").textContent = profile.photo ? "Change picture" : "Upload picture";
+  $("profName").value = profile.name || "";
+  $("profRank").textContent = `${rk.icon} ${rk.name}`;
+  $("profBar").style.transform = `scaleX(${prog.pct})`;
+  $("profNext").textContent = prog.next
+    ? `${pts} career points · ${prog.toNext} more to ${prog.next.icon} ${prog.next.name}`
+    : `${pts} career points · top rank!`;
+  $("profStats").innerHTML = "";
+  [["Rounds", profile.gamesPlayed || 0], ["DIGUs", profile.digus || 0],
+   ["Games won", profile.gameWins || 0], ["Best round", profile.bestRound || 0]].forEach(([k, v]) => {
+    const d = document.createElement("div");
+    d.innerHTML = `<b></b><small></small>`;
+    d.querySelector("b").textContent = v;
+    d.querySelector("small").textContent = k;
+    $("profStats").append(d);
+  });
+
+  const badges = $("profBadges");
+  badges.innerHTML = "";
+  for (const b of P.BADGES) {
+    const has = b.test(profile);
+    const el = document.createElement("div");
+    el.className = "badge" + (has ? "" : " locked");
+    el.title = b.desc;
+    el.innerHTML = `<span></span><small></small>`;
+    el.firstChild.textContent = has ? b.icon : "🔒";
+    el.lastChild.textContent = b.name;
+    badges.append(el);
+  }
+
+  renderAvatarPicker($("profAvatars"), hasPhoto() ? null : profile.avatar, (a) => savePrefs({ avatar: a, usePhoto: false }));
+  const prefs = myPrefs();
+  renderStylePicker("profTables", P.TABLES, prefs.table, "table",
+    (o) => `background: radial-gradient(circle at 40% 30%, ${o.c[0]}, ${o.c[2]})`);
+  renderStylePicker("profDecks", P.DECKS, prefs.deck, "deck", (o) => `background: ${o.bg}`);
+  renderStylePicker("profFonts", P.SHOUT_FONTS, prefs.font, "font",
+    (o) => `font-family: ${o.css}; font-size: ${o.small ? 9 : 15}px`, "DIGU!");
+  renderStylePicker("profColors", P.SHOUT_COLORS, prefs.color, "color",
+    (o) => (o.css === "rainbow" ? "" : `color: ${o.css}`), "DIGU!");
+  $("profPreview").innerHTML = "";
+  $("profPreview").append(shoutEl({ font: prefs.font, color: prefs.color }));
+  $("profId").textContent = uid;
+  $("profileModal").querySelectorAll(".reg-only").forEach((x) => (x.hidden = !reg));
+}
+
+function renderStylePicker(boxId, list, current, key, styleFor, label = "") {
+  const box = $(boxId);
+  box.innerHTML = "";
+  const rank = myRank();
+  for (const o of list) {
+    if (o.premium && !premiumCfg.visible && !amAdmin) continue; // premium styles only show when Premium is on
+    if (o.premium) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "style-pick prem" + (o.id === current ? " on" : "") + (isPremium() && isRegistered() ? "" : " locked");
+      b.setAttribute("style", styleFor(o));
+      b.textContent = label;
+      b.title = `💎 ${o.name}`;
+      b.dataset.lock = "💎";
+      b.onclick = () => (isPremium() && isRegistered() ? savePrefs({ prefs: { [key]: o.id } }) : needPremium(`${o.name} is`));
+      box.append(b);
+      continue;
+    }
+    const ok = isRegistered() && o.rank <= rank;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "style-pick" + (o.id === current ? " on" : "") + (ok ? "" : " locked");
+    b.setAttribute("style", styleFor(o));
+    if (key === "color" && o.css === "rainbow") {
+      b.innerHTML = '<span class="rainbow-text"></span>';
+      b.firstChild.textContent = label;
+    } else b.textContent = label;
+    b.title = ok ? o.name : `${o.name} · unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name}`;
+    if (!ok) b.dataset.lock = P.RANKS[o.rank].icon;
+    b.onclick = () => ok
+      ? savePrefs({ prefs: { [key]: o.id } })
+      : toast(`🔒 ${o.name} unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name} rank (${P.RANKS[o.rank].at} career points)`);
+    box.append(b);
+  }
+}
+
+// set + merge (not update): works even if the profile document doesn't exist yet
+function savePrefs(upd) {
+  if (!isRegistered()) return toast("Register to customise");
+  return setDoc(doc(db, "users", uid), { registered: true, ...upd }, { merge: true })
+    .catch((e) => toast(errMsg(e)));
+}
+
+function saveName() {
+  const n = $("profName").value.trim().slice(0, 16);
+  if (!n || n === profile.name) return;
+  store("digu-name", n);
+  savePrefs({ name: n });
+  if (auth.currentUser) updateProfile(auth.currentUser, { displayName: n }).catch(() => {});
+}
+
+// The DIGU shout in a player's chosen font and colour.
+function shoutEl(style, text = "DIGU!") {
+  const f = P.byId(P.SHOUT_FONTS, style?.font);
+  const c = P.byId(P.SHOUT_COLORS, style?.color);
+  const s = document.createElement("span");
+  s.className = "shout" + (c.css === "rainbow" ? " rainbow-text" : "") + (f.small ? " small-font" : "");
+  s.style.fontFamily = f.css;
+  s.style.fontSize = f.size + "px";
+  if (c.css !== "rainbow") s.style.color = c.css;
+  s.textContent = text;
+  return s;
+}
+
+function renderTray() {
+  const tray = $("reactTray");
+  tray.innerHTML = "";
+  const played = gamesPlayed || 0;
+  for (const [text, at] of REACTIONS) {
+    const btn = document.createElement("button");
+    const emoji = /^\p{Extended_Pictographic}+$/u.test(text);
+    btn.className = emoji ? "emoji" : "phrase";
+    if (played >= at) {
+      btn.textContent = text;
+      btn.onclick = () => sendReaction(text);
+    } else {
+      btn.classList.add("locked");
+      btn.innerHTML = `<span class="lock-item"></span><small>🔒 ${at}</small>`;
+      btn.firstChild.textContent = text;
+      btn.title = `Unlocks after ${at} games (you've played ${played})`;
+      btn.onclick = () => toast(`Play ${at - played} more ${at - played === 1 ? "game" : "games"} to unlock ${text}`);
+    }
+    tray.append(btn);
+  }
+  if (premiumCfg.visible || amAdmin) {
+    tray.append(Object.assign(document.createElement("p"), { className: "tray-prem-head", textContent: "💎 Premium" }));
+    for (const text of PREMIUM_REACTIONS) {
+      const btn = document.createElement("button");
+      btn.className = (/^\p{Extended_Pictographic}+$/u.test(text) ? "emoji" : "phrase") + " prem" + (isPremium() ? "" : " locked");
+      btn.textContent = text;
+      btn.onclick = () => (isPremium() ? sendReaction(text) : needPremium("These emojis and phrases are"));
+      tray.append(btn);
+    }
+  }
+  const note = document.createElement("p");
+  note.className = "tray-note";
+  note.textContent = `Games played: ${played}. Play more to unlock more.`;
+  tray.append(note);
+}
+
+// ---------- rendering ----------
+function cardEl(id, { small = false } = {}) {
+  const c = C.parse(id);
+  const el = document.createElement("div");
+  el.className = `card ${C.isRed(id) ? "red" : "black"}${small ? " small" : ""}`;
+  const sym = C.SUIT_SYMBOL[c.s];
+  el.innerHTML = `<span class="corner">${C.label(c.r)}<br>${sym}</span><span class="pip">${sym}</span><span class="corner bottom">${C.label(c.r)}<br>${sym}</span>`;
+  el.dataset.id = id;
+  return el;
+}
+
+// Same card always lands at the same angle on every player's screen.
+function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function tossTransform(id, i) {
+  const h = hash(id + ":" + i);
+  const dx = (h % 37) - 18, dy = ((h >>> 6) % 25) - 12, rot = ((h >>> 12) % 61) - 30;
+  return `translate(-50%, -50%) translate(${dx}px, ${dy}px) rotate(${rot}deg)`;
+}
+
+// Thrown cards lie scattered in one spot instead of a neat pile.
+function renderHeap() {
+  renderDhihaPiles();
+  if (isBondi() || isDhiha()) return renderTrick();
+  const pile = $("discardPile");
+  pile.classList.remove("trick-done");
+  const ended = room.status === "ended";
+  const discard = room.discard || [];
+  const pick = isCall() && room.phase === "draw" ? room.pickable : null;
+  const key = `${room.round}|${room.status}|${discard.slice(-HEAP_SIZE).join()}|${room.diguCard}|${pick}`;
+  if (key === heapKey) return;
+  const prevTop = heapTop, firstPaint = heapKey === null;
+  heapKey = key;
+  pile.innerHTML = "";
+
+  let shown = discard.slice(-HEAP_SIZE);
+  const digu = ended && room.diguCard && shown[shown.length - 1] === room.diguCard ? shown.pop() : null;
+  if (!shown.length && !ended) pile.innerHTML = '<div class="card empty"></div>';
+  const start = discard.length - shown.length - (digu ? 1 : 0);
+  shown.forEach((id, i) => {
+    const el = cardEl(id);
+    el.classList.add("thrown");
+    if (arriving.has(id)) el.classList.add("arriving");
+    el.style.setProperty("--t", tossTransform(id, start + i));
+    el.style.zIndex = i + 1;
+    if (i === shown.length - 1 && !ended) {
+      el.classList.add("top");
+      // only a card that was just thrown drops in; when the top card is taken, the one below stays exactly as it lies
+      if (!firstPaint && id !== prevTop && !arriving.has(id) && discard.length > heapLen) el.classList.add("landing");
+    }
+    if (id === pick) { // CALL: the previous player's card you may take slides out from under your throw
+      el.classList.add("pick");
+      el.style.zIndex = shown.length + 5;
+    }
+    pile.append(el);
+  });
+  heapTop = ended ? null : shown[shown.length - 1] || null;
+  heapLen = discard.length;
+
+  // DIGU! the winning throw lands, then flips over to show the shout on its back
+  if (ended) {
+    const f = document.createElement("div");
+    f.className = "flip-card" + (firstPaint ? " instant" : "") + (digu ? "" : " no-face");
+    const inner = document.createElement("div");
+    inner.className = "flip-inner";
+    const front = document.createElement("div");
+    front.className = "flip-front";
+    if (digu) front.append(cardEl(digu));
+    const back = document.createElement("div");
+    back.className = "flip-back";
+    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : "DIGU!"));
+    inner.append(front, back);
+    f.append(inner);
+    pile.append(f);
+  }
+}
+
+// ---------- "it's your turn" ----------
+// When the turn comes to me: a big badge pops up, a label pulses over my cards, the screen edge
+// glows, the phone buzzes, a short chime plays, and (if I'm in another tab) the tab title flashes.
+let wasMyTurn = false, titleFlash = null, audioCtx = null;
+const BASE_TITLE = document.title;
+function turnAlert(mine) {
+  $("game").classList.toggle("my-turn", mine);
+  $("game").classList.toggle("is-dhiha", isDhiha() && room.status !== "lobby");
+  $("turnBadge").hidden = !mine;
+  if (mine && !wasMyTurn) {
+    const pop = document.createElement("div");
+    pop.className = "turn-pop";
+    pop.innerHTML = "<b>YOUR TURN</b><small>" + (isBondi() || isDhiha() ? "play a card" : isCall() ? "throw first, then take" : "take a card, then throw one") + "</small>";
+    document.body.append(pop);
+    setTimeout(() => pop.remove(), 1000);
+    try { navigator.vibrate?.([120, 60, 120]); } catch {}
+    chime();
+    if (document.hidden && !titleFlash) {
+      let on = false;
+      titleFlash = setInterval(() => { on = !on; document.title = on ? "🔔 Your turn!" : BASE_TITLE; }, 900);
+    }
+  }
+  if (!mine || !document.hidden) stopTitleFlash();
+  wasMyTurn = mine;
+}
+function stopTitleFlash() {
+  if (titleFlash) { clearInterval(titleFlash); titleFlash = null; document.title = BASE_TITLE; }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) stopTitleFlash(); });
+function chime() {
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    [660, 880].forEach((f, i) => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = f; o.type = "sine";
+      g.gain.setValueAtTime(0.0001, t + i * 0.13);
+      g.gain.exponentialRampToValueAtTime(0.18, t + i * 0.13 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.13 + 0.25);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t + i * 0.13); o.stop(t + i * 0.13 + 0.3);
+    });
+  } catch {}
+}
+
+// ---------- players around the screen ----------
+// Names sit on the side of the screen where each player "sits" (I'm the bottom). The player whose
+// turn it is lights up blue, turning red as their time runs out.
+// Where each player sits on my screen (I'm at the bottom). Going round from the next player:
+//   A right side · B top-right (angled) · C top · D top-left (angled) · E left side.
+// Fewer players take the best-fitting places.
+const SEAT_SLOTS = { 1: ["C"], 2: ["B", "D"], 3: ["A", "C", "E"], 4: ["A", "B", "D", "E"], 5: ["A", "B", "C", "D", "E"] };
+function slotGeom(name) {
+  const W = innerWidth, H = innerHeight;
+  switch (name) {
+    case "A": return { side: "right", tag: { x: W - 22, y: H * 0.5, rot: -90 }, line: { x: W - 3, y: H * 0.5, rot: 90, len: H * 0.22 } };
+    case "E": return { side: "left", tag: { x: 22, y: H * 0.5, rot: 90 }, line: { x: 3, y: H * 0.5, rot: 90, len: H * 0.22 } };
+    case "B": return { side: "right", tag: { x: W - 44, y: 66, rot: 45 }, line: { x: W - 20, y: 20 }, path: `M ${W - 105} 4 L ${W - 46} 4 Q ${W - 4} 4 ${W - 4} 46 L ${W - 4} ${H * 0.2}` };
+    case "D": return { side: "left", tag: { x: 44, y: 66, rot: -45 }, line: { x: 20, y: 20 }, path: `M 4 ${H * 0.2} L 4 46 Q 4 4 46 4 L 105 4` };
+    case "C": return { side: "top", tag: { x: W / 2, y: 24, rot: 0 }, line: { x: W / 2, y: 4, rot: 0, len: W * 0.32 } };
+    default: return { side: "bottom", tag: { x: 0, y: 0, rot: 0 }, line: { x: W / 2, y: H - 3, rot: 0, len: W * 0.32 } };
+  }
+}
+function seatSlot(u) {
+  if (!room || u === uid) return slotGeom("me");
+  const ids = room.playerIds, n = ids.length;
+  const me = Math.max(0, ids.indexOf(uid));
+  const k = (ids.indexOf(u) - me + n) % n; // 1 = the player after me
+  const slots = SEAT_SLOTS[Math.min(n - 1, 5)] || SEAT_SLOTS[5];
+  return slotGeom(slots[k - 1] || slots[slots.length - 1]);
+}
+function seatTagPos(u) { const s = seatSlot(u); return { x: s.tag.x, y: s.tag.y, side: s.side }; }
+// How many cards a player is holding (face down on the others' screens).
+function cardsHeld(u) {
+  if (!room || room.status !== "playing" || outOf(room).includes(u)) return 0;
+  const g = gameOf(room);
+  if (g === "call") return room.ccount?.[u] ?? C.CALL_HAND_SIZE;
+  if (g === "bondi") return room.counts?.[u] ?? 0;
+  if (g === "dhiha") {
+    const done = (room.decks?.A || []).length + (room.decks?.B || []).length;
+    return Math.max(0, 13 - done - ((room.trick || []).some((t) => t.uid === u) ? 1 : 0));
+  }
+  return C.HAND_SIZE + (room.playerIds[room.turn] === u && room.phase === "discard" ? 1 : 0);
+}
+function seatEl(u) {
+  return document.querySelector(`.seat-tag[data-uid="${CSS.escape(u)}"]`) || document.querySelector(`.player[data-uid="${CSS.escape(u)}"]`);
+}
+function renderSeats() {
+  const box = $("seats");
+  const show = !!room && ["playing", "ended"].includes(room.status) && !$("game").hidden;
+  $("game").classList.toggle("in-play", show);
+  // during a game the back button joins pause / end / tips in the bar at the bottom
+  $("bottomBar").hidden = !show;
+  const back = $("leaveBtn");
+  if (show && back.parentElement !== $("bottomBack")) $("bottomBack").append(back);
+  if (!show && back.parentElement === $("bottomBack")) $("game").querySelector(".top").prepend(back);
+  box.hidden = !show;
+  if (!show) { box._key = null; return; }
+  const key = JSON.stringify([room.players.map((p) => [p.uid, p.name, p.avatar, p.photoV, p.prem]), room.scores, room.counts, room.ccount, room.out, room.eliminated,
+    room.teams, room.status, innerWidth, innerHeight, isDhiha() && room.teams, room.players.map((p) => cardsHeld(p.uid))]);
+  if (box._key !== key) {
+    box._key = key;
+    box.innerHTML = "";
+    // every player's line on the edge where they sit; the one whose turn it is shrinks as time runs out
+    const W = innerWidth, H = innerHeight;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("class", "seat-lines");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    for (const p of room.players) {
+      const sl = seatSlot(p.uid);
+      let d = sl.path;
+      if (!d) { // a straight line centred on line.x / line.y
+        const L = sl.line.len, rad = ((sl.line.rot || 0) * Math.PI) / 180, dx = (Math.cos(rad) * L) / 2, dy = (Math.sin(rad) * L) / 2;
+        d = `M ${sl.line.x - dx} ${sl.line.y - dy} L ${sl.line.x + dx} ${sl.line.y + dy}`;
+      }
+      const path = document.createElementNS(svgNS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("class", "seat-path");
+      path.dataset.uid = p.uid;
+      svg.append(path);
+    }
+    box.append(svg);
+    for (const p of room.players) {
+      const mine = p.uid === uid;
+      const slot = seatSlot(p.uid);
+      const t = document.createElement("div");
+      t.className = mine ? "seat-tag s-me" : "seat-tag s-slot";
+      t.dataset.uid = p.uid;
+      if (!mine) {
+        Object.assign(t.style, { left: slot.tag.x + "px", top: slot.tag.y + "px" });
+        t.style.setProperty("--rot", slot.tag.rot + "deg");
+      }
+      // their cards, face down, fanned out behind their name
+      const nCards = mine ? 0 : cardsHeld(p.uid);
+      if (nCards > 0) {
+        const fan = document.createElement("span");
+        fan.className = "st-fan";
+        const show = Math.min(nCards, 9);
+        for (let i = 0; i < show; i++) {
+          const c = document.createElement("i");
+          c.className = "card back mini-back";
+          c.style.setProperty("--a", ((i - (show - 1) / 2) * (show > 1 ? 56 / (show - 1) : 0)).toFixed(1) + "deg");
+          fan.append(c);
+        }
+        t.append(fan);
+      }
+      t.append(avatarEl(p, "avatar small"));
+      const info = document.createElement("span");
+      info.className = "st-info";
+      const nm = Object.assign(document.createElement("b"), { textContent: mine ? "You" : p.name });
+      const sub = document.createElement("small");
+      const bits = [`${room.scores?.[p.uid] ?? 0} pts`];
+      if (outOf(room).includes(p.uid)) bits.push("❌ out");
+      else if (isCall() && room.status === "playing" && room.ccount?.[p.uid] != null) bits.push(`🂠 ${room.ccount[p.uid]} card${room.ccount[p.uid] === 1 ? "" : "s"}`);
+      if (isBondi() && room.status === "playing") bits.push((room.out || []).includes(p.uid) ? "out ✓" : `🂠 ${room.counts?.[p.uid] ?? 0}`);
+      if (isDhiha() && room.teams?.[p.uid]) bits.unshift(room.teams[p.uid] === "A" ? "T1" : "T2");
+      sub.textContent = bits.join(" · ") + (p.prem ? " 💎" : "");
+      info.append(nm, sub);
+      t.append(info, Object.assign(document.createElement("span"), { className: "st-time" }));
+      box.append(t);
+    }
+  }
+  const cur = room.status === "playing" ? room.playerIds[room.turn] : null;
+  const nxt = nextPlayerUid();
+  box.querySelectorAll(".seat-tag").forEach((t) => {
+    t.classList.toggle("turn", t.dataset.uid === cur && !room.paused);
+    t.classList.toggle("next", t.dataset.uid === nxt);
+  });
+  box.querySelectorAll(".seat-path").forEach((l) => l.classList.toggle("turn", l.dataset.uid === cur && !room.paused));
+}
+addEventListener("resize", () => { if (room) renderSeats(); });
+
+// The turn colour: blue at the start of a turn, red when time is nearly up.
+function turnColour(frac) {
+  const h = Math.round(215 * Math.max(0, Math.min(1, frac)));
+  return { solid: `hsl(${h}, 90%, 55%)`, soft: `hsla(${h}, 90%, 55%, .5)`, faint: `hsla(${h}, 90%, 55%, .22)` };
+}
+
+// ---------- cards flying between the piles and the players ----------
+// cards on their way to the pile: hidden there until the flying copy lands
+const arriving = new Set();
+function landed(id) {
+  arriving.delete(id);
+  document.querySelectorAll(`#discardPile .card[data-id="${CSS.escape(id)}"].arriving`).forEach((el) => {
+    el.classList.remove("arriving"); el.classList.add("just-landed");
+  });
+}
+function flyCard(from, to, id, { delay = 0, back = false, slow = false } = {}) {
+  if (!from || !to) return;
+  const toPile = to === $("discardPile") && id;
+  const dur = slow ? 700 : 550;
+  if (toPile) {
+    arriving.add(id);
+    document.querySelectorAll(`#discardPile .card[data-id="${CSS.escape(id)}"]`).forEach((el) => el.classList.add("arriving"));
+    setTimeout(() => landed(id), dur + delay + 900); // safety: never stay hidden
+  }
+  const a = from.getBoundingClientRect();
+  if (!a.width && !a.height) return;
+  const el = back || !id ? Object.assign(document.createElement("div"), { className: "card back" }) : cardEl(id);
+  el.classList.add("flying", "fly-move");
+  const handSrc = toPile && from.closest?.("#hand") && from.classList?.contains("card")
+    ? { w: from.offsetWidth || 56, h: from.offsetHeight || 80, r: +(getComputedStyle(from).getPropertyValue("--rot").match(/-?[\d.]+/)?.[0] || 0) } : null;
+  if (handSrc) { // my own card: show it leaving the hand straight away, no gap
+    const w0 = handSrc.w, h0 = handSrc.h;
+    Object.assign(el.style, { position: "fixed", left: a.left + a.width / 2 - w0 / 2 + "px", top: a.top + a.height / 2 - h0 / 2 + "px", width: w0 + "px", height: h0 + "px", zIndex: 60, margin: 0 });
+    el.style.transform = `rotate(${handSrc.r}deg)`;
+    document.body.append(el);
+    el._holder = true;
+  }
+  if (toPile) {
+    // a thrown card starts small and grows on the way, landing exactly the size and angle of the
+    // card on the pile (measured once the pile has drawn it, a moment later)
+    const go = () => {
+      const t = document.querySelector(`#discardPile .card[data-id="${CSS.escape(id)}"]`) || to;
+      const b = t.getBoundingClientRect();
+      const w = t.offsetWidth || 56, h = t.offsetHeight || 80;
+      const rot = +((t.style.getPropertyValue("--t") || "").match(/rotate\((-?[\d.]+)deg/)?.[1] || 0);
+      // from my hand: the card itself leaves, full size and at its angle in the hand; from another player: it starts small
+      const fromHand = !!handSrc;
+      const s0 = fromHand ? Math.max(0.5, Math.min(1.6, handSrc.w / w)) : 0.4;
+      const r0 = fromHand ? handSrc.r : 0;
+      Object.assign(el.style, { position: "fixed", left: a.left + a.width / 2 - w / 2 + "px", top: a.top + a.height / 2 - h / 2 + "px", width: w + "px", height: h + "px", zIndex: 60, margin: 0, transform: "" });
+      document.body.append(el);
+      const dx = b.left + b.width / 2 - (a.left + a.width / 2), dy = b.top + b.height / 2 - (a.top + a.height / 2);
+      el.animate([
+        { transform: `translate(0,0) scale(${s0}) rotate(${r0}deg)`, opacity: fromHand ? 1 : 0.85 },
+        { transform: `translate(${dx * 0.55}px, ${dy * 0.55 - 26}px) scale(${(s0 + 1) / 2}) rotate(${rot / 2 + (dx > 0 ? 8 : -8)}deg)`, opacity: 1, offset: 0.55 },
+        { transform: `translate(${dx}px, ${dy}px) scale(1) rotate(${rot}deg)`, opacity: 1 },
+      ], { duration: dur, easing: slow ? "cubic-bezier(.33,.0,.2,1)" : "cubic-bezier(.4,0,.2,1)", fill: "forwards" }).onfinish = () => { landed(id); el.remove(); };
+    };
+    setTimeout(go, Math.max(delay, 16));
+    return;
+  }
+  const b = to.getBoundingClientRect();
+  const w = 56, h = 80;
+  Object.assign(el.style, { position: "fixed", left: a.left + a.width / 2 - w / 2 + "px", top: a.top + a.height / 2 - h / 2 + "px", width: w + "px", height: h + "px", zIndex: 60, margin: 0 });
+  document.body.append(el);
+  const dx = b.left + b.width / 2 - (a.left + a.width / 2), dy = b.top + b.height / 2 - (a.top + a.height / 2);
+  const toHand = to === $("hand");
+  el.animate([
+    { transform: "translate(0,0) scale(1) rotate(0deg)", opacity: 1 },
+    { transform: `translate(${dx * 0.55}px, ${dy * 0.55 - 30}px) scale(1.05) rotate(${dx > 0 ? 12 : -12}deg)`, opacity: 1, offset: 0.55 },
+    { transform: `translate(${dx}px, ${dy}px) scale(${toHand ? 0.9 : 0.45}) rotate(${dx > 0 ? 20 : -20}deg)`, opacity: toHand ? 0.3 : 0.15 },
+  ], { duration: dur, delay, easing: slow ? "cubic-bezier(.33,.0,.2,1)" : "cubic-bezier(.4,0,.2,1)", fill: "forwards" }).onfinish = () => el.remove();
+}
+const seatOrHand = (u) => (u === uid ? $("hand") : seatEl(u));
+// What moved since the last update? Animate it: a card taken from the middle pile (face down),
+// one taken from the thrown pile (face up), cards thrown, cards played to the table.
+const animated = new Set();
+function once(key) { if (animated.has(key)) return false; animated.add(key); if (animated.size > 300) animated.clear(); return true; }
+function cardMoves(prev) {
+  if (!prev || prev.status !== "playing" || room.status === "lobby" || prev.round !== room.round) return;
+  const g = gameOf(room);
+  if (g === "bondi" || g === "dhiha") {
+    const pt = prev.trick || [], nt = room.trick || [];
+    const fresh = nt.length > pt.length && pt.every((t, i) => nt[i]?.card === t.card) ? nt.slice(pt.length)
+      : nt.length && !pt.some((t) => t.card === nt[0].card) && nt.length <= 1 ? nt : [];
+    for (const t of fresh) if (t.uid !== uid && once(`${room.round}|play|${t.card}`)) flyCard(seatOrHand(t.uid), $("discardPile"), t.card, { slow: true });
+    // a trick that ended straight away (last card): the last card still flies in
+    if (!fresh.length && room.lastTrick?.id && room.lastTrick.id !== prev.lastTrick?.id) {
+      const lt = room.lastTrick, who = lt.players?.[lt.players.length - 1];
+      if (who && who !== uid && once(`${room.round}|play|${lt.cards[lt.cards.length - 1]}`)) flyCard(seatOrHand(who), $("discardPile"), lt.cards[lt.cards.length - 1], { slow: true });
+    }
+    return;
+  }
+  const fx = (room.fx || []).filter((e) => e.r === room.round && e.n > fxSeen(prev));
+  fx.sort((a, b) => a.n - b.n);
+  let at = 0;
+  for (const e of fx) {
+    if (!once(`${room.round}|fx|${e.n}|${e.u}|${(e.t || []).join()}|${e.d || ""}`)) continue;
+    const who = seatOrHand(e.u), wait = at;
+    if (e.d && e.u !== uid) {
+      setTimeout(() => flyCard(e.d === "take" ? $("discardPile") : $("deck"), seatOrHand(e.u), e.d === "take" ? e.c : null, { back: e.d !== "take", slow: true }), wait);
+      at += 600;
+    }
+    if (e.t?.length && e.u !== uid && !(room.status === "ended" && e.t.includes(room.diguCard))) {
+      const w2 = at;
+      e.t.forEach((c, i) => flyCard(who, $("discardPile"), c, { delay: w2 + i * 120, slow: true }));
+      at += 700 + e.t.length * 120;
+    }
+    if (e.s) { const w3 = e.u === uid ? 700 : at; setTimeout(() => rebuildDeck(e.old || []), w3); at = w3 + 1300; }
+  }
+}
+// the newest move my screen had already shown before this update
+function fxSeen(prev) {
+  return (prev?.fx || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
+}
+// The middle pile ran out: the thrown cards flip face down one after another, fly into the middle
+// and settle into a new pile.
+function rebuildDeck(old) {
+  const from = $("discardPile"), to = $("deck");
+  if (!from || !to || !to.offsetParent) return;
+  toast("🎩 Middle pile ran out: shuffling the thrown cards into a new pile");
+  const a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+  const w = to.offsetWidth || 56, h = to.offsetHeight || 80;
+  const n = Math.max(6, Math.min(8, old.length || 6));
+  to.classList.add("rebuilding");
+  // 1) the thrown cards flip face down one after another and fly to the middle
+  for (let i = 0; i < n; i++) {
+    const id = old.length ? old[old.length - 1 - (i % old.length)] : null;
+    const face = id ? cardEl(id) : Object.assign(document.createElement("div"), { className: "card back" });
+    face.classList.add("flying");
+    Object.assign(face.style, { position: "fixed", left: a.left + a.width / 2 - w / 2 + "px", top: a.top + a.height / 2 - h / 2 + "px", width: w + "px", height: h + "px", zIndex: 140, margin: 0, backfaceVisibility: "hidden" });
+    const back = Object.assign(document.createElement("div"), { className: "card back flying" });
+    back.style.cssText = face.style.cssText;
+    document.body.append(face, back);
+    const dx = b.left + b.width / 2 - (a.left + a.width / 2), dy = b.top + b.height / 2 - (a.top + a.height / 2);
+    const lift = -40 - i * 3;
+    const kf = (flip) => [
+      { transform: `perspective(600px) translate(0,0) rotateY(${flip}deg)` },
+      { transform: `perspective(600px) translate(${dx / 2}px, ${dy / 2 + lift}px) rotateY(${flip + 90}deg) scale(1.08)`, offset: 0.5 },
+      { transform: `perspective(600px) translate(${dx}px, ${dy}px) rotateY(${flip + 180}deg)` },
+    ];
+    const opt = { duration: 600, delay: i * 90, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" };
+    face.animate(kf(0), opt);
+    back.animate(kf(180), opt).onfinish = () => { face.remove(); back.remove(); };
+  }
+  // 2) a magician's shuffle in the middle: riffle, spring the cards in an arc, riffle again
+  setTimeout(() => magicShuffle(to, w, h, () => {
+    to.classList.remove("rebuilding", "settle"); void to.offsetWidth; to.classList.add("settle");
+    sparkleAt(to);
+  }), n * 90 + 600);
+}
+function magicShuffle(deckEl, w, h, done) {
+  const r = deckEl.getBoundingClientRect();
+  const box = document.createElement("div");
+  box.className = "magic-box";
+  Object.assign(box.style, { left: r.left + r.width / 2 + "px", top: r.top + r.height / 2 + "px" });
+  document.body.append(box);
+  const N = 12, cards = [];
+  for (let i = 0; i < N; i++) {
+    const c = Object.assign(document.createElement("div"), { className: "card back magic-card" });
+    Object.assign(c.style, { width: w + "px", height: h + "px", left: -w / 2 + "px", top: -h / 2 - i * 0.6 + "px", zIndex: i });
+    box.append(c); cards.push(c);
+  }
+  const at = (x, y, rot = 0, s = 1) => `translate(${x}px, ${y}px) rotate(${rot}deg) scale(${s})`;
+  const riffle = (t0) => cards.forEach((c, i) => {
+    const left = i % 2 === 0, side = left ? -1 : 1;
+    c.animate([
+      { transform: at(0, 0), offset: 0 },
+      { transform: at(side * (w * 0.75), 8, side * -14), offset: 0.35 },
+      { transform: at(side * (w * 0.75), 8, side * -14), offset: 0.45 },
+      { transform: at(side * 4, -6 - i, side * -4), offset: 0.45 + (i / N) * 0.4 },
+      { transform: at(0, 0), offset: 1 },
+    ], { duration: 800, delay: t0, easing: "ease-in-out" });
+  });
+  const spring = (t0) => cards.forEach((c, i) => {
+    c.animate([
+      { transform: at(0, 0), offset: 0 },
+      { transform: at(-w * 0.6, 4, -10), offset: 0.15 },
+      { transform: at(0, -h * 1.1, 0, 1.05), offset: 0.55 },
+      { transform: at(w * 0.6, 4, 10), offset: 0.85 },
+      { transform: at(0, 0), offset: 1 },
+    ], { duration: 600, delay: t0 + i * 45, easing: "ease-in-out" });
+  });
+  const cut = (t0) => cards.forEach((c, i) => {
+    const top = i >= N / 2;
+    c.animate([
+      { transform: at(0, 0) },
+      { transform: at(top ? w * 0.9 : 0, top ? -20 : 0, top ? 8 : 0), offset: 0.4 },
+      { transform: at(top ? w * 0.9 : 0, top ? 10 : 0, top ? 8 : 0), offset: 0.6 },
+      { transform: at(0, 0) },
+    ], { duration: 600, delay: t0, easing: "ease-in-out" });
+  });
+  riffle(0);                 // 1st shuffle
+  spring(850);               // cards spring over in an arc
+  riffle(850 + N * 45 + 650); // 2nd shuffle
+  cut(850 + N * 45 + 650 + 850); // and a cut
+  const total = 850 + N * 45 + 650 + 850 + 650;
+  setTimeout(() => { box.remove(); done(); }, total);
+}
+
+// ---------- 💎 tips ----------
+const TIPS = {
+  digu: ["Keep cards that work two ways, like 7♥ when you hold 7♠ and 8♥: a set or a run.",
+    "Watch what the next player takes from the thrown pile, and don't throw them what they collect.",
+    "Throw high cards early if they don't fit: they cost the most if someone calls DIGU.",
+    "A 4-card set is the hardest to finish: start building it early.",
+    "Say \u201c1 card!\u201d only when it can't help them stop you."],
+  call: ["CALL as soon as your count is 7 or less: waiting lets others go lower.",
+    "Throw pairs and sets together to drop your count fast.",
+    "Take the last thrown card if it's small or pairs with one of yours.",
+    "Aces are worth 1: keep them, they keep your count low."],
+  bondi: ["Never lead a suit someone has run out of: they cut, and the highest card picks up the pile.",
+    "When you can't follow suit, cut with your biggest card to get rid of it.",
+    "Play just under the highest card on the table when someone after you might cut.",
+    "Last to play in a trick? Nobody can cut, so it's safe to throw your highest."],
+  dhiha: ["If your partner is sure to win the deck, give them your 10!",
+    "Keep your 10s safe: don't play them when the other team is winning.",
+    "Choose the Hukum from your longest suit when you first can't follow.",
+    "Lead an Ace or the highest card left in a suit to win the deck safely.",
+    "3 tens wins the round. At 2 tens each, the team with 7 decks wins."],
+};
+function contextTip() {
+  const g = gameOf(room);
+  const others = room.playerIds.filter((u) => u !== uid);
+  if (g === "digu") {
+    const me = room.playerIds.indexOf(uid), next = room.playerIds[(me + 1) % room.playerIds.length];
+    const took = room.track?.[next]?.took || [];
+    if (took.length) { const h = C.diguHints(took, room.track?.[next]?.threw); if (h.want.length) return `${nameOf(next)} (next) may be collecting ${h.want[0]}: careful what you throw.`; }
+  }
+  if (g === "bondi") {
+    const v = others.find((u) => (room.voids?.[u] || []).length);
+    if (v) return `${nameOf(v)} has no ${room.voids[v].map((s) => C.SUIT_SYMBOL[s]).join(" ")} left: don't lead that suit.`;
+  }
+  if (g === "dhiha" && (room.trick || []).length) {
+    const w = C.dhihaTrickWinner(room.trick, room.hukum);
+    if (room.teams?.[w] === room.teams?.[uid] && w !== uid && hand.some((c) => C.parse(c).r === 10)) return "Your partner is winning this deck: if it's safe, give them a 10!";
+  }
+  return null;
+}
+// What would be a good next move for me right now?
+function moveAdvice() {
+  const g = gameOf(room);
+  const nm = (c) => cardName(c);
+  if (!isMyTurn()) {
+    const extra = contextTip();
+    return `Wait for ${nameOf(room.playerIds[room.turn])}.` + (extra ? " " + extra : "");
+  }
+  if (g === "digu") {
+    if (room.phase === "draw" && !holdingExtra()) {
+      if (C.findWinningLayout(hand)) return "You can call DIGU right now!";
+      const top = room.discard?.[room.discard.length - 1];
+      if (top) {
+        const now = C.bestLayout(hand).points;
+        const withTop = Math.min(...[...hand, top].map((c) => C.bestLayout([...hand, top].filter((x) => x !== c)).points));
+        if (withTop < now) return `Take the thrown ${nm(top)}: it fits your sets.`;
+      }
+      return "Take from the middle pile: the thrown card doesn't help you.";
+    }
+    let best = null;
+    const me = room.playerIds.indexOf(uid), next = room.playerIds[(me + 1) % room.playerIds.length];
+    const took = room.track?.[next]?.took || [];
+    for (const c of hand) {
+      const rest = hand.filter((x) => x !== c);
+      if (C.findWinningLayout(rest)) return `Throw ${nm(c)} and call DIGU!`;
+      const s = C.parse(c);
+      const helps = took.some((id) => { const t = C.parse(id); return t.r === s.r || (t.s === s.s && Math.abs(t.r - s.r) <= 2); });
+      const pts = C.bestLayout(rest).points + (helps ? 15 : 0);
+      if (!best || pts < best.pts || (pts === best.pts && C.points(c) > C.points(best.c))) best = { c, pts };
+    }
+    return `Throw ${nm(best.c)}: it doesn't fit your sets` + (took.length ? ` and ${nameOf(next)} probably doesn't need it.` : ".");
+  }
+  if (g === "call") {
+    const v = C.handValue(hand);
+    if (room.phase === "throw") {
+      if (v <= C.CALL_LIMIT) return `CALL now: your count is ${v}.`;
+      const groups = {};
+      for (const c of hand) (groups[C.parse(c).r] ||= []).push(c);
+      const ids = Object.values(groups).sort((a, b) => C.callValue(b[0]) * b.length - C.callValue(a[0]) * a.length)[0];
+      return ids.length > 1 ? `Throw your ${ids.length} × ${C.label(C.parse(ids[0]).r)} together: your count drops by ${C.callValue(ids[0]) * ids.length}.` : `Throw ${nm(ids[0])}: it's your highest card.`;
+    }
+    const p = room.pickable;
+    if (p && (C.callValue(p) <= 3 || hand.some((c) => C.parse(c).r === C.parse(p).r))) return `Take the thrown ${nm(p)}: it's small or pairs with your cards.`;
+    return "Take from the middle pile.";
+  }
+  if (g === "bondi") {
+    const c = C.bondiBotCard(hand, room.trick || [], bondiCtx(room, uid));
+    const t = room.trick || [];
+    if (!t.length) return `Lead ${nm(c)}: a low card in a suit nobody has run out of.`;
+    if (C.suitOf(c) !== C.suitOf(t[0].card)) return `You can't follow: cut with ${nm(c)}, your biggest card.`;
+    return `Play ${nm(c)}.` + (C.bondiRank(c) < Math.max(...t.filter((x) => C.suitOf(x.card) === C.suitOf(t[0].card)).map((x) => C.bondiRank(x.card))) ? " Staying under the highest card keeps you from picking up." : "");
+  }
+  if (g === "dhiha") {
+    const seen = [...(room.decks?.A || []), ...(room.decks?.B || [])].flatMap((d) => d.split(","));
+    const c = C.dhihaBotCard(hand, room.trick || [], room.hukum, { me: uid, teams: room.teams, playerIds: room.playerIds, seen, voids: room.dvoids || {} });
+    const t = room.trick || [];
+    if (!t.length) return `Lead ${nm(c)}.`;
+    const w = C.dhihaTrickWinner(t, room.hukum);
+    if (room.teams?.[w] === room.teams?.[uid]) return C.parse(c).r === 10 ? `Your partner wins this deck: give them your ${nm(c)}!` : `Your partner is winning: play a low card (${nm(c)}).`;
+    return `Play ${nm(c)}` + (!room.hukum && C.suitOf(c) !== C.suitOf(t[0].card) ? `: it makes ${C.SUIT_SYMBOL[C.suitOf(c)]} the Hukum.` : ".");
+  }
+  return "";
+}
+let tipOpen = false;
+function showTip() {
+  if (!room || !isPremium()) return;
+  const el = $("tipBubble");
+  tipOpen = !tipOpen;
+  $("premTip").classList.toggle("on", tipOpen);
+  if (!tipOpen) { el.classList.remove("show"); setTimeout(() => { if (!tipOpen) el.hidden = true; }, 350); return; }
+  el.textContent = "💡 " + (moveAdvice() || contextTip() || "");
+  el.hidden = false;
+  el.classList.remove("show"); void el.offsetWidth; el.classList.add("show");
+}
+// the advice follows the game while it's open
+let tipKey = null;
+setInterval(() => {
+  if (!tipOpen || !room) return;
+  const k = JSON.stringify([room.moveId, room.phase, room.turn, hand.length]);
+  if (k !== tipKey) { tipKey = k; $("tipBubble").textContent = "💡 " + (moveAdvice() || ""); }
+}, 600);
+let premOpen = false;
+function renderPremTools() {
+  const show = !!room && room.status === "playing" && isPremium() && !$("game").hidden;
+  $("premTools").hidden = !show;
+  $("premEye").classList.toggle("on", premOpen);
+  $("premEye").hidden = !["digu", "bondi", "dhiha"].includes(room ? gameOf(room) : "");
+}
+
+// ---------- whose turn: a red light on the edge of the screen where that player "sits" ----------
+// I'm always at the bottom; the others sit round the screen in playing order (the next player on
+// my right, then on up and round): 2 players = top, 4 = right/top/left, 3 or 5+ = corners too.
+function nextPlayerUid() {
+  if (!room || room.status !== "playing") return null;
+  const ids = room.playerIds, n = ids.length;
+  for (let k = 1; k < n; k++) {
+    const u = ids[(room.turn + k) % n];
+    if (isBondi() && ((room.counts?.[u] ?? 1) <= 0 || (room.out || []).includes(u))) continue;
+    if (outOf(room).includes(u)) continue;
+    return u;
+  }
+  return null;
+}
+function seatPoint(u) {
+  const ids = room.playerIds, n = ids.length;
+  const me = Math.max(0, ids.indexOf(uid));
+  const k = (ids.indexOf(u) - me + n) % n;
+  const a = Math.PI / 2 - (k * 2 * Math.PI) / n; // bottom, then right, top, left …
+  const w = innerWidth / 2, h = innerHeight / 2, c = Math.cos(a), s = Math.sin(a);
+  const t = Math.min(Math.abs(c) > 1e-6 ? w / Math.abs(c) : Infinity, Math.abs(s) > 1e-6 ? h / Math.abs(s) : Infinity);
+  const x = w + c * t, y = h + s * t;
+  const side = Math.abs(x) < 2 ? "left" : Math.abs(x - 2 * w) < 2 ? "right" : Math.abs(y) < 2 ? "top" : "bottom";
+  const corner = (Math.abs(x) < 2 || Math.abs(x - 2 * w) < 2) && (Math.abs(y) < 2 || Math.abs(y - 2 * h) < 2);
+  return { x, y, side, corner };
+}
+function renderTurnGlow() {
+  $("turnGlow").hidden = true; return; // replaced by the seat lines (see renderSeats)
+  const el = $("turnGlow");
+  const show = !!room && room.status === "playing" && !room.paused && !$("game").hidden && room.playerIds.length > 1;
+  el.hidden = !show;
+  if (!show) return;
+  const cur = room.playerIds[room.turn];
+  const nxt = nextPlayerUid();
+  const key = [cur, nxt, room.playerIds.join(), innerWidth, innerHeight].join("|");
+  if (el._key === key) return;
+  el._key = key;
+  const place = (node, u, isNext) => {
+    const pt = seatPoint(u);
+    node.className = `tg-spot ${pt.side}${pt.corner ? " corner" : ""}${isNext ? " next" : ""}`;
+    node.style.left = pt.x + "px";
+    node.style.top = pt.y + "px";
+    const tag = node.querySelector(".tg-name");
+    tag.textContent = isNext ? `next: ${u === uid ? "you" : nameOf(u)}` : u === uid ? "your turn" : nameOf(u);
+  };
+  place($("tgNow"), cur, false);
+  $("tgNext").hidden = !nxt || nxt === cur;
+  if (nxt) place($("tgNext"), nxt, true);
+}
+addEventListener("resize", () => { if (room) renderTurnGlow(); });
+
+function render() {
+  if (!room) return;
+  if ($("game").hidden) hideTableOverlays();
+  renderTurnGlow();
+  renderOfflineAsk();
+  renderSeats();
+  renderPremTools();
+  queueMicrotask(markOnline);
+  turnAlert(isMyTurn() && !$("game").hidden);
+  const me = room.playerIds.includes(uid);
+  const playing = room.status === "playing";
+  const myTurn = isMyTurn();
+
+  // players strip
+  const strip = $("players");
+  const nextU = nextPlayerUid();
+  queueMicrotask(() => strip.querySelectorAll(".player").forEach((ch) => {
+    ch.classList.toggle("next", !!nextU && ch.dataset.uid === nextU);
+  }));
+  const stripKey = JSON.stringify([room.players.map((p) => [p.uid, p.name, p.avatar, p.photoV, p.rank, p.badges]),
+    room.host, room.scores, playing, playing && room.almost, isBondi() && playing && [room.counts, room.out], isDhiha() && room.teams]);
+  if (strip._key !== stripKey) {
+  strip._key = stripKey;
+  strip.innerHTML = "";
+  room.players.forEach((p, i) => {
+    const active = playing && room.turn === i;
+    const chip = document.createElement("div");
+    chip.className = "player" + (active ? " active" : "") + (p.uid === uid ? " me" : "");
+    chip.dataset.uid = p.uid;
+    chip.innerHTML = `<span class="pname"></span>${active ? '<span class="ptime"></span>' : ""}<span class="pscore">${room.scores?.[p.uid] ?? 0}</span>`;
+    chip.querySelector(".pname").textContent = p.name + (p.uid === room.host ? " ★" : "");
+    chip.prepend(avatarEl(p));
+    if (p.rank != null) {
+      const rk = document.createElement("span");
+      rk.className = "prank";
+      rk.textContent = P.RANKS[p.rank]?.icon || "";
+      rk.title = `${P.RANKS[p.rank]?.name} rank${p.badges ? ` · ${p.badges} badges` : ""}`;
+      chip.querySelector(".pname").after(rk);
+    } else chip.title = "Guest";
+    if (p.prem) chip.append(Object.assign(document.createElement("span"), { className: "pprem", textContent: "💎", title: "Premium player" }));
+    if (isDhiha() && room.teams?.[p.uid]) {
+      chip.append(Object.assign(document.createElement("span"), { className: "pteam team-" + room.teams[p.uid], textContent: room.teams[p.uid] === "A" ? "T1" : "T2" }));
+    }
+    if (isBondi() && playing) {
+      const place = (room.out || []).indexOf(p.uid);
+      chip.append(Object.assign(document.createElement("span"), {
+        className: "pcards" + (place >= 0 ? " out" : ""),
+        textContent: place === 0 ? "🏆 Winner" : place > 0 ? `Out ${ordinal(place + 1)}` : `🂠 ${room.counts?.[p.uid] ?? 0}`,
+      }));
+    }
+    if (playing && room.almost?.[p.uid]) {
+      const badge = document.createElement("span");
+      badge.className = "almost";
+      badge.textContent = "1 to DIGU";
+      chip.append(badge);
+    }
+    strip.append(chip);
+  });
+  }
+  // whose turn it is: just move the highlight and the seconds (no redraw, so pictures don't blink)
+  [...strip.children].forEach((chip, i) => {
+    const active = playing && room.turn === i;
+    chip.classList.toggle("active", active);
+    let t = chip.querySelector(".ptime");
+    if (active && !t) { t = document.createElement("span"); t.className = "ptime"; chip.querySelector(".pscore").before(t); }
+    if (!active && t) t.remove();
+  });
+  tick(); // fill in the seconds straight away so the chip doesn't jump
+
+  // status line
+  let status = "";
+  if (room.status === "lobby") {
+    const last = room.lastChampions?.length ? `🏆 ${room.lastChampions.map(nameOf).join(" & ")} won the last game · ` : "";
+    status = last + (room.host === uid
+      ? `Your holhuashi · share code ${roomId} · ${room.players.length}/${room.maxPlayers || 6} players`
+      : `Waiting for ${nameOf(room.host)} to start · ${room.players.length}/${room.maxPlayers || 6} players`);
+  } else if (playing && isDhiha()) {
+    const trick = room.trick || [];
+    const lead = trick.length ? C.suitOf(trick[0].card) : null;
+    if (myTurn && !lead) status = "Your turn: you lead · play any card";
+    else if (myTurn && hand.some((c) => C.suitOf(c) === lead)) status = `Your turn: play a ${C.SUIT_SYMBOL[lead]} card`;
+    else if (myTurn) status = room.hukum ? `No ${C.SUIT_SYMBOL[lead]}: play Hukum ${C.SUIT_SYMBOL[room.hukum]} to win the deck, or any other card` : `No ${C.SUIT_SYMBOL[lead]}: the card you play now sets the Hukum!`;
+    else status = `${nameOf(room.playerIds[room.turn])} is playing…` + (lead ? ` (${C.SUIT_SYMBOL[lead]} was led)` : "");
+  } else if (playing && isBondi()) {
+    const trick = room.trick || [];
+    const lead = trick.length ? C.suitOf(trick[0].card) : null;
+    const outFirst = (room.out || []).includes(uid);
+    if (outFirst) status = room.out[0] === uid ? "🏆 You went out first · you win this round!" : `You're out (${ordinal(room.out.indexOf(uid) + 1)}) · watching the others`;
+    else if (myTurn && !lead) status = "Your turn: you lead · play any card";
+    else if (myTurn && hand.some((c) => C.suitOf(c) === lead)) status = `Your turn: play a ${C.SUIT_SYMBOL[lead]} card`;
+    else if (myTurn) status = `No ${C.SUIT_SYMBOL[lead]}? Cut with any card · ${nameOf(trickLeader())} picks up the pile`;
+    else status = `${nameOf(room.playerIds[room.turn])} is playing…` + (lead ? ` (${C.SUIT_SYMBOL[lead]} was led)` : "");
+  } else if (playing) {
+    if (myTurn && isCall()) status = room.phase === "throw"
+      ? (canCall() ? "Your turn: CALL now, or throw a card first" : "Your turn: throw a card first (or several of the same number)")
+      : room.pickable
+        ? `Now take ${C.label(C.parse(room.pickable).r)}${C.SUIT_SYMBOL[C.parse(room.pickable).s]} (the last player's card) or one from the middle pile`
+        : "Now take a card from the middle pile";
+    else if (myTurn) status = room.phase === "draw"
+      ? (room.discard?.length ? "Your turn: take the last thrown card or one from the middle pile" : "Your turn: take a card from the middle pile")
+      : "Tap a card, then tap it again to throw it (or drag it to the pile)";
+    else status = `${nameOf(room.playerIds[room.turn])} is playing…`;
+  } else if (isDhiha() && room.status === "ended") status = `${teamName(room.dhihaResult?.team)} wins the round!`;
+  else if (isBondi()) status = room.status === "ended" ? `${nameOf(room.winner)} went out first!` : "";
+  else status = `${nameOf(room.winner)} called ${GAME_NAME[gameOf(room)]}!`;
+  $("status").textContent = status;
+  $("log").textContent = room.log || "";
+
+  // table
+  $("table").hidden = room.status === "lobby";
+  $("deckCount").textContent = isBondi() ? room.aside || 0 : room.deck?.length ?? 0;
+  $("deck").classList.toggle("aside-pile", isBondi());
+  $("deck").nextElementSibling.textContent = isBondi() ? "Set aside" : "Middle pile";
+  $("discardPile").nextElementSibling.textContent = isBondi() ? "On the table" : "Discard";
+  $("deck").classList.toggle("clickable", canDraw());
+  $("deck").parentElement.hidden = isDhiha();
+  if (isDhiha()) $("discardPile").nextElementSibling.textContent = "On the table";
+  renderHeap();
+  const pile = $("discardPile");
+  pile.classList.toggle("clickable", canDraw() && (isCall() ? !!room.pickable : !!room.discard?.length));
+  pile.classList.toggle("target", canThrow());
+
+  // my hand
+  const handDiv = $("hand");
+  const dragId = drag?.moved && drag.src === "hand" ? drag.id : "";
+  const legal = canThrow() ? (isBondi() ? C.bondiLegal(hand, room.trick || []) : isDhiha() ? C.dhihaLegal(hand, room.trick || []) : null) : null;
+  const handKey = [hand.join(), isCall() ? [...callSel].join() : selected, lastDrawn, dragId, room.round, legal?.join()].join("|");
+  if (handDiv._key !== handKey || !handDiv.children.length !== !hand.length) {
+  handDiv._key = handKey;
+  handDiv.innerHTML = "";
+  hand.forEach((id) => {
+    const el = cardEl(id);
+    if (isCall() ? callSel.has(id) : id === selected) el.classList.add("selected");
+    if (id === lastDrawn) el.classList.add("new");
+    if (legal && !legal.includes(id)) el.classList.add("blocked");
+    if (drag?.moved && drag.src === "hand" && drag.id === id) { el.classList.add("dragging"); drag.el = el; }
+    handDiv.append(el);
+  });
+  }
+  $("handSection").hidden = !me || room.status === "lobby";
+  if (handDiv._fanW !== handDiv.clientWidth || handDiv._fanKey !== handKey) {
+    handDiv._fanKey = handKey; fanHand(); handDiv._fanW = handDiv.clientWidth;
+  }
+  const sel = isCall() ? callSel.size > 0 : !!selected;
+  handDiv.classList.toggle("tap-to-throw", sel && canThrow());
+
+  // buttons
+  $("startBtn").hidden = !(room.host === uid && room.status === "lobby");
+  $("startBtn").disabled = room.players.length < 2;
+  const call = isCall();
+  [...callSel].forEach((c) => { if (!hand.includes(c)) callSel.delete(c); });
+  $("discardBtn").disabled = !((canThrow() || needsDrawFirst()) && (call ? callSel.size && C.canThrowTogether([...callSel]) : selected));
+  $("discardBtn").textContent = isBondi() || isDhiha() ? "Play card" : call && callSel.size > 1 ? `Throw ${callSel.size} cards` : "Throw away";
+  $("diguBtn").hidden = call || isBondi() || isDhiha();
+  $("callBtn").hidden = !call;
+  $("callBtn").disabled = !canCall();
+  $("callBtn").classList.toggle("ready", canCall());
+  $("groupSets").hidden = call || isBondi() || isDhiha();
+  $("callCount").hidden = !(call || isBondi() || isDhiha()) || !hand.length || room.status === "lobby";
+  if (isDhiha()) {
+    $("callCount").textContent = `You're in ${teamName(room.teams?.[uid])} · ${room.hukum ? `Hukum ${C.SUIT_SYMBOL[room.hukum]}` : "no Hukum yet"}`;
+    $("callCount").classList.remove("can-call");
+  }
+  if (isBondi()) {
+    $("callCount").textContent = `You have ${hand.length} card${hand.length === 1 ? "" : "s"} · get rid of them first to win`;
+    $("callCount").classList.remove("can-call");
+  }
+  if (call && hand.length) {
+    const v = C.handValue(hand);
+    $("callCount").textContent = `Your count: ${v}${v <= C.CALL_LIMIT ? " · you can CALL on your turn" : ` · CALL at ${C.CALL_LIMIT} or less`}`;
+    $("callCount").classList.toggle("can-call", v <= C.CALL_LIMIT);
+  }
+  const canDigu = gameOf(room) === "digu" && myTurn && (room.phase === "draw" ? !!C.findWinningLayout(hand) : !!diguThrow());
+  $("diguBtn").disabled = !canDigu;
+  $("diguBtn").classList.toggle("ready", canDigu);
+  const almostShown = playing && !!room.almost?.[uid];
+  const canAlmost = gameOf(room) === "digu" && playing && !almostShown && !canDigu && oneAwayNow();
+  $("almostBtn").hidden = !(canAlmost || almostShown);
+  $("almostBtn").disabled = almostShown;
+  $("almostBtn").textContent = almostShown ? "📢 Everyone knows: 1 card!" : "📢 1 card! Tell everyone";
+  renderTargetSetup();
+  renderLoungeScene();
+  renderMembers();
+  renderPremiumPanel();
+  renderChat();
+  $("copyCode").hidden = !!room.practice;
+  $("startBtn").hidden = true; // holhuashis start from the Start button in the middle of the table
+  $("targetInfo").textContent = GAME_NAME[gameOf(room)] + (room.practice ? " vs computer" : "") + " · " + (room.status === "lobby" ? (isLobbyRoom(room) ? "" : "Holhuashi")
+    : roundsTotal(room) ? `Round ${Math.max(1, room.gameRound || 1)} of ${roundsTotal(room)}` : `${lowWins(gameOf(room)) ? "Out at" : "First to"} ${room.target || DEFAULT_TARGET}`);
+
+  // sorting unlocks after a few games
+  const sortLocked = (gamesPlayed || 0) < SORT_UNLOCK;
+  for (const id of ["sortSuit", "sortRank"]) {
+    $(id).classList.toggle("locked", sortLocked);
+    $(id).title = sortLocked ? `Unlocks after ${SORT_UNLOCK} games (you've played ${gamesPlayed || 0})` : "";
+  }
+  $("sortLockNote").hidden = !sortLocked;
+  $("sortLockNote").textContent = `🔒 Sorting unlocks after ${SORT_UNLOCK} games · ${Math.max(0, SORT_UNLOCK - (gamesPlayed || 0))} to go`;
+  tick();
+}
+
+// A holhuashi waiting to start: the owner's table with its seats, and Start in the middle.
+function renderLoungeScene() {
+  if (room && isLoungeDoc(room) && (room.removed || []).includes(uid) && !room.playerIds.includes(uid)) {
+    forgetLounge(roomId); toast("🚫 The owner removed you from this holhuashi"); leaveRoom(); return;
+  }
+  const box = $("loungeScene");
+  const show = room && !isLobbyRoom(room) && !room.practice && room.status === "lobby";
+  $("loungeRoom").hidden = !show;
+  if (show) {
+    const pl = placeOf(room);
+    $("loungeRoom").className = "lounge-room theme-" + pl.id;
+    document.querySelectorAll("#loungeRoom .plant").forEach((el, i) => { el.textContent = pl.decor[i] || ""; });
+  }
+  $("game").classList.toggle("in-lounge", !!show);
+  if (!show) return;
+  const seats = room.maxPlayers || 6;
+  const n = room.players.length;
+  const owner = room.host === uid;
+  box.innerHTML = "";
+  const t = document.createElement("div");
+  t.className = "ltable lounge-table mine";
+  t.style.setProperty("--chairs", seats);
+  const felt = document.createElement("div");
+  felt.className = "ltable-felt g-" + gameOf(room);
+  felt.append(
+    Object.assign(document.createElement("strong"), { className: "table-game", textContent: GAME_NAME[gameOf(room)] }),
+    Object.assign(document.createElement("small"), { className: "table-no", textContent: `${nameOf(room.host)}'s holhuashi` }),
+  );
+  if (owner || canManageBots()) {
+    const start = document.createElement("button");
+    const enough = n >= (isDhiha() ? 4 : 2);
+    start.className = "table-play";
+    start.textContent = enough ? "Start" : "🤖 Start";
+    start.title = enough ? `Start with ${n} players` : "Start now · computer players fill the empty places";
+    start.onclick = () => dealRound();
+    felt.append(start);
+  } else {
+    felt.append(Object.assign(document.createElement("small"), { textContent: `Waiting for ${nameOf(room.host)}` }));
+  }
+  t.append(felt);
+  for (let i = 0; i < seats; i++) {
+    const p = room.players[i];
+    const ang = Math.PI / 2 + (i * 2 * Math.PI) / seats;
+    const seat = document.createElement("div");
+    seat.className = "seat exec-chair" + (p ? " taken" : " empty open-seat");
+    seat.style.left = `${50 + 43 * Math.cos(ang)}%`;
+    seat.style.top = `${50 + 43 * Math.sin(ang)}%`;
+    // the chair faces the table
+    seat.style.setProperty("--face", `${(ang * 180) / Math.PI - 90}deg`);
+    if (p) {
+      seat.append(avatarEl(p, "avatar"));
+      seat.append(Object.assign(document.createElement("span"), { className: "seat-name", textContent: p.name + (p.uid === room.host ? " ★" : "") }));
+      if (isBot(p.uid) && canManageBots()) {
+        const x = Object.assign(document.createElement("button"), { type: "button", className: "bot-x", textContent: "✕", title: "Remove the computer player" });
+        x.onclick = (e) => { e.stopPropagation(); removeBot(p.uid); };
+        seat.append(x);
+      }
+    } else {
+      seat.title = "Free seat";
+      seat.append(Object.assign(document.createElement("span"), { className: "seat-name", textContent: "free" }));
+    }
+    t.append(seat);
+  }
+  box.append(t);
+  box.append(Object.assign(document.createElement("p"), {
+    className: "muted lounge-wait",
+    textContent: n < 2 ? `Waiting for friends to join with the code ${roomId}…` : `${n} of ${seats} seats taken`,
+  }));
+  const need = isDhiha() ? 4 : 2;
+  if (canManageBots() && n < need) {
+    const fill = Object.assign(document.createElement("button"), { type: "button", className: "primary fill-bots",
+      textContent: n === 1 ? `🤖 No one here? Play with the computer` : `🤖 Fill ${need - n} free place${need - n > 1 ? "s" : ""} with the computer` });
+    fill.onclick = fillWithBots;
+    box.append(fill);
+  } else if (canManageBots() && n < seats) {
+    const add = Object.assign(document.createElement("button"), { type: "button", className: "ghost small add-bot", textContent: "🤖 Add a computer player" });
+    add.onclick = () => addBot();
+    box.append(add);
+  }
+  if (canManageBots() || hasBots(room)) {
+    const lv = document.createElement("div");
+    lv.className = "bot-level";
+    lv.append(Object.assign(document.createElement("span"), { textContent: "🤖 Computer level" }));
+    for (const [id, label] of [["easy", "😊 Easy"], ["medium", "🙂 Medium"], ["hard", "😈 Hard"]]) {
+      const b = Object.assign(document.createElement("button"), { type: "button", className: (room.botLevel || "medium") === id ? "on" : "", textContent: label });
+      b.disabled = !canManageBots();
+      b.onclick = () => updateDoc(roomRef(), { botLevel: id, log: `Computer level: ${label}` }).catch((e) => toast(errMsg(e)));
+      lv.append(b);
+    }
+    box.append(lv);
+  }
+  if (hasBots(room)) box.append(Object.assign(document.createElement("p"), { className: "bot-note", textContent: "🤖 Playing with the computer is just for fun · no holhuashi or career points for this game" }));
+  if (isDhiha()) box.append(dhihaTeamPicker());
+  if (room.lastGame) box.append(lastGameCard(room.lastGame));
+  box.append(loungeBoard());
+}
+
+// The holhuashi leaderboard: game wins add up over every game played here.
+// The most recent finished game here: everyone's total, winner first.
+function lastGameCard(lg) {
+  const wrap = document.createElement("section");
+  wrap.className = "last-game";
+  const when = new Date(lg.at).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  wrap.append(Object.assign(document.createElement("h3"), { textContent: `🏁 Last game · ${GAME_NAME[lg.game] || ""} · ${when}` }));
+  const rows = [...(lg.results || [])].sort((a, b) => (lg.low ? a.total - b.total : b.total - a.total));
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "lg-row" + ((lg.champions || []).includes(r.uid) ? " champ" : "") + (r.uid === uid ? " me" : "");
+    row.append(
+      Object.assign(document.createElement("span"), { className: "lg-place", textContent: (lg.champions || []).includes(r.uid) ? "🏆" : "" }),
+      avatarEl({ uid: r.uid, name: r.name, avatar: r.avatar }, "avatar small"),
+      Object.assign(document.createElement("span"), { className: "lg-name", textContent: r.name + (r.uid === uid ? " (you)" : "") }),
+      Object.assign(document.createElement("b"), { textContent: `${r.total} pts` }),
+    );
+    wrap.append(row);
+  }
+  if (lg.low) wrap.append(Object.assign(document.createElement("small"), { className: "lg-note", textContent: "lowest total wins this game" }));
+  return wrap;
+}
+
+function loungeBoard() {
+  const wrap = document.createElement("section");
+  wrap.className = "lounge-board lb2";
+  const rows = Object.entries(room.board || {})
+    .map(([u, b]) => ({ uid: u, name: b.name || nameOf(u), avatar: b.avatar, wins: b.wins || 0, games: b.games || 0 }))
+    .sort((a, b) => b.wins - a.wins || (b.wins / (b.games || 1)) - (a.wins / (a.games || 1)) || b.games - a.games || a.name.localeCompare(b.name));
+  const total = room.stats?.games || 0;
+  const head = document.createElement("div");
+  head.className = "lb-head";
+  head.append(Object.assign(document.createElement("h3"), { textContent: "🏆 Leaderboard" }),
+    Object.assign(document.createElement("small"), { textContent: `${total} game${total === 1 ? "" : "s"} played here · 1 point for each game won` }));
+  wrap.append(head);
+  if (!rows.length) {
+    wrap.append(Object.assign(document.createElement("p"), { className: "board-empty", textContent: "No games finished here yet · win a game to get the first point!" }));
+    return wrap;
+  }
+  const rate = (r) => (r.games ? Math.round((100 * r.wins) / r.games) : 0);
+  // podium: 2nd · 1st · 3rd
+  const pod = document.createElement("div");
+  pod.className = "lb-podium";
+  [1, 0, 2].forEach((i) => {
+    const r = rows[i];
+    const col = document.createElement("div");
+    col.className = `lb-step lb-p${i + 1}` + (r ? "" : " empty") + (r?.uid === uid ? " me" : "");
+    if (r) {
+      col.append(Object.assign(document.createElement("span"), { className: "lb-medal", textContent: ["🥇", "🥈", "🥉"][i] }),
+        avatarEl({ uid: r.uid, name: r.name, avatar: r.avatar }, "avatar"),
+        Object.assign(document.createElement("b"), { className: "lb-name", textContent: r.uid === uid ? "You" : r.name }),
+        Object.assign(document.createElement("span"), { className: "lb-pts", textContent: `${r.wins} pt${r.wins === 1 ? "" : "s"}` }));
+    }
+    const block = Object.assign(document.createElement("div"), { className: "lb-block", textContent: r ? `${i + 1}` : "" });
+    col.append(block);
+    pod.append(col);
+  });
+  wrap.append(pod);
+  // everyone, with wins, games and win rate
+  const top = Math.max(1, rows[0].wins);
+  const list = document.createElement("div");
+  list.className = "lb-list";
+  rows.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "lb-row" + (r.uid === uid ? " me" : "");
+    const bar = document.createElement("span");
+    bar.className = "lb-bar";
+    bar.style.width = `${Math.max(4, (100 * r.wins) / top)}%`;
+    row.append(
+      Object.assign(document.createElement("span"), { className: "lb-rank", textContent: i + 1 }),
+      avatarEl({ uid: r.uid, name: r.name, avatar: r.avatar }, "avatar small"),
+      Object.assign(document.createElement("span"), { className: "lb-who", textContent: r.name }),
+      Object.assign(document.createElement("span"), { className: "lb-stat", innerHTML: `<b>${r.wins}</b><small>pts</small>` }),
+      Object.assign(document.createElement("span"), { className: "lb-stat", innerHTML: `<b>${r.games}</b><small>games</small>` }),
+      Object.assign(document.createElement("span"), { className: "lb-stat", innerHTML: `<b>${rate(r)}%</b><small>wins</small>` }),
+    );
+    const track = document.createElement("span");
+    track.className = "lb-track";
+    track.append(bar);
+    row.append(track);
+    list.append(row);
+  });
+  wrap.append(list);
+  return wrap;
+}
+
+// Holhuashi settings (holhuashi owner, before dealing): players 2–6, and end by points or by rounds.
+// Lobby tables have no settings: 2–4 players, 4 rounds.
+function renderTargetSetup() {
+  const box = $("targetSetup");
+  box.hidden = room.status !== "lobby" || isLobbyRoom(room) || !!room.practice; // the notice board inside the holhuashi
+  if (box.hidden) return;
+  const host = room.host === uid;
+  const owner = nameOf(room.host);
+  $("loungeTitle").textContent = room.name || (host ? "Your holhuashi" : `${owner}'s holhuashi`);
+  const isOwner = ownsLounge(room);
+  const cur = placeOf(room);
+  const pc = $("placeChoices");
+  pc.innerHTML = "";
+  for (const pl of isOwner ? PLACES : [cur]) {
+    const locked = isOwner && myRank() < pl.rank;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "place-chip" + (pl.id === cur.id ? " on" : "") + (locked ? " locked" : "");
+    b.innerHTML = `<span></span><small></small>`;
+    b.querySelector("span").textContent = pl.icon;
+    b.querySelector("small").textContent = locked ? `🔒 ${P.RANKS[pl.rank].icon} ${P.RANKS[pl.rank].name}` : pl.name;
+    b.title = locked ? `Unlocks at ${P.RANKS[pl.rank].name} rank (${P.RANKS[pl.rank].at} points)` : pl.name;
+    b.disabled = !isOwner;
+    b.onclick = () => setPlace(pl.id);
+    pc.append(b);
+  }
+  $("loungeManage").hidden = !isOwner;
+  if (isOwner && document.activeElement !== $("loungeNameEdit")) $("loungeNameEdit").value = room.name || "";
+  if (isOwner) {
+    $("loungeNote").innerHTML = `Invite code <b></b> <button type="button" class="ghost small copy-code">Copy invite</button> <button type="button" class="ghost small new-code" title="The old invite code stops working">New code</button>`;
+    $("loungeNote").querySelector("b").textContent = myInvite.code === roomId ? `${roomId}-${myInvite.key}` : "…";
+    $("loungeNote").querySelector(".copy-code").onclick = () => $("copyCode").click();
+    $("loungeNote").querySelector(".new-code").onclick = newInviteCode;
+    loadInvite();
+  } else {
+    $("loungeNote").textContent = "🔒 Invite only · ask the owner to invite your friends";
+  }
+  const pts = loungePoints(room);
+  $("loungePoints").innerHTML = "";
+  $("loungePoints").append(
+    Object.assign(document.createElement("b"), { textContent: `⭐ ${pts.points} holhuashi points` }),
+    Object.assign(document.createElement("small"), { textContent: `${pts.mood} · ${pts.members} player${pts.members === 1 ? "" : "s"} · ${pts.games} games · ${pts.rounds} rounds` }),
+  );
+
+  const maxBox = $("maxChoices");
+  maxBox.innerHTML = "";
+  const max = room.maxPlayers || 6;
+  $("maxLabel").textContent = host ? "Players" : `Up to ${max} players`;
+  for (let n = 2; n <= 6; n++) {
+    const b = document.createElement("button");
+    b.textContent = n;
+    b.className = "target-chip small-chip" + (n === max ? " on" : "");
+    b.disabled = !host || n < room.players.length;
+    if (host && n < room.players.length) b.title = `${room.players.length} players are already in`;
+    b.onclick = () => setMaxPlayers(n);
+    maxBox.append(b);
+  }
+
+  const g = gameOf(room);
+  $("gameDigu").classList.toggle("on", g === "digu");
+  $("gameCall").classList.toggle("on", g === "call");
+  $("gameBondi").classList.toggle("on", g === "bondi");
+  $("gameDhiha").classList.toggle("on", g === "dhiha");
+  $("gameDhiha").hidden = !isLoungeDoc(room);
+  $("gameDigu").disabled = $("gameCall").disabled = $("gameBondi").disabled = $("gameDhiha").disabled = !host;
+  $("gameNote").textContent = g === "call"
+    ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
+    : g === "dhiha"
+    ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: 3 tens wins (2 each: 7 decks). Points: 1 a round, 2 for all four 10s, 3 for all 13 decks."
+    : g === "bondi"
+    ? "BONDI: all cards dealt, K♠ starts. Follow suit; if you can't, cut and the highest card picks up the pile. First out scores 0, then 10, 20… Lowest total wins."
+    : "DIGU: make two sets of 3 and one set of 4. Highest total wins.";
+  const mode = room.endMode === "rounds" ? "rounds" : "points";
+  $("endPoints").classList.toggle("on", mode === "points");
+  $("endRounds").classList.toggle("on", mode === "rounds");
+  $("endPoints").disabled = $("endRounds").disabled = !host;
+  $("targetSection").hidden = mode !== "points";
+  $("roundsSection").hidden = mode !== "rounds";
+
+  // points
+  const target = room.target || DEFAULT_TARGET;
+  $("targetLabel").textContent = lowWins(g)
+    ? (host ? "Game ends when someone reaches" : `Game ends when someone reaches ${target}`)
+    : (host ? "First to reach" : `First to ${target} points wins`);
+  const choices = $("targetChoices");
+  choices.innerHTML = "";
+  for (const t of [...new Set([...(g === "dhiha" ? DHIHA_TARGETS : lowWins(g) ? CALL_TARGETS : TARGET_CHOICES), target])].sort((a, b) => a - b)) {
+    const b = document.createElement("button");
+    b.textContent = t;
+    b.className = "target-chip" + (t === target ? " on" : "");
+    b.disabled = !host;
+    b.onclick = () => setTarget(t);
+    choices.append(b);
+  }
+  $("targetCustom").hidden = !host;
+  $("targetNote").textContent = lowWins(g) ? "points · then the lowest total wins" : "points · then the highest total wins";
+
+  // rounds
+  const limit = room.roundsLimit || DEFAULT_LOUNGE_ROUNDS;
+  $("roundsLabel").textContent = host ? "Number of rounds" : `${limit} rounds · ${lowWins(g) ? "lowest" : "highest"} total wins`;
+  const rc = $("roundsChoices");
+  rc.innerHTML = "";
+  for (const n of [...new Set([...LOUNGE_ROUND_CHOICES, limit])].sort((a, b) => a - b)) {
+    const b = document.createElement("button");
+    b.textContent = n;
+    b.className = "target-chip small-chip" + (n === limit ? " on" : "");
+    b.disabled = !host;
+    b.onclick = () => setRoundsLimit(n);
+    rc.append(b);
+  }
+  $("roundsCustom").hidden = !host;
+}
+
+// ---------- big moments ----------
+// The game is over: a trophy, the winner's name and confetti for everyone. In a holhuashi,
+// after a few seconds everyone goes back to the holhuashi, where the results and points show.
+let celebrated = null;
+function celebrateWinner(r) {
+  const key = `${roomId}-${r.round}`;
+  if (celebrated === key) return;
+  celebrated = key;
+  setTimeout(() => {
+    $("results").hidden = true;
+    const champs = r.champions.map((u) => r.players.find((p) => p.uid === u)).filter(Boolean);
+    const fx = document.createElement("div");
+    fx.className = "win-fx";
+    const box = document.createElement("div");
+    box.className = "win-box";
+    box.append(Object.assign(document.createElement("div"), { className: "win-trophy", textContent: "🏆" }));
+    const who = document.createElement("div");
+    who.className = "win-who";
+    champs.forEach((p) => who.append(avatarEl(p, "avatar")));
+    box.append(who,
+      Object.assign(document.createElement("h2"), { textContent: champs.map((p) => (p.uid === uid ? "You" : p.name)).join(" & ") + (champs.length > 1 || champs[0]?.uid === uid ? " win the game!" : " wins the game!") }),
+      Object.assign(document.createElement("p"), { textContent: isLoungeDoc(r) ? "🏆 +1 holhuashi point · back to the holhuashi in a moment…" : `${GAME_NAME[gameOf(r)]} · ${roundsTotal(r) ? roundsTotal(r) + " rounds" : "target " + (r.target || "")}` }));
+    fx.append(Object.assign(document.createElement("div"), { className: "fx-rays" }), box);
+    confetti(fx, false);
+    document.body.append(fx);
+    try { navigator.vibrate?.([100, 60, 100, 60, 200]); } catch {}
+    setTimeout(() => fx.classList.add("fade"), 5200);
+    setTimeout(() => {
+      fx.remove();
+      // holhuashi: everyone heads back to the holhuashi (the owner/host starts the new game state)
+      if (room && roomId && isLoungeDoc(room) && room.gameOver && (room.host === uid || isOffline(room, room.host, roomId))) playAgain();
+      else if (room && isLoungeDoc(room) && room.gameOver) $("results").hidden = true;
+      else if (room?.gameOver) $("results").hidden = false;
+    }, 5800);
+  }, RESULTS_DELAY + 1500);
+}
+
+// A quick fun moment for everyone: a big bouncing emoji, a line of text, and little emojis floating up.
+function funMoment(emoji, text, floaters, kind) {
+  const fx = document.createElement("div");
+  fx.className = "fun-fx " + kind;
+  fx.innerHTML = `<div class="fun-box"><span class="fun-emoji"></span><b></b></div>`;
+  fx.querySelector(".fun-emoji").textContent = emoji;
+  fx.querySelector("b").textContent = text;
+  for (let i = 0; i < 18; i++) {
+    const f = document.createElement("i");
+    f.className = "fun-float";
+    f.textContent = floaters[i % floaters.length];
+    f.style.setProperty("--x", `${8 + Math.random() * 84}vw`);
+    f.style.setProperty("--d", `${Math.random() * 0.7}s`);
+    f.style.setProperty("--s", `${22 + Math.random() * 22}px`);
+    f.style.setProperty("--r", `${(Math.random() - 0.5) * 60}deg`);
+    fx.append(f);
+  }
+  document.body.append(fx);
+  try { navigator.vibrate?.(kind === "laugh" ? [60, 40, 60, 40, 60] : [40, 30, 40]); } catch {}
+  setTimeout(() => fx.remove(), 2600);
+}
+
+// BONDI: someone cut, someone ran out of cards.
+function bondiMoments(prev) {
+  const t = room.lastTrick;
+  if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), 650); // let everyone see the trick first
+  if (t?.id && t.id !== prev.lastTrick?.id && t.cut) {
+    // big cards picked up (A, K, Q, J) → the table laughs
+    const big = t.cards.map((c) => C.parse(c).r).filter((r) => r === 1 || r >= 11).sort((a, b) => (a === 1 ? 14 : a) < (b === 1 ? 14 : b) ? 1 : -1);
+    if (big.length) {
+      const names = [...new Set(big.map((r) => C.label(r)))].join(", ");
+      setTimeout(() => funMoment("😂", t.to === uid ? `Ohhh! You got ${names}!` : `Ohhh! ${nameOf(t.to)} got ${names}!`, ["😂", "🤣", "😆", "😜"], "laugh"), 900);
+    }
+    showBubble(t.cut, "Cut! ✋", true);
+    showBanner(t.to === uid ? `✋ ${nameOf(t.cut)} cut! You pick up ${t.cards.length} cards`
+      : t.cut === uid ? `✋ You cut! ${nameOf(t.to)} picks up ${t.cards.length} cards`
+      : `✋ ${nameOf(t.cut)} cut! ${nameOf(t.to)} picks up ${t.cards.length} cards`);
+  }
+  for (const u of (room.out || []).slice((prev.out || []).length)) {
+    const place = room.out.indexOf(u) + 1;
+    showBubble(u, place === 1 ? "Out first! 🏆 Winner" : `Out! ${ordinal(place)}`, true);
+    if (place === 1) showBanner(u === uid ? "🏆 You're out first · you win this round!" : `🏆 ${nameOf(u)} is out first and wins the round!`);
+    else if (u === uid) showBanner(`You're out ${ordinal(place)} · +${(place - 1) * C.BONDI_STEP} points`);
+  }
+}
+
+// The cards on the table fly to whoever picks them up (into my hand if it's me),
+// or onto the set-aside pile when everyone followed suit.
+function sweepTrick(t) {
+  if (!room || room.lastTrick?.id !== t.id || (room.trick || []).length) return; // a new trick already started
+  const slots = [...$("discardPile").querySelectorAll(".trick-slot")];
+  if (!slots.length) return;
+  const target = t.team ? $("teamPile-" + t.team)
+    : t.to ? (t.to === uid ? $("hand") : seatEl(t.to))
+    : $("deck");
+  if (!target) return;
+  const to = target.getBoundingClientRect();
+  slots.forEach((slot, i) => {
+    const card = slot.querySelector(".card");
+    const r = card.getBoundingClientRect();
+    const fly = card.cloneNode(true);
+    fly.className = "card flying" + (t.to ? "" : " back-fade");
+    Object.assign(fly.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    document.body.append(fly);
+    slot.style.visibility = "hidden";
+    const dx = to.left + to.width / 2 - (r.left + r.width / 2) + (i - (slots.length - 1) / 2) * 6;
+    const dy = to.top + to.height / 2 - (r.top + r.height / 2);
+    fly.animate([
+      { transform: "translate(0, 0) rotate(0deg) scale(1)", opacity: 1 },
+      { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 40}px) rotate(${(i % 2 ? 1 : -1) * 20}deg) scale(.85)`, opacity: 1, offset: 0.5 },
+      { transform: `translate(${dx}px, ${dy}px) rotate(${(i % 2 ? 1 : -1) * 35}deg) scale(${t.to ? 0.4 : 0.7})`, opacity: t.to ? 0.2 : 0.4 },
+    ], { duration: 750, delay: i * 110, easing: "cubic-bezier(.5,0,.3,1)", fill: "forwards" }).onfinish = () => fly.remove();
+  });
+  // the receiver's name (or my hand) bumps with how many cards arrived
+  const bump = t.to || t.team ? target : $("deck");
+  setTimeout(() => {
+    bump.classList.remove("got-cards"); void bump.offsetWidth; bump.classList.add("got-cards");
+    const tag = document.createElement("span");
+    tag.className = "got-tag" + (t.to ? "" : " aside");
+    tag.textContent = `+${t.cards.length}`;
+    const br = bump.getBoundingClientRect();
+    Object.assign(tag.style, { left: br.left + br.width / 2 + "px", top: br.top + "px" });
+    document.body.append(tag);
+    setTimeout(() => tag.remove(), 1300);
+  }, 650 + slots.length * 110);
+}
+
+// A banner that drops in across the top (e.g. "Hassan: 1 card to DIGU!").
+function showBanner(text) {
+  const b = document.createElement("div");
+  b.className = "fx-banner";
+  b.textContent = text;
+  document.body.append(b);
+  setTimeout(() => b.remove(), 3200);
+}
+
+// DIGU! / CALL!: flash, spinning rays, the word slamming in with the winner's shout style,
+// a shake, and confetti. Plays on every player's screen before the scores appear.
+function playShout(r) {
+  if (gameOf(r) === "bondi") return playBondiEnd(r);
+  if (gameOf(r) === "dhiha") return playDhihaEnd(r);
+  const call = gameOf(r) === "call";
+  if (!call && r.diguCard && !r._slapped) { r._slapped = true; return slapCard(r.diguCard, r.winner, () => playShout(r)); }
+  if (call && r.winner && !r._slapped) { // CALL: the caller slaps their whole hand down, face up
+    r._slapped = true;
+    const go = (cards) => slapCard(cards?.length ? cards : null, r.winner, () => playShout(r));
+    if (r.winner === uid) return go([...hand]);
+    getDoc(handRef(r.winner)).then((d) => go(d.data()?.cards), () => go(null));
+    return;
+  }
+  const fx = document.createElement("div");
+  fx.className = "shout-fx " + (call ? "is-call" : "is-digu");
+  const rays = document.createElement("div");
+  rays.className = "fx-rays";
+  const word = shoutEl(r.diguStyle, call ? "CALL!" : "DIGU!");
+  word.classList.add("fx-word");
+  const who = document.createElement("div");
+  who.className = "fx-who";
+  const winner = r.players.find((p) => p.uid === r.winner);
+  who.textContent = r.winner === uid ? `You called ${call ? "CALL" : "DIGU"}!` : `${winner?.name || "Someone"} called ${call ? "CALL" : "DIGU"}`;
+  fx.append(rays, word, who);
+  confetti(fx, call);
+  shakeAndFade(fx);
+}
+
+// DIGU! The winning card is lifted high and slapped down on the middle with a bang.
+function slapCard(id, who, then) {
+  const pile = $("discardPile"), src = seatOrHand(who) || pile;
+  if (!pile || !pile.offsetParent) return then();
+  const p = pile.getBoundingClientRect(), a = src.getBoundingClientRect();
+  const w = 70, h = 100;
+  const cx = p.left + p.width / 2, cy = p.top + p.height / 2;
+  let el;
+  if (Array.isArray(id) || !id) { // several cards (CALL: the caller's hand), fanned out
+    const ids = Array.isArray(id) ? id : [null, null, null];
+    el = Object.assign(document.createElement("div"), { className: "slap-group" });
+    ids.forEach((c, i) => {
+      const k = c ? cardEl(c) : Object.assign(document.createElement("div"), { className: "card back" });
+      const a = (i - (ids.length - 1) / 2) * 14;
+      Object.assign(k.style, { position: "absolute", left: 0, top: 0, width: "100%", height: "100%", margin: 0,
+        transformOrigin: "50% 110%", transform: `rotate(${a}deg)` });
+      el.append(k);
+    });
+  } else el = cardEl(id);
+  el.classList.add("flying", "slap-card");
+  Object.assign(el.style, { position: "fixed", left: cx - w / 2 + "px", top: cy - h / 2 + "px", width: w + "px", height: h + "px", zIndex: 170, margin: 0 });
+  document.body.append(el);
+  const sx = a.left + a.width / 2 - cx, sy = a.top + a.height / 2 - cy;
+  const up = Math.min(160, cy - 40);
+  el.animate([
+    { transform: `translate(${sx}px, ${sy}px) scale(.5) rotate(0deg)`, offset: 0 },
+    { transform: `translate(0px, ${-up}px) scale(2.3) rotate(-18deg)`, offset: 0.45, easing: "ease-out" },
+    { transform: `translate(0px, ${-up - 25}px) scale(2.4) rotate(-24deg)`, offset: 0.7, easing: "cubic-bezier(.7,0,1,.6)" }, // wind up...
+    { transform: "translate(0,0) scale(1) rotate(-6deg)", offset: 0.9 },                                                        // ...SLAP
+    { transform: "translate(0,0) scale(1.08) rotate(-4deg)", offset: 0.95 },
+    { transform: "translate(0,0) scale(1) rotate(-5deg)", offset: 1 },
+  ], { duration: 1100, fill: "forwards" });
+  setTimeout(() => { // the impact
+    const ring = Object.assign(document.createElement("div"), { className: "slap-ring" });
+    const bang = Object.assign(document.createElement("div"), { className: "slap-bang", textContent: "💥" });
+    for (const x of [ring, bang]) { Object.assign(x.style, { left: cx + "px", top: cy + "px" }); document.body.append(x); }
+    ring.animate([{ transform: "translate(-50%,-50%) scale(.2)", opacity: 1 }, { transform: "translate(-50%,-50%) scale(3.2)", opacity: 0 }], { duration: 600, easing: "ease-out" }).onfinish = () => ring.remove();
+    bang.animate([{ transform: "translate(-50%,-50%) scale(.3)", opacity: 1 }, { transform: "translate(-50%,-50%) scale(1.8)", opacity: 0 }], { duration: 550, easing: "ease-out" }).onfinish = () => bang.remove();
+    for (let i = 0; i < 12; i++) { // dust flying out
+      const d = Object.assign(document.createElement("span"), { className: "slap-dust" });
+      Object.assign(d.style, { left: cx + "px", top: cy + "px" });
+      document.body.append(d);
+      const ang = (i / 12) * Math.PI * 2, dist = 60 + Math.random() * 50;
+      d.animate([{ transform: "translate(-50%,-50%) scale(1)", opacity: 1 }, { transform: `translate(calc(-50% + ${Math.cos(ang) * dist}px), calc(-50% + ${Math.sin(ang) * dist}px)) scale(.3)`, opacity: 0 }],
+        { duration: 500 + Math.random() * 200, easing: "cubic-bezier(.2,.8,.3,1)" }).onfinish = () => d.remove();
+    }
+    const t = $("table") || document.body;
+    t.animate([{ transform: "translate(0,0)" }, { transform: "translate(-7px,5px)" }, { transform: "translate(6px,-4px)" }, { transform: "translate(-4px,3px)" }, { transform: "translate(2px,-1px)" }, { transform: "translate(0,0)" }], { duration: 380 });
+    if (navigator.vibrate) try { navigator.vibrate(80); } catch {}
+  }, 990);
+  setTimeout(() => {
+    el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, fill: "forwards" }).onfinish = () => el.remove();
+    then();
+  }, 1700);
+}
+
+function playBondiEnd(r) {
+  const fx = document.createElement("div");
+  fx.className = "shout-fx is-bondi";
+  const rays = document.createElement("div");
+  rays.className = "fx-rays";
+  const word = shoutEl(null, "BONDI!");
+  word.classList.add("fx-word");
+  const who = document.createElement("div");
+  who.className = "fx-who";
+  const order = r.order || [];
+  const first = order[0], last = order[order.length - 1];
+  const nm = (u) => (u === uid ? "You" : r.players.find((p) => p.uid === u)?.name || "Someone");
+  who.textContent = `🏆 ${nm(first)} went out first` + (last && last !== first ? ` · ${nm(last)} ${last === uid ? "are" : "is"} left holding cards` : "");
+  fx.append(rays, word, who);
+  confetti(fx, false);
+  shakeAndFade(fx);
+}
+
+function confetti(fx, call) {
+  const colors = call ? ["#63b3ed", "#90cdf4", "#ffffff", "#e8b64c", "#2b6cb0"] : ["#e8b64c", "#ffd76a", "#c8283a", "#ffffff", "#16a34a"];
+  for (let i = 0; i < 70; i++) {
+    const c = document.createElement("i");
+    c.className = "fx-confetti";
+    c.style.setProperty("--x", `${Math.random() * 100}vw`);
+    c.style.setProperty("--dx", `${(Math.random() - 0.5) * 30}vw`);
+    c.style.setProperty("--r", `${Math.random() * 720 - 360}deg`);
+    c.style.setProperty("--d", `${Math.random() * 0.6}s`);
+    c.style.setProperty("--t", `${1.6 + Math.random() * 1.2}s`);
+    c.style.background = colors[i % colors.length];
+    if (i % 3 === 0) c.style.borderRadius = "50%";
+    fx.append(c);
+  }
+}
+
+function shakeAndFade(fx) {
+  document.body.append(fx);
+  $("game").classList.remove("shake"); void $("game").offsetWidth; $("game").classList.add("shake");
+  setTimeout(() => fx.classList.add("fade"), RESULTS_DELAY - 500);
+  setTimeout(() => fx.remove(), RESULTS_DELAY + 200);
+}
+
+// ---------- the hand: one row of overlapping cards, held like a real hand ----------
+// Cards overlap just enough to fit the screen, each showing its number and suit in the corner,
+// in a gentle arc. Tapping a card lifts it; tapping it again throws it.
+function fanHand() {
+  const box = $("hand");
+  box.querySelector(".row-break")?.remove();
+  const cards = [...box.querySelectorAll(".card")];
+  const n = cards.length;
+  if (!n) return;
+  const W = box.clientWidth || 320;
+  const cw = cards[0].offsetWidth || 64;
+  const stepFor = (k) => (k > 1 ? Math.min(cw * 0.72, (W - cw - 8) / (k - 1)) : cw);
+  // a big hand (e.g. BONDI with 2 players = 26 cards) on a narrow screen gets two rows,
+  // so every card still shows enough to tap
+  const two = n > 1 && stepFor(n) < 22;
+  const split = two ? Math.ceil(n / 2) : n;
+  const rows = two ? [[0, split], [split, n - split]] : [[0, n]];
+  box.classList.toggle("two-rows", two);
+  box._fan = { rows: rows.map(([from, count]) => {
+    const step = stepFor(count);
+    const tilt = Math.min(4, 36 / count);
+    for (let j = 0; j < count; j++) {
+      const el = cards[from + j], off = j - (count - 1) / 2;
+      el.style.marginLeft = j ? `${step - cw}px` : "0";
+      el.style.setProperty("--rot", `${off * tilt}deg`);
+      el.style.setProperty("--y", `${Math.abs(off) * Math.abs(off) * 0.9}px`);
+      el.style.zIndex = from + j + 1;
+    }
+    // where the row starts inside the hand box (it's centred), for rearranging by drag
+    return { from, count, step, start: Math.max(0, (W - (cw + step * (count - 1))) / 2) };
+  }) };
+  if (two) cards[split].before(Object.assign(document.createElement("div"), { className: "row-break" }));
+}
+addEventListener("resize", () => { if (room) fanHand(); });
+
+// ---------- drag & tap (mouse and touch) ----------
+// Drag a hand card onto the thrown cards to throw it. While dragging over your hand,
+// the card moves to exactly where your pointer is, so you can place it anywhere.
+// Drag the middle pile or the top thrown card down into your hand to take it. A short tap still works.
+function startDrag(e, src, id, el) {
+  if (e.button > 0 || !room) return;
+  drag = { src, id, el, x0: e.clientX, y0: e.clientY, moved: false, ghost: null };
+}
+$("hand").addEventListener("pointerdown", (e) => {
+  const el = e.target.closest(".card");
+  if (el) startDrag(e, "hand", el.dataset.id, el);
+});
+$("deck").addEventListener("pointerdown", (e) => {
+  if (mustThrowFirst()) return toast("Throw a card first");
+  startDrag(e, "deck", null, $("deck"));
+});
+$("discardPile").addEventListener("pointerdown", (e) => {
+  if (canThrow() && (isCall() ? callSel.size && C.canThrowTogether([...callSel]) : selected)) {
+    return throwCard(isCall() ? [...callSel] : selected);
+  }
+  if (mustThrowFirst()) return toast("Throw a card first");
+  const el = e.target.closest(isCall() ? ".card.pick" : ".card.top");
+  if (el) startDrag(e, "discard", el.dataset.id, el);
+  else if (canDraw() && (isCall() ? !room.pickable : !room.discard?.length)) {
+    toast(isCall() ? "No card from the last player to take · take from the middle pile" : "Nothing has been thrown yet · take from the middle pile");
+  }
+});
+
+function makeGhost() {
+  const r = drag.el.getBoundingClientRect();
+  const g = drag.el.cloneNode(true);
+  g.classList.remove("selected", "new", "clickable", "thrown", "top", "landing");
+  g.classList.add("ghost");
+  g.removeAttribute("id");
+  g.querySelectorAll("[id]").forEach((n) => n.removeAttribute("id"));
+  g.style.width = drag.el.offsetWidth + "px";
+  g.style.height = drag.el.offsetHeight + "px";
+  g.style.zIndex = "";
+  drag.offX = drag.el.offsetWidth / 2;
+  drag.offY = drag.el.offsetHeight / 2;
+  document.body.append(g);
+  drag.ghost = g;
+  drag.el.classList.add("dragging");
+  document.body.classList.add("is-dragging");
+}
+
+function dropTarget(e, d) {
+  const t = document.elementFromPoint(e.clientX, e.clientY);
+  if (d.src === "hand") {
+    const handTop = $("hand").getBoundingClientRect().top;
+    if (canThrow() && (t?.closest("#table") || e.clientY < handTop - 30)) return "throw";
+    return null;
+  }
+  if (canDraw() && (t?.closest("#handSection") || e.clientY > $("table").getBoundingClientRect().bottom + 20)) return "draw";
+  return null;
+}
+
+// Move the dragged card to the spot under the pointer (like rearranging cards in your real hand).
+// The fan has fixed slots (they don't move when cards swap), so the same finger position
+// always means the same spot and the hand stays still while you slide.
+function placeInHand(e) {
+  const box = $("hand"), hr = box.getBoundingClientRect();
+  if (e.clientX < hr.left - 30 || e.clientX > hr.right + 30 || e.clientY < hr.top - 20 || e.clientY > hr.bottom + 20) return;
+  const f = box._fan;
+  if (!f || hand.length < 2) return;
+  let row = f.rows[0];
+  if (f.rows.length > 1) {
+    const second = box.querySelectorAll(".card")[f.rows[1].from];
+    if (second && e.clientY > second.getBoundingClientRect().top + 12) row = f.rows[1];
+  }
+  const slot = row.from + Math.max(0, Math.min(row.count - 1, Math.floor((e.clientX - hr.left - row.start) / row.step)));
+  const cur = hand.indexOf(drag.id);
+  if (cur < 0 || slot === cur) return;
+  const rest = hand.filter((c) => c !== drag.id);
+  hand = [...rest.slice(0, slot), drag.id, ...rest.slice(slot)];
+  render();
+}
+
+document.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+  if (!drag.moved) {
+    if (Math.hypot(dx, dy) < 8) return;
+    drag.moved = true;
+    makeGhost();
+  }
+  e.preventDefault();
+  const tilt = Math.max(-12, Math.min(12, dx / 15));
+  drag.ghost.style.transform = `translate(${e.clientX - drag.offX}px, ${e.clientY - drag.offY}px) rotate(${tilt}deg) scale(1.08)`;
+  if (drag.src === "hand") placeInHand(e);
+  const t = dropTarget(e, drag);
+  $("discardPile").classList.toggle("drop-hover", t === "throw");
+  $("hand").classList.toggle("drop-hover", t === "draw");
+}, { passive: false });
+
+function endDrag(d) {
+  d.ghost?.remove();
+  d.el?.classList.remove("dragging");
+  document.body.classList.remove("is-dragging");
+  $("discardPile").classList.remove("drop-hover");
+  $("hand").classList.remove("drop-hover");
+}
+
+document.addEventListener("pointerup", (e) => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  endDrag(d);
+  if (!d.moved) { // a tap
+    if (d.src === "hand") {
+      // tapping a card that's already lifted throws it (with any others picked in CALL)
+      if (needsDrawFirst() && selected === d.id) return takeFirstHint();
+      if (canThrow() && (isCall() ? callSel.has(d.id) : selected === d.id)) {
+        if (isCall()) {
+          if (C.canThrowTogether([...callSel])) return throwCard([...callSel]);
+        } else return throwCard(d.id);
+      }
+      if (isCall()) { // pick several of the same number to throw together
+        if (callSel.has(d.id)) callSel.delete(d.id);
+        else {
+          if ([...callSel].some((c) => C.parse(c).r !== C.parse(d.id).r)) callSel.clear();
+          callSel.add(d.id);
+        }
+      } else selected = selected === d.id ? null : d.id;
+      render();
+    }
+    else draw(d.src);
+    return;
+  }
+  const t = dropTarget(e, d);
+  if (t === "throw") throwCard(isCall() && callSel.has(d.id) ? [...callSel] : [d.id]);
+  else if (d.src === "hand" && d.moved && needsDrawFirst() && e.clientY < $("hand").getBoundingClientRect().top - 30) takeFirstHint();
+  else if (t === "draw") draw(d.src);
+  else render(); // card stays where it was dropped in the hand
+});
+document.addEventListener("pointercancel", () => { if (drag) { endDrag(drag); drag = null; render(); } });
+
+function sortLockedToast() {
+  if ((gamesPlayed || 0) >= SORT_UNLOCK) return false;
+  const left = SORT_UNLOCK - (gamesPlayed || 0);
+  toast(`🔒 Play ${left} more ${left === 1 ? "game" : "games"} to unlock sorting`);
+  return true;
+}
+$("sortSuit").onclick = () => { if (sortLockedToast()) return; hand = C.sortBySuit(hand); render(); };
+$("sortRank").onclick = () => { if (sortLockedToast()) return; hand = C.sortByRank(hand); render(); };
+$("groupSets").onclick = () => {
+  const best = C.bestLayout(hand);
+  hand = [...best.sets.flat(), ...C.sortBySuit(best.leftover)];
+  render();
+};
+
+// ---------- reactions tray ----------
+renderTray();
+$("reactBtn").onclick = (e) => { e.stopPropagation(); $("reactTray").hidden = !$("reactTray").hidden; };
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#reactTray, #reactBtn")) $("reactTray").hidden = true;
+});
+
+// ---------- buttons ----------
+$("createLoungeBtn").onclick = createLounge;
+$("loungeRenameBtn").onclick = renameLounge;
+$("loungeDeleteBtn").onclick = deleteLounge;
+$("chatForm").onsubmit = sendChat;
+$("chatBtn").onclick = () => { chatOpen = !chatOpen; chatKey = null; renderChat(); if (chatOpen) setTimeout(() => { const l = $("chatList"); l.scrollTop = l.scrollHeight; }, 0); };
+$("chatClose").onclick = (e) => { e.preventDefault(); chatOpen = false; renderChat(); };
+$("seatStart").onclick = startTable;
+$("seatLeave").onclick = standUpAndStep;
+$("lobbyFloor").addEventListener("click", onFloorTap);
+addEventListener("resize", () => { clearTimeout(renderFloor.t); renderFloor.t = setTimeout(() => { walkerEls.forEach((el) => (el._pos = null)); renderFloor(); }, 150); });
+$("joinBtn").onclick = () => joinRoom($("code").value);
+$("code").addEventListener("keydown", (e) => e.key === "Enter" && joinRoom($("code").value));
+$("startBtn").onclick = dealRound;
+$("pauseBtn").onclick = togglePause;
+$("offlineRemove").onclick = () => decideOffline(true);
+$("offlineKeep").onclick = () => decideOffline(false);
+$("endGameBtn").onclick = endGameNow;
+$("nextRoundBtn").onclick = dealRound;
+$("playAgainBtn").onclick = playAgain;
+$("endPoints").onclick = () => setEndMode("points");
+$("endRounds").onclick = () => setEndMode("rounds");
+$("roundsCustom").addEventListener("submit", (e) => {
+  e.preventDefault();
+  setRoundsLimit($("roundsInput").value);
+  $("roundsInput").value = "";
+});
+$("registerBtn").onclick = () => openAuth("register");
+$("signInBtn").onclick = () => openAuth("signin");
+$("authSwitch").onclick = () => openAuth($("authModal").dataset.mode === "register" ? "signin" : "register");
+$("authForm").addEventListener("submit", submitAuth);
+$("authClose").onclick = () => ($("authModal").hidden = true);
+$("profileBtn").onclick = () => { renderProfile(); $("profileModal").hidden = false; };
+$("profileClose").onclick = () => ($("profileModal").hidden = true);
+$("profName").addEventListener("change", saveName);
+$("photoInput").addEventListener("change", (e) => { uploadPhoto(e.target.files[0]); e.target.value = ""; });
+$("photoThumb").onclick = () => profile.photo
+  ? savePrefs({ usePhoto: true })
+  : $("photoInput").click();
+$("photoRemove").onclick = removePhoto;
+$("copyId").onclick = async () => {
+  try { await navigator.clipboard.writeText(uid); toast("Player ID copied"); } catch { toast(uid); }
+};
+$("adminBtn").onclick = openAdmin;
+$("premiumBtn").onclick = openPremium;
+$("premEye").onclick = () => { premOpen = !premOpen; $("premiumPanel")._key = null; $("premiumBody")._key = null; renderPremTools(); renderPremiumPanel(); };
+$("premTip").onclick = showTip;
+$("premiumClose").onclick = () => ($("premiumModal").hidden = true);
+$("premSave").onclick = savePremiumCfg;
+$("premiumCopy").onclick = () => navigator.clipboard?.writeText(uid).then(() => toast("Player ID copied"), () => {});
+$("adminClose").onclick = () => ($("adminModal").hidden = true);
+$("adminSearch").addEventListener("input", renderAdmin);
+$("adminFilters").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-f]");
+  if (!b) return;
+  adminFilter = b.dataset.f;
+  $("adminFilters").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+  renderAdmin();
+});
+$("adminRefresh").onclick = openAdmin;
+$("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
+$("targetCustom").addEventListener("submit", (e) => {
+  e.preventDefault();
+  setTarget($("targetInput").value);
+  $("targetInput").value = "";
+});
+$("discardBtn").onclick = () => (isCall() ? callSel.size && throwCard([...callSel]) : selected && throwCard(selected));
+$("callBtn").onclick = onCall;
+$("gameDigu").onclick = () => setGame("digu");
+$("gameCall").onclick = () => setGame("call");
+$("gameBondi").onclick = () => setGame("bondi");
+$("gameDhiha").onclick = () => setGame("dhiha");
+$("diguBtn").onclick = onDigu;
+$("almostBtn").onclick = announceAlmost;
+$("leaveBtn").onclick = exitRoom;
+for (const g of ["digu", "call", "bondi"]) {
+  $("enter-" + g).onclick = () => openLobby(g);
+  $("tab-" + g).onclick = () => switchLobby(g);
+}
+$("seatFind").onclick = () => findSeat(lobbyGame);
+$("botBtn").onclick = openBotModal;
+$("resultsLeave").onclick = () => { $("results").hidden = true; exitRoom(); };
+$("aloneBotBtn").onclick = openBotModal;
+$("botClose").onclick = () => ($("botModal").hidden = true);
+$("botForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  startPractice(["call", "bondi"].includes(f.get("game")) ? f.get("game") : "digu", Number(f.get("bots")) || 1,
+    ["easy", "hard"].includes(f.get("level")) ? f.get("level") : "medium");
+});
+$("lobbyBackBtn").onclick = closeLobby;
+$("name").addEventListener("change", () => { renderWalkers(); writePresence(); });
+
+$("copyCode").onclick = async () => {
+  const base = BUNDLED_APP ? (CFG.siteUrl || "").replace(/\/?$/, "/") : `${location.origin}${location.pathname}`;
+  const own = room && ownsLounge(room) && myInvite.code === roomId;
+  if (room && isLoungeDoc(room) && !own) return toast("🔒 Only the owner can invite people to this holhuashi");
+  const link = `${base}#${roomId}${own ? "-" + myInvite.key : ""}`;
+  try { await navigator.clipboard.writeText(link); toast("Invite link copied"); }
+  catch { toast(link); }
+};
+
+// ---------- Android app: push notifications ----------
+// In the Android app (Capacitor), the phone registers for push and saves its token on the player's
+// profile. After a move, the mover asks the server (api/notify on Vercel) to alert the right players.
+// The server checks the sender really is at that table, so nobody can send fake alerts.
+const IS_APP = !!window.Capacitor?.isNativePlatform?.();
+// The app normally loads the live website (so website updates reach it straight away); then it can
+// use the site's own /api/notify. A copy of the game bundled inside the app runs on "localhost" and
+// needs the full address from firebase-config.js.
+const BUNDLED_APP = IS_APP && location.hostname === "localhost";
+const NOTIFY_URL = BUNDLED_APP ? (CFG.notifyUrl && !CFG.notifyUrl.includes("PASTE") ? CFG.notifyUrl : "") : "/api/notify";
+// The app tells the website whether this build can use push (?push=1); remember it for this visit.
+const PUSH_PARAM = (() => {
+  const v = new URLSearchParams(location.search).get("push");
+  try { if (v !== null) sessionStorage.setItem("thaas-push", v); return v ?? sessionStorage.getItem("thaas-push"); }
+  catch { return v; }
+})();
+let pushToken = null, pushReady = false;
+
+async function sendNotify(kind, code = roomId) {
+  if (!NOTIFY_URL || !code || !auth.currentUser || (room?.practice && code === roomId)) return;
+  try {
+    const token = await auth.currentUser.getIdToken();
+    await fetch(NOTIFY_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ roomId: code, kind }),
+    });
+  } catch { /* notifications are a bonus; the game never waits for them */ }
+}
+
+function savePushToken() {
+  if (!pushToken || !uid) return;
+  // kept in its own private place: only this player (and the server) can read it
+  setDoc(doc(db, "pushTokens", uid), { tokens: arrayUnion(pushToken) }, { merge: true }).catch(() => {});
+}
+
+async function setupPush() {
+  const PN = window.Capacitor?.Plugins?.PushNotifications;
+  if (!IS_APP || !PN || pushReady) return;
+  pushReady = true;
+  // Only builds that include google-services.json can use push; asking without it crashes the app.
+  const enabled = PUSH_PARAM !== null
+    ? PUSH_PARAM === "1"
+    : !!(await fetch("push-enabled.json").then((r) => (r.ok ? r.json() : null)).catch(() => null))?.enabled;
+  if (!enabled) { console.warn("Push notifications are off in this build (no google-services.json)"); return; }
+  try {
+    let perm = await PN.checkPermissions();
+    if (perm.receive === "prompt" || perm.receive === "prompt-with-rationale") perm = await PN.requestPermissions();
+    if (perm.receive !== "granted") return;
+    await PN.createChannel({
+      id: "turns", name: "Turns and games", description: "Your turn, games starting, players joining",
+      importance: 5, visibility: 1, sound: "default", vibration: true, lights: true, lightColor: "#E8B64C",
+    }).catch(() => {});
+    await PN.addListener("registration", ({ value }) => { pushToken = value; savePushToken(); });
+    await PN.addListener("registrationError", (e) => console.warn("Push registration failed", e));
+    // tapping a notification opens that table
+    await PN.addListener("pushNotificationActionPerformed", ({ notification }) => openFromPush(notification?.data?.roomId));
+    await PN.register();
+  } catch (e) { console.warn("Push setup failed", e); }
+}
+
+async function openFromPush(code) {
+  if (!code || !uid || code === roomId) return;
+  const snap = await getDoc(doc(db, "rooms", code)).catch(() => null);
+  if (snap?.exists() && snap.data().playerIds?.includes(uid)) enterRoom(code);
+  else if (LOBBY_TABLES.some((t) => t.id === code)) openLobby(LOBBY_TABLES.find((t) => t.id === code).game);
+}
+
+// ---------- start ----------
+$("name").value = load("digu-name") || "";
+// On start, Firebase first loads the saved sign-in (Remember me). Only if nobody is signed in on this
+// device do we start as a guest; signing in a guest straight away would replace the saved player.
+let authChecked = false;
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    if (!authChecked) { authChecked = true; signInAnonymously(auth).catch((e) => toast("Sign-in failed: " + errMsg(e))); }
+    return;
+  }
+  authChecked = true;
+  const changed = uid !== user.uid;
+  uid = user.uid;
+  if (changed) {
+    profile = {}; watchMyStats(); watchRoles(); watchOpenRooms();
+    setupPush();
+    savePushToken(); // signed in as someone else: this phone now gets their alerts
+    if (lobbyFromHash(location.hash)) setTimeout(() => openLobby(lobbyFromHash(location.hash)), 50);
+  }
+  renderAccount();
+  $("lobbyActions").classList.remove("loading");
+  const code = location.hash.slice(1).toUpperCase();
+  if (/^[A-Z0-9]{5}-[A-Z0-9]{4}$/.test(code) && !roomId) { // an invite link
+    $("code").value = code;
+    if (myName()) joinRoom(code);
+    else toast("Type your name, then press Join to enter the holhuashi");
+  } else if (code && !roomId) {
+    $("code").value = code;
+    // rejoin automatically if I'm already in it (page reload)
+    const snap = await getDoc(doc(db, "rooms", code)).catch(() => null);
+    if (snap?.exists() && snap.data().playerIds.includes(uid)) enterRoom(code);
+  }
+});
+// (guest sign-in happens above, only once Firebase has said nobody is signed in)
+
+// Remember me: fill in the email and the tick from last time
+$("authRemember").checked = load("thaas-remember") !== "0";
+if (!$("authEmail").value) $("authEmail").value = load("thaas-email") || "";
+
+// ---------- language: English / ދިވެހި ----------
+// tr("key", "English") → the Dhivehi text when Dhivehi is on (and translated), else the English
+function tr(key, en) { return document.body.classList.contains("lang-dv") && DV[key] ? DV[key] : en; }
+const gameWord = (g) => tr("game." + g, GAME_NAME[g]);
+// Elements marked data-i18n="key" switch to the Dhivehi text in i18n.js (right to left).
+function setLang(lang) {
+  const dv = lang === "dv";
+  document.body.classList.toggle("lang-dv", dv);
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    if (el.dataset.en === undefined) el.dataset.en = el.innerHTML;
+    const t = DV[el.dataset.i18n];
+    if (dv && t) { el.textContent = t; el.dir = "rtl"; el.lang = "dv"; }
+    else { el.innerHTML = el.dataset.en; el.removeAttribute("dir"); el.removeAttribute("lang"); }
+  });
+  document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
+    if (el.dataset.enPh === undefined) el.dataset.enPh = el.placeholder;
+    const t = DV[el.dataset.i18nPh];
+    el.placeholder = dv && t ? t : el.dataset.enPh;
+    el.dir = dv && t ? "rtl" : "";
+  });
+  try { renderAccount(); renderFloor(); } catch {} // texts the game sets itself
+  $("langEn").classList.toggle("on", !dv);
+  $("langDv").classList.toggle("on", dv);
+  store("thaas-lang", lang);
+}
+$("langEn").onclick = () => setLang("en");
+$("langDv").onclick = () => setLang("dv");
+setLang(load("thaas-lang") === "dv" ? "dv" : "en");
+
