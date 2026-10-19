@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>THAAS · Move to new project</title>
+<style>
+  :root { --bg: #0e3b3a; --panel: #134a48; --line: rgba(255,255,255,.14); --gold: #e8b64c; --ink: #f4efe2; --muted: #b9c9c4; --bad: #ff8a80; --ok: #7ee2a8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 4px 0 2px; color: var(--gold); }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0; }
+  h2 { font-size: 16px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+  h2 .n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--gold); color: #1b1b1b; font-size: 13px; }
+  p.help { margin: 0 0 10px; color: var(--muted); font-size: 13.5px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 3px; }
+  input[type=text], input[type=password], input[type=number] { width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: rgba(0,0,0,.25); color: var(--ink); font: inherit; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  button { margin-top: 10px; padding: 10px 16px; border-radius: 10px; border: 0; background: var(--gold); color: #1b1b1b; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .dry { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 14px; }
+  .dry input { width: 18px; height: 18px; }
+  #log { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Menlo, Consolas, monospace; background: rgba(0,0,0,.3); border-radius: 10px; padding: 10px 12px; min-height: 120px; max-height: 420px; overflow: auto; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .hl { color: var(--gold); }
+  code { background: rgba(0,0,0,.3); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+  @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Move THAAS to the new Firebase project</h1>
+  <p class="sub">Copies accounts, profiles, points, Premium, settings and holhuashis from the old project to the new one. Nothing is deleted from the old project, and every step can be run again safely.</p>
+
+  <section>
+    <h2>Password</h2>
+    <p class="help">The <code>MOVE_PASSWORD</code> you set in Vercel.</p>
+    <input id="pw" type="password" autocomplete="off">
+    <label class="dry"><input id="dry" type="checkbox" checked> Trial run (only count, don't copy). Untick to copy for real.</label>
+  </section>
+
+  <section>
+    <h2><span class="n">1</span> Check both projects</h2>
+    <p class="help">Makes sure both keys and the new Realtime Database work, and shows what will be copied.</p>
+    <button data-step="check">Check</button>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span> Copy user accounts</h2>
+    <p class="help">Keeps everyone's login and user ID. Get these from the <b>old</b> project: Authentication → Users → ⋮ (top right of the list) → <b>Password hash parameters</b>.</p>
+    <div class="grid">
+      <div><label>base64_signer_key</label><input id="hk" type="text" autocomplete="off"></div>
+      <div><label>base64_salt_separator</label><input id="hs" type="text" autocomplete="off"></div>
+      <div><label>rounds</label><input id="hr" type="number" value="8"></div>
+      <div><label>mem_cost</label><input id="hm" type="number" value="14"></div>
+    </div>
+    <button data-step="auth">Copy accounts</button>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span> Copy profiles and data (Firestore)</h2>
+    <p class="help">Profiles, points, Premium, admins, blocked players, settings, push tokens and notice board. Run step 1 first so the list of collections is known.</p>
+    <button data-step="collections">Copy data</button>
+  </section>
+
+  <section>
+    <h2><span class="n">4</span> Copy holhuashis (Realtime Database)</h2>
+    <p class="help">Every holhuashi with members, scores, chat, games in progress and invite codes.</p>
+    <button data-step="lounges">Copy holhuashis</button>
+  </section>
+
+  <section>
+    <h2>Progress</h2>
+    <div id="log">Ready.</div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const log = (msg, cls) => { const s = document.createElement("div"); if (cls) s.className = cls; s.textContent = msg; $("log").append(s); $("log").scrollTop = 1e9; };
+  let collections = null;
+  async function call(step, extra = {}) {
+    const res = await fetch("/api/move", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("pw").value, dry: $("dry").checked, step, ...extra }) });
+    let data; try { data = await res.json(); } catch { data = { error: `Server answered ${res.status}` }; }
+    if (!res.ok || data.error) throw new Error(data.error || `Error ${res.status}`);
+    return data;
+  }
+  const tag = () => ($("dry").checked ? "[trial] " : "");
+  const steps = {
+    async check() {
+      const r = await call("check");
+      collections = r.collections;
+      log(`Old project: ${r.oldProject}   →   New project: ${r.newProject}`, "hl");
+      log(`New Realtime Database: ${r.newDatabase} ✓`);
+      log(`Accounts in old project: ${r.usersInOld}${r.newProjectHasUsers ? "  (the new project already has some accounts: that's fine)" : ""}`);
+      log(`Firestore collections to copy: ${r.collections.join(", ") || "none"}`);
+      log(`Holhuashis to copy: ${r.holhuashis}`);
+      log("✓ Both projects are reachable.", "ok");
+    },
+    async auth() {
+      const hash = { key: $("hk").value.trim(), saltSeparator: $("hs").value.trim(), rounds: $("hr").value, memCost: $("hm").value };
+      let token = null, total = 0, done = 0, pw = 0;
+      do {
+        const r = await call("auth", { pageToken: token, hash });
+        total += r.users; done += r.imported; pw += r.withPassword;
+        r.errors.forEach((e) => log("  ✗ " + e, "bad"));
+        log(`${tag()}${r.users} accounts in this batch (${r.withPassword} with a password)${$("dry").checked ? "" : ` · ${r.imported} copied`}`);
+        token = r.nextPageToken;
+      } while (token);
+      log(`${tag()}Accounts: ${total} found${$("dry").checked ? "" : `, ${done} copied`}.`, "ok");
+      if ($("dry").checked && pw && !$("hk").value.trim()) log("Fill in the password hash parameters before copying for real.", "bad");
+    },
+    async collections() {
+      if (!collections) await steps.check();
+      for (const c of collections) {
+        const r = await call("collection", { collection: c });
+        log(`${tag()}${c}: ${r.documents} documents${$("dry").checked ? "" : " copied"}`);
+      }
+      log(`${tag()}Firestore data done.`, "ok");
+    },
+    async lounges() {
+      const r = await call("lounges");
+      r.list.forEach((x) => log("  " + x));
+      log(`${tag()}${r.holhuashis} holhuashis · ${r.hands} hands · ${r.joins} joins · ${r.notes} notice-board messages${$("dry").checked ? "" : " copied"}.`, "ok");
+    },
+  };
+  document.querySelectorAll("button[data-step]").forEach((b) => b.onclick = async () => {
+    if (!$("pw").value) return log("Enter the password first.", "bad");
+    if (!$("dry").checked && !confirm("Copy for real into the new project?")) return;
+    document.querySelectorAll("button").forEach((x) => (x.disabled = true));
+    log(`— ${b.textContent} —`, "hl");
+    try { await steps[b.dataset.step](); } catch (e) { log("✗ " + e.message, "bad"); }
+    document.querySelectorAll("button").forEach((x) => (x.disabled = false));
+  });
+</script>
+</body>
+</html>
