@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019j";
-import * as CFG from "./firebase-config.js?v=20261019j";
-import * as C from "./cards.js?v=20261019j";
-import * as P from "./profile.js?v=20261019j";
-import { DV } from "./i18n.js?v=20261019j";
+} from "./store.js?v=20261019k";
+import * as CFG from "./firebase-config.js?v=20261019k";
+import * as C from "./cards.js?v=20261019k";
+import * as P from "./profile.js?v=20261019k";
+import { DV } from "./i18n.js?v=20261019k";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -29,7 +29,7 @@ const db = initializeFirestore(app, {
 // Realtime Database for the card tables: add databaseURL to firebase-config.js to switch it on
 initStore(app, db, databaseUrlFor(firebaseConfig, CFG.databaseURL));
 
-const TURN_MS = 50_000;   // each player gets 50 seconds
+const TURN_MS = 40_000;   // each player gets 40 seconds
 const GRACE_MS = 10_000;  // others wait 10 s after my time is up before skipping me (my own timeout move lands first)   // others wait a little longer before skipping someone who has gone offline
 const RESULTS_DELAY = 2600; // time to watch the DIGU card flip before the scores appear
 const HEAP_SIZE = 7;      // how many thrown cards are visible on the table
