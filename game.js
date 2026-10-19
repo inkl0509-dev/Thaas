@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019i";
-import * as CFG from "./firebase-config.js?v=20261019i";
-import * as C from "./cards.js?v=20261019i";
-import * as P from "./profile.js?v=20261019i";
-import { DV } from "./i18n.js?v=20261019i";
+} from "./store.js?v=20261019j";
+import * as CFG from "./firebase-config.js?v=20261019j";
+import * as C from "./cards.js?v=20261019j";
+import * as P from "./profile.js?v=20261019j";
+import { DV } from "./i18n.js?v=20261019j";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -4557,6 +4557,7 @@ function renderSeats() {
     const svg = document.createElementNS(svgNS, "svg");
     svg.setAttribute("class", "seat-lines");
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    Object.assign(svg.style, { width: W + "px", height: H + "px" }); // exactly the visible screen (100vh can be taller on phones)
     for (const p of room.players) {
       const sl = seatSlot(p.uid);
       let d = sl.path;
@@ -5001,6 +5002,7 @@ function drawTurnArrow(fill, colour, low = false) {
   if (key !== arrowKey) {
     arrowKey = key;
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    Object.assign(svg.style, { width: W + "px", height: H + "px" }); // exactly the visible screen (100vh can be taller on phones)
     // the arrow runs round the edge of the screen (through the corners), the short way round
     const m = 12, r = 44;
     let ring = svg._ring;
