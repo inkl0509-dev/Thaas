@@ -6,7 +6,7 @@
   <title>THAAS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261019n">
+  <link rel="stylesheet" href="style.css?v=20261019o">
 </head>
 <body>
   <!-- LOBBY -->
@@ -80,6 +80,20 @@
       <div class="row">
         <input id="code" maxlength="11" placeholder="INVITE CODE (ABCDE-7K2Q)" autocapitalize="characters">
         <button id="joinBtn" data-i18n="join">Join</button>
+      </div>
+      <div class="tourney-panel">
+        <h3 class="lounge-head">🏆 DIGU Tournaments</h3>
+        <p class="muted lounge-sub">Make a tournament and share its code. Players are drawn into tables of up to 4; the top scorer at each table goes through, round after round, until the final. The winner gets the 🏆 Tournament Cup.</p>
+        <div id="myTourneys" class="my-tourneys" hidden></div>
+        <div class="row">
+          <input id="tourneyName" maxlength="40" placeholder="Tournament name">
+          <select id="tourneyRounds" title="Rounds played at each table"><option value="3">3 rounds a table</option><option value="5">5 rounds a table</option></select>
+        </div>
+        <button id="tourneyCreate" class="grow">Create tournament</button>
+        <div class="row">
+          <input id="tourneyCode" maxlength="6" placeholder="TOURNAMENT CODE (T7K2Q)" autocapitalize="characters">
+          <button id="tourneyJoin">Join</button>
+        </div>
       </div>
     </div>
     <p id="gamesPlayed" class="games-played"></p>
@@ -311,6 +325,7 @@
         <p id="resultsSub" class="results-sub"></p>
         <div id="resultsList"></div>
         <button id="nextRoundBtn" class="primary">Next round</button>
+        <button id="resTourneyBtn" class="primary" hidden>🏆 Tournament schedule</button>
         <button id="playAgainBtn" class="primary" hidden>New game</button>
         <p id="waitNext" class="muted">Waiting for the host to deal the next round…</p>
         <button type="button" id="resultsLeave" class="ghost small results-leave">Leave table</button>
@@ -429,6 +444,13 @@
   </div>
 
   <!-- ADMIN -->
+  <div id="tourneyModal" class="overlay modal" hidden>
+    <div class="panel tourney">
+      <button type="button" id="tourneyClose" class="ghost close" aria-label="Close">✕</button>
+      <div id="tourneyBody"></div>
+    </div>
+  </div>
+
   <div id="adminModal" class="overlay modal" hidden>
     <div class="panel admin">
       <button type="button" id="adminClose" class="ghost close" aria-label="Close">✕</button>
@@ -460,6 +482,7 @@
     </div>
   </div>
 
+  <button id="tourneyBtn" class="tourney-btn" hidden title="Tournament schedule">🏆</button>
   <div id="bottomBar" class="bottom-bar" hidden>
     <span id="bottomBack"></span>
     <button id="pauseBtn" class="corner-btn pause-btn" hidden title="Pause">⏸</button>
@@ -482,6 +505,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261019n"></script>
+  <script type="module" src="game.js?v=20261019o"></script>
 </body>
 </html>
