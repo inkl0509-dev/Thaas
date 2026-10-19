@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/move.js": { "maxDuration": 60 },
+    "api/cleanup.js": { "maxDuration": 60 }
+  }
+}
