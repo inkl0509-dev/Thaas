@@ -2136,3 +2136,9 @@ html, body { overflow-x: hidden; }
 .lounge-row .lounge-members { margin-top: 4px; font-size: 12.5px; }
 .lounge-row .lounge-members summary { cursor: pointer; opacity: .8; }
 .lounge-row .lounge-members p { margin: 4px 0 0; }
+/* the other players' cards: upright, fanned, beside their name */
+.seat-fan { position: fixed; width: 0; height: 0; z-index: 0; pointer-events: none; }
+.seat-fan .mini-back { position: absolute; left: -10px; top: -15px; width: 20px; height: 29px; min-width: 0; padding: 0;
+  border-width: 2px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.45);
+  transform-origin: 50% 160%; transform: rotate(var(--a, 0deg)); }
+.seats .seat-tag { z-index: 1; }
