@@ -6,7 +6,7 @@
   <title>THAAS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261019a">
+  <link rel="stylesheet" href="style.css?v=20261019b">
 </head>
 <body>
   <!-- LOBBY -->
@@ -439,6 +439,7 @@
       <div class="admin-tools">
         <input id="adminSearch" placeholder="Search name or player ID">
         <button type="button" id="adminRefresh" class="ghost small" title="Reload">↻</button>
+        <button type="button" id="adminCleanGuests" class="ghost small" title="Remove guests who have left">🧹 Guests</button>
       </div>
       <details class="admin-prem">
         <summary>💎 Premium settings</summary>
@@ -454,6 +455,7 @@
         <button type="button" data-f="guests">Guests</button>
         <button type="button" data-f="blocked">Blocked</button>
         <button type="button" data-f="recent">Last online</button>
+        <button type="button" data-f="lounges">🌴 Holhuashis</button>
       </div>
       <div id="adminList" class="admin-list"></div>
       <p class="muted small-note"><strong>Delete</strong> wipes a player's profile (name, picture, points, rank, badges). <strong>Block</strong> stops them creating or joining rooms. To remove someone's login completely, delete them in Firebase console → Authentication → Users too.</p>
@@ -482,6 +484,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261019a"></script>
+  <script type="module" src="game.js?v=20261019b"></script>
 </body>
 </html>
