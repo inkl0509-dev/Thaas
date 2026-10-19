@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019o";
-import * as CFG from "./firebase-config.js?v=20261019o";
-import * as C from "./cards.js?v=20261019o";
-import * as P from "./profile.js?v=20261019o";
-import { DV } from "./i18n.js?v=20261019o";
+} from "./store.js?v=20261019q";
+import * as CFG from "./firebase-config.js?v=20261019q";
+import * as C from "./cards.js?v=20261019q";
+import * as P from "./profile.js?v=20261019q";
+import { DV } from "./i18n.js?v=20261019q";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -232,14 +232,25 @@ const T_MATCH_ROUNDS = [3, 5];
 const tRef = (code) => doc(db, "tournaments", code);
 const tRoundName = (t, r) => ((t.rounds?.[r] || []).length === 1 ? "Final" : `Round ${r + 1}`); // one table left = the final
 // split players into tables of at most 4 (sizes as even as possible, at least 2)
+// in order: 8 players → the first 4 play game 1, the next 4 play game 2 (sizes kept even, at least 2)
 function tGroups(ids) {
-  const n = ids.length, tables = Math.max(1, Math.ceil(n / 4)), out = Array.from({ length: tables }, () => []);
-  ids.forEach((u, i) => out[i % tables].push(u));
+  const n = ids.length, tables = Math.max(1, Math.ceil(n / 4));
+  const base = Math.floor(n / tables), extra = n % tables, out = [];
+  let k = 0;
+  for (let i = 0; i < tables; i++) { const size = base + (i < extra ? 1 : 0); out.push(ids.slice(k, k + size)); k += size; }
   return out.filter((g) => g.length);
 }
+// one game at a time: the first unfinished game of the current round
+const tActive = (t) => {
+  const r = (t.rounds || []).length - 1;
+  const m = r >= 0 ? (t.rounds[r] || []).findIndex((x) => x.status !== "done") : -1;
+  return m < 0 ? null : { r, m };
+};
 let tCurrent = null, tUnsub = null;
+const canMakeTournament = () => isRegistered() && (myRank() >= 3 || isPremium()); // 🥇 Gold rank and up, or Premium
 async function createTournament() {
   if (!isRegistered()) return toast("🔒 Sign in to create a tournament");
+  if (!canMakeTournament()) return toast("🔒 Tournaments can be created by 🥇 Gold players (2,500 career points) and up, or 💎 Premium players. Anyone can join one with a code.");
   if (blockedCheck()) return;
   const name = ($("tourneyName").value.trim() || `${myName()}'s DIGU Cup`).slice(0, 40);
   let code;
@@ -309,6 +320,8 @@ async function playMatch(r, m) {
   const { code, t } = tCurrent || {};
   const match = t?.rounds?.[r]?.[m];
   if (!match || !(match.players || []).includes(uid)) return;
+  const act = tActive(t);
+  if (!act || act.r !== r || act.m !== m) return toast("Wait: games are played one at a time");
   const rc = matchCode(code, r, m);
   try {
     const name = myName(), me = myEntry(name);
@@ -319,11 +332,11 @@ async function playMatch(r, m) {
         host: uid, status: "lobby", players: [me], playerIds: [uid], scores: { [uid]: 0 },
         round: 0, moveId: 0, game: "digu", target: targetFor("digu"), maxPlayers: match.players.length, gameRound: 0,
         public: false, lounge: true, owner: t.owner, members: match.players,
-        name: `🏆 ${t.name} · ${tRoundName(t, r)} · Table ${m + 1}`.slice(0, 60),
+        name: `🏆 ${t.name} · ${tRoundName(t, r)} · Game ${m + 1}`.slice(0, 60),
         endMode: "rounds", roundsLimit: t.matchRounds || 3, stats: { rounds: 0, games: 0 },
         tourney: { code, r, m, allowed: match.players },
         heartbeat: serverTimestamp(), seen: { [uid]: serverTimestamp() }, createdAt: serverTimestamp(),
-        log: `${tRoundName(t, r)} · Table ${m + 1}: waiting for ${match.players.map((u) => tName(t, u)).join(", ")}`,
+        log: `${tRoundName(t, r)} · Game ${m + 1}: waiting for ${match.players.map((u) => tName(t, u)).join(", ")}`,
       });
     });
     const r0 = (await getDoc(doc(db, "rooms", rc))).data();
@@ -432,7 +445,7 @@ function renderTournament() {
       b.disabled = (t.players || []).length < 2;
       b.onclick = startTournament;
       box.append(b);
-      box.append(Object.assign(document.createElement("p"), { className: "muted small-note", textContent: "Players are drawn into tables of up to 4. The top scorer at each table goes through to the next round, until the final." }));
+      box.append(Object.assign(document.createElement("p"), { className: "muted small-note", textContent: "Players are drawn into games of up to 4 (8 players: the first 4, then the next 4), played one at a time. The top scorer of each game goes through to the next round, until the final." }));
     } else box.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "Waiting for the organiser to start the tournament…" }));
   }
   // schedule
@@ -445,7 +458,9 @@ function renderTournament() {
       card.className = "t-match " + x.status + ((x.players || []).includes(uid) ? " mine" : "");
       const title = document.createElement("div");
       title.className = "t-match-head";
-      title.textContent = `Table ${m + 1} · ${x.status === "done" ? "finished" : x.status === "playing" ? "playing now" : "waiting"}`;
+      const act = tActive(t), isAct = act && act.r === r && act.m === m;
+      title.textContent = `Game ${m + 1} · ${x.status === "done" ? "finished" : x.status === "playing" ? "playing now" : isAct ? "up next" : "waiting for the game before"}`;
+      if (isAct) card.classList.add("active");
       card.append(title);
       for (const u of x.players || []) {
         const row = document.createElement("div");
@@ -455,7 +470,7 @@ function renderTournament() {
         row.lastChild.textContent = x.scores ? `${x.scores[u] ?? 0} pts` : "";
         card.append(row);
       }
-      if (x.status !== "done" && (x.players || []).includes(uid) && t.status === "running") {
+      if (isAct && (x.players || []).includes(uid) && t.status === "running") {
         const go = Object.assign(document.createElement("button"), { type: "button", className: "primary small", textContent: x.status === "playing" ? "▶ Go to my table" : "▶ Play my match" });
         go.onclick = () => playMatch(r, m);
         card.append(go);
@@ -2632,7 +2647,7 @@ function renderTrick() {
 // ---------- DHIHA (team game, holhuashis only) ----------
 // 4 players, 2 teams (they pick in the holhuashi; teammates sit opposite), 13 cards each.
 // Follow suit; the first player who can't sets the Hukum (trump). Each complete trick (a "deck")
-// goes to the team of whoever won it. 3 tens wins the round; at 2 tens each, 7 decks wins.
+// goes to the team of whoever won it. When all four 10s are out, 3 tens wins; at 2 tens each, first to 7 decks wins.
 function dhihaTeams(r = room) {
   const t = r.teams || {};
   const A = r.playerIds.filter((u) => t[u] === "A"), B = r.playerIds.filter((u) => t[u] === "B");
@@ -3842,7 +3857,7 @@ function recordWin() {
     const ref = doc(db, "users", uid);
     const d = (await tx.get(ref)).data() || {};
     if (d.lastWin === key) return;
-    const bonus = lowWins(gameOf(room)) ? 50 : 0; // CALL / BONDI game winner
+    const bonus = 50; // every game won: +50 career points (CALL / BONDI: the lowest total wins)
     tx.set(ref, { gameWins: (d.gameWins || 0) + 1, lastWin: key, ...(bonus ? { careerPoints: (d.careerPoints || 0) + bonus } : {}) }, { merge: true });
   }).catch(() => { recordWin.done = null; });
 }
@@ -4044,6 +4059,12 @@ function renderAccount() {
   $("holhuashiPanel").hidden = !reg; // guests only see Aammu Jagaha
   $("homeChallenges").hidden = !reg;
   if (reg && renderAccount.tUid !== uid) { renderAccount.tUid = uid; renderMyTournaments(); }
+  if (reg) {
+    const ok = canMakeTournament();
+    $("tourneyCreate").classList.toggle("locked-btn", !ok);
+    $("tourneyCreate").textContent = ok ? "Create tournament" : "🔒 Create tournament";
+    $("tourneyLock").hidden = ok;
+  }
   if (reg) renderChallenges($("homeChallenges"));
   $("createLoungeBtn").classList.toggle("locked-btn", !reg);
   $("createLoungeBtn").textContent = (reg ? "" : "🔒 ") + tr("holhuashi.create", "Create my holhuashi");
@@ -5296,7 +5317,7 @@ const TIPS = {
     "Keep your 10s safe: don't play them when the other team is winning.",
     "Choose the Hukum from your longest suit when you first can't follow.",
     "Lead an Ace or the highest card left in a suit to win the deck safely.",
-    "3 tens wins the round. At 2 tens each, the team with 7 decks wins."],
+    "Win 3 of the four 10s to win the round (it ends when the last 10 is taken). At 2 tens each, the first team to 7 decks wins."],
 };
 function contextTip() {
   const g = gameOf(room);
@@ -5975,7 +5996,7 @@ function renderTargetSetup() {
   $("gameNote").textContent = g === "call"
     ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
     : g === "dhiha"
-    ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: 3 tens wins (2 each: 7 decks). Points: 1 a round, 2 for all four 10s, 3 for all 13 decks."
+    ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: once all four 10s are out, 3 tens wins (2 each: first to 7 decks). Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck."
     : g === "bondi"
     ? "BONDI: all cards dealt, K♠ starts. Follow suit; if you can't, cut and the highest card picks up the pile. First out scores 0, then 10, 20… Lowest total wins."
     : "DIGU: make two sets of 3 and one set of 4. Highest total wins.";
