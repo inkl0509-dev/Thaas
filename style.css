@@ -2237,3 +2237,27 @@ html, body { overflow-x: hidden; }
 .avatar.prem-av.metal { box-shadow: 0 0 0 2px var(--pa-ring), 0 0 12px var(--pa-ring), inset 0 0 8px rgba(0,0,0,.8); animation: metalFlicker 1.6s ease-in-out infinite; }
 .avatar.prem-av.metal::before { background: conic-gradient(from 0deg, transparent 0 40%, var(--pa-ring) 55%, transparent 62%, var(--pa-ring) 80%, transparent 90%); animation-duration: 1.3s; }
 @keyframes metalFlicker { 0%, 100% { filter: brightness(1); } 45% { filter: brightness(1.25) contrast(1.15); } 55% { filter: brightness(.9); } }
+
+/* ---------- 🙈 BABBUSH ---------- */
+.bb-area { display: grid; justify-items: center; gap: 10px; padding: 6px 12px 70px; }
+.bb-area[hidden] { display: none; }
+.bb-msg { margin: 0; text-align: center; font-weight: 600; font-size: 14px; max-width: 520px; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+.bb-mine { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.bb-mine .bb-card { width: 64px; height: 92px; cursor: pointer; transition: transform .15s; }
+.bb-mine.pickable .bb-card:not(.bb-locked) { box-shadow: 0 0 0 2px rgba(232,182,76,.7), 0 6px 14px rgba(0,0,0,.4); }
+.bb-mine.pickable .bb-card:hover { transform: translateY(-6px); }
+.bb-card.bb-locked { box-shadow: 0 0 0 3px #ff4d6d, 0 0 12px rgba(255,77,109,.6) !important; position: relative; }
+.bb-card.bb-locked::after { content: "🔒"; position: absolute; top: -8px; right: -6px; font-size: 13px; }
+.bb-card.bb-picked { transform: translateY(-8px) scale(1.06); box-shadow: 0 0 0 3px #3b9cff, 0 0 14px rgba(59,156,255,.7) !important; }
+.bb-btns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.bb-drawn { display: grid; justify-items: center; gap: 6px; padding: 8px 14px; border-radius: 14px; background: rgba(0,0,0,.25); }
+.bb-drawn .card { width: 64px; height: 92px; box-shadow: 0 0 0 3px #e8b64c, 0 0 18px rgba(232,182,76,.6); }
+.bb-snap { background: linear-gradient(135deg, #ffd34d, #ff9a1f); color: #2a1600; font-weight: 800; border: 0; border-radius: 12px; padding: 9px 16px; }
+.bb-snap.on { background: #3b3b3b; color: #fff; }
+.bb-call { background: linear-gradient(135deg, #ff4d6d, #c9184a); color: #fff; font-weight: 800; border: 0; border-radius: 12px; padding: 9px 18px; letter-spacing: .5px; }
+.bb-orow { position: fixed; transform: translate(-50%, -50%); display: flex; gap: 3px; z-index: 31; pointer-events: auto; }
+.bb-orow .card { width: 22px; height: 32px; min-width: 0; padding: 0; border-width: 2px; border-radius: 4px; font-size: 8px; }
+.bb-orow .card .corner { font-size: 8px; top: 1px; left: 2px; }
+.bb-orow .card .pip { font-size: 12px; }
+.bb-orow.pickable .bb-card:not(.bb-locked) { box-shadow: 0 0 0 2px #3b9cff; cursor: pointer; }
+.bb-orow.caller::before { content: "📣"; position: absolute; left: -16px; top: 6px; font-size: 12px; }
