@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020e";
-import * as CFG from "./firebase-config.js?v=20261020e";
-import * as C from "./cards.js?v=20261020e";
-import * as P from "./profile.js?v=20261020e";
-import { DV } from "./i18n.js?v=20261020e";
+} from "./store.js?v=20261020g";
+import * as CFG from "./firebase-config.js?v=20261020g";
+import * as C from "./cards.js?v=20261020g";
+import * as P from "./profile.js?v=20261020g";
+import { DV } from "./i18n.js?v=20261020g";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -2517,6 +2517,13 @@ function bbSkipUpd(r) {
   const saved = room; room = r; // nextTurn reads the current table
   try { return bbEndTurn(upd, `${nameOf(who)} ran out of time`, r); } finally { room = saved; }
 }
+// every card move is recorded, so every screen can show it flying (bb.ev, the last few)
+function bbEv(upd, evs) {
+  const list = (room.bb?.ev || []).filter((e) => e.r === room.round);
+  let n = list.reduce((m, e) => Math.max(m, e.n), 0);
+  upd["bb.ev"] = [...list, ...[].concat(evs).map((e) => ({ ...e, r: room.round, n: ++n }))].slice(-6);
+  return upd;
+}
 // ----- moves -----
 function bbChoose(n) {
   if (room.bb?.stage !== "choose" || (room.bb.chooser !== uid && !(isBot(room.bb.chooser) && room.host === uid))) return;
@@ -2537,11 +2544,29 @@ function bbPeekTap(i) {
   const bb = room.bb;
   if (bb?.stage !== "peek" || bb.peeked?.[uid] || bbPeekSel.includes(i) || bbPeekSel.length >= (bb.peekN || 0)) return;
   bbPeekSel.push(i);
-  bbShow(uid, i, 5000);
-  if (bbPeekSel.length >= bb.peekN) setTimeout(() => {
-    updateDoc(roomRef(), { [`bb.peeked.${uid}`]: true }).catch(() => {});
-    bbPeekSel = [];
-  }, 5000);
+  bbShow(uid, i, 60_000); // stays up while I pick the rest
+  if (bbPeekSel.length >= bb.peekN) {
+    const picked = [...bbPeekSel];
+    picked.forEach((x) => bbShow(uid, x, 5200));
+    bbCountdown(4, () => { // 4 · 3 · 2 · 1 · 0 … then the cards turn face down
+      picked.forEach((x) => bbReveal.delete(bbKey(uid, x)));
+      updateDoc(roomRef(), { [`bb.peeked.${uid}`]: true }).catch(() => {});
+      bbPeekSel = [];
+      try { render(); } catch {}
+    });
+  }
+}
+function bbCountdown(from, done) {
+  const el = Object.assign(document.createElement("div"), { className: "bb-count" });
+  document.body.append(el);
+  let n = from;
+  const step = () => {
+    el.textContent = n;
+    el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick");
+    if (n-- <= 0) { setTimeout(() => { el.remove(); done(); }, 900); return; }
+    setTimeout(step, 1000);
+  };
+  step();
 }
 function bbDraw() {
   if (!canDraw()) return;
@@ -2550,8 +2575,7 @@ function bbDraw() {
   if (!t.got.length) return toast("No cards left in the middle pile");
   const c = t.got[0];
   const b = moveBatch();
-  b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: uid, c }, moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took a card from the middle pile` });
-  flyCard($("deck"), $("bbDrawn") || $("deck"), null, { back: true });
+  b.update(roomRef(), bbEv({ deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: uid, c }, moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took a card from the middle pile` }, { k: "draw", u: uid }));
   commit(b);
 }
 // take the last thrown card instead (everyone sees it); it must go into one of my places
@@ -2561,8 +2585,8 @@ function bbTakeThrown() {
   if (!top) return toast("Nothing has been thrown yet · take from the middle pile");
   if (!claimAction()) return;
   const b = moveBatch();
-  b.update(roomRef(), { discard: room.discard.slice(0, -1), phase: "act", "bb.drawn": { u: uid, c: top, from: "thrown" }, "bb.matchRank": null,
-    moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took the thrown ${cardName(top)}` });
+  b.update(roomRef(), bbEv({ discard: room.discard.slice(0, -1), phase: "act", "bb.drawn": { u: uid, c: top, from: "thrown" }, "bb.matchRank": null,
+    moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took the thrown ${cardName(top)}` }, { k: "take", u: uid, c: top }));
   commit(b);
 }
 const bbMyDrawn = () => (isMyTurn() && room.phase === "act" && room.bb?.drawn?.u === uid ? room.bb.drawn.c : null);
@@ -2573,7 +2597,7 @@ function bbReplace(i) {
   if (bbIsLocked(row[i])) return toast("🔒 That card is locked · it can't be swapped");
   if (!claimAction()) return;
   const old = row[i]; row[i] = c;
-  const upd = { [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), old], "bb.matchRank": C.parse(old).r };
+  const upd = bbEv({ [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), old], "bb.matchRank": C.parse(old).r }, { k: "swap", u: uid, i, c: old });
   bbEndTurn(upd, `${nameOf(uid)} put ${room.bb.drawn?.from === "thrown" ? cardName(c) : "a card"} in place and threw ${cardName(old)}`);
   const b = moveBatch(); b.update(roomRef(), upd);
   commit(b, upd.status === "ended" ? "ended" : "turn");
@@ -2584,7 +2608,7 @@ function bbThrowDrawn(log) {
   if (!c) return;
   if (room.bb.drawn?.from === "thrown" && !log) return toast("You took the thrown card · tap one of your cards to put it in its place");
   if (!claimAction()) return;
-  const upd = { discard: [...(room.discard || []), c], "bb.matchRank": C.parse(c).r };
+  const upd = bbEv({ discard: [...(room.discard || []), c], "bb.matchRank": C.parse(c).r }, { k: "throw", u: uid, c });
   bbEndTurn(upd, log || `${nameOf(uid)} threw ${cardName(c)}`);
   const b = moveBatch(); b.update(roomRef(), upd);
   bbMode = null; bbPicks = [];
@@ -2637,6 +2661,7 @@ function bbFinishPower(act, log) {
   const drawn = bbMyDrawn();
   if (!drawn || !claimAction()) return;
   const upd = { discard: [...(room.discard || []), drawn], "bb.matchRank": C.parse(drawn).r };
+  bbEv(upd, act.Q ? [{ k: "switch", u: uid, a: act.Q[0], z: act.Q[1] }, { k: "throw", u: uid, c: drawn }] : { k: "throw", u: uid, c: drawn });
   if (act.Q) {
     const [a, z] = act.Q;
     const ra = [...bbRow(a.u)], rz = a.u === z.u ? ra : [...bbRow(z.u)];
@@ -2671,6 +2696,7 @@ function bbSnap(picks) {
   if (!claimAction()) return;
   const good = picks.filter((i) => C.parse(row[i]).r === bb.matchRank), bad = picks.filter((i) => !good.includes(i));
   const thrown = good.map((i) => row[i]), wrong = bad.map((i) => row[i]);
+  const evs = good.map((i) => ({ k: "match", u: uid, i, c: row[i] }));
   for (const i of good) row.splice(i, 1); // (highest place first, so the others don't move)
   const upd = { moveId: (room.moveId || 0) + 1 };
   let discard = [...(room.discard || []), ...thrown], deck = room.deck || [];
@@ -2683,6 +2709,7 @@ function bbSnap(picks) {
     log = (log ? log + " · " : "") + `❌ ${cardName(wrong[0])}${wrong.length > 1 ? ` and ${wrong.length - 1} more` : ""} ${wrong.length > 1 ? "aren't" : "isn't"} a ${C.label(bb.matchRank)} · +${t.got.length} cards`;
   }
   Object.assign(upd, { [`bb.rows.${uid}`]: newRow, discard, deck, log });
+  if (evs.length) bbEv(upd, evs);
   const b = moveBatch(); b.update(roomRef(), upd);
   commit(b);
 }
@@ -2737,15 +2764,15 @@ function bbBotTurn(bot) {
     const worstNow = freeNow.reduce((a, o) => (!a || C.bbValue(o.x) > C.bbValue(a.x) ? o : a), null);
     if (top && worstNow && lvl !== "easy" && C.bbValue(top) + 2 <= C.bbValue(worstNow.x)) { // the thrown card is low: take it
       const nr = [...row]; nr[worstNow.i] = top;
-      const upd = { [`bb.rows.${bot}`]: nr, discard: [...room.discard.slice(0, -1), worstNow.x], "bb.matchRank": C.parse(worstNow.x).r };
+      const upd = bbEv({ [`bb.rows.${bot}`]: nr, discard: [...room.discard.slice(0, -1), worstNow.x], "bb.matchRank": C.parse(worstNow.x).r },
+        [{ k: "take", u: bot, c: top }, { k: "swap", u: bot, i: worstNow.i, c: worstNow.x }]);
       bbEndTurn(upd, `${botName(bot)} took the thrown ${cardName(top)} and threw ${cardName(worstNow.x)}`);
       b.update(roomRef(), upd);
       return b.commit().catch(() => {});
     }
     const t = bbTake(room.deck || [], room.discard || [], 1);
     if (!t.got.length) return;
-    b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: bot, c: t.got[0] }, moveId: (room.moveId || 0) + 1, log: `${botName(bot)} took a card from the middle pile` });
-    flyCard($("deck"), seatEl(bot), null, { back: true, slow: true });
+    b.update(roomRef(), bbEv({ deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: bot, c: t.got[0] }, moveId: (room.moveId || 0) + 1, log: `${botName(bot)} took a card from the middle pile` }, { k: "draw", u: bot }));
     return b.commit().catch(() => {});
   }
   const c = bb.drawn?.c; if (!c) return;
@@ -2756,6 +2783,7 @@ function bbBotTurn(bot) {
   const careless = lvl === "easy" && Math.random() < 0.4;
   if (worst && v < C.bbValue(worst.x) && !careless) { // swap my worst card for it
     const nr = [...row]; nr[worst.i] = c; upd[`bb.rows.${bot}`] = nr; upd.discard.push(worst.x); upd["bb.matchRank"] = C.parse(worst.x).r;
+    bbEv(upd, { k: "swap", u: bot, i: worst.i, c: worst.x });
     bbEndTurn(upd, `${botName(bot)} swapped a card and threw ${cardName(worst.x)}`);
   } else if (C.bbPower(c) === "Q" && lvl !== "easy" && worst) { // switch my worst card with someone's low card
     const others = room.playerIds.filter((u) => u !== bot && !bbProtected(u));
@@ -2767,9 +2795,11 @@ function bbBotTurn(bot) {
       upd[`bb.rows.${bot}`] = nr; upd[`bb.rows.${best.u}`] = orow;
     }
     upd.discard.push(c); upd["bb.matchRank"] = C.parse(c).r;
+    bbEv(upd, { k: "throw", u: bot, c });
     bbEndTurn(upd, `${botName(bot)} used Q 🔄 and switched ${best ? `a card with ${nameOf(best.u)}` : "nothing"}`);
   } else {
     upd.discard.push(c); upd["bb.matchRank"] = C.parse(c).r;
+    bbEv(upd, { k: "throw", u: bot, c });
     bbEndTurn(upd, C.bbPower(c) === "J" && lvl !== "easy" ? `${botName(bot)} used J 👁 and looked at a card` : `${botName(bot)} threw ${cardName(c)}`);
   }
   b.update(roomRef(), upd);
@@ -2793,8 +2823,7 @@ function bbBotSnaps() {
     if (i < 0) return;
     const c = row[i]; row.splice(i, 1);
     const b = moveBatch();
-    b.update(roomRef(), { [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} threw a matching ${cardName(c)}!` });
-    flyCard(seatEl(o.u), $("discardPile"), c, { slow: true });
+    b.update(roomRef(), bbEv({ [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} threw a matching ${cardName(c)}!` }, { k: "match", u: o.u, i, c }));
     b.commit().catch(() => {});
   }, 900 + Math.random() * 1400);
 }
@@ -2849,7 +2878,8 @@ function bbPopupLog() { // what just happened, as a pop-up in the middle of the 
   if (k === bbLogSeen) return;
   bbLogSeen = k;
   const t = room.log || "";
-  if (!t || /took a card from the middle pile$/.test(t) || t.startsWith("❌")) return; // (a wrong match has its own pop-up)
+  // only the big moments pop up (BABBUSH, J / Q / K): throws and matches are for the players to watch
+  if (!t.startsWith("📣") && !/used [JQK] /.test(t)) return;
   const p = document.createElement("div");
   p.className = "bb-pop" + (t.startsWith("⚡") ? " good" : t.startsWith("📣") ? " call" : "");
   p.textContent = t;
@@ -5666,9 +5696,36 @@ const seatOrHand = (u) => (u === uid ? $("hand") : seatEl(u));
 // one taken from the thrown pile (face up), cards thrown, cards played to the table.
 const animated = new Set();
 function once(key) { if (animated.has(key)) return false; animated.add(key); if (animated.size > 300) animated.clear(); return true; }
+// BABBUSH: show every card move flying (pile → player, player's place → thrown pile, …)
+function bbMoves(prev) {
+  const seen = (prev.bb?.ev || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
+  const evs = (room.bb?.ev || []).filter((e) => e.r === room.round && e.n > seen).sort((a, b) => a.n - b.n);
+  const slot = (u, i) => (u === uid ? document.querySelector(`.bb-mine .bb-card[data-idx="${i}"]`) || document.querySelector(".bb-mine")
+    : document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"] .bb-card[data-idx="${i}"]`) || document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"]`) || seatEl(u));
+  const holder = (u) => (u === uid ? $("bbDrawn") || document.querySelector(".bb-mine") : document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"]`) || seatEl(u));
+  let at = 0;
+  for (const e of evs) {
+    if (!once(`${room.round}|bb|${e.n}|${e.k}`)) continue;
+    const slow = e.u !== uid, d = at;
+    const go = (fn) => setTimeout(fn, d);
+    if (e.k === "draw") go(() => flyCard($("deck"), holder(e.u), null, { back: true, slow }));
+    else if (e.k === "take") go(() => flyCard($("discardPile"), holder(e.u), e.c, { slow }));
+    else if (e.k === "throw") flyCard(holder(e.u), $("discardPile"), e.c, { delay: d, slow });
+    else if (e.k === "match") flyCard(slot(e.u, e.i), $("discardPile"), e.c, { delay: d, slow });
+    else if (e.k === "swap") { // the old card flies to the pile, the new one (face down) into its place
+      const hold = holder(e.u);
+      flyCard(slot(e.u, e.i), $("discardPile"), e.c, { delay: d, slow });
+      if (e.u !== uid) go(() => flyCard(hold?.isConnected ? hold : holder(e.u), slot(e.u, e.i), null, { back: true, slow }));
+    } else if (e.k === "switch") {
+      go(() => { const A = slot(e.a.u, e.a.i), Z = slot(e.z.u, e.z.i); flyCard(A, Z, null, { back: true, slow: true }); flyCard(Z, A, null, { back: true, slow: true }); });
+    }
+    at += slow ? 700 : 350;
+  }
+}
 function cardMoves(prev) {
   if (!prev || prev.status !== "playing" || room.status === "lobby" || prev.round !== room.round) return;
   const g = gameOf(room);
+  if (g === "babbush") return bbMoves(prev);
   if (g === "bondi" || g === "dhiha") {
     const pt = prev.trick || [], nt = room.trick || [];
     const fresh = nt.length > pt.length && pt.every((t, i) => nt[i]?.card === t.card) ? nt.slice(pt.length)
