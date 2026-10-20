@@ -471,7 +471,12 @@ export function dhihaPlay(st, who, card) {
   res.trick = [];
   res.turn = st.playerIds.indexOf(winner);
   res.won = { winner, team, cards, tens: tensIn(cards) };
-  if (decks.A.length + decks.B.length >= 13) res.over = dhihaResult(decks);
+  // The round ends once all four 10s have been taken and it's decided: a team with 3 (or 4) tens wins.
+  // At 2 tens each, play goes on until a team has 7 decks.
+  const tn = (tm) => decks[tm].reduce((n, d) => n + tensIn(d.split(",")), 0);
+  const tA = tn("A"), tB = tn("B");
+  if (decks.A.length + decks.B.length >= 13
+      || (tA + tB === 4 && (tA >= 3 || tB >= 3 || decks.A.length >= 7 || decks.B.length >= 7))) res.over = dhihaResult(decks);
   return res;
 }
 
@@ -482,7 +487,8 @@ export function dhihaResult(decks) {
   let team, how;
   if (tens.A >= 3 || tens.B >= 3) { team = tens.A >= 3 ? "A" : "B"; how = tens[team] === 4 ? "all4" : "tens"; }
   else { team = count.A >= 7 ? "A" : "B"; how = "decks"; }
-  const points = count[team] === 13 ? 3 : how === "all4" ? 2 : 1; // all 13 decks: 3 · all 4 tens: 2 · otherwise 1
+  const other = team === "A" ? "B" : "A";
+  const points = count[team] === 13 || count[other] === 0 ? 3 : how === "all4" ? 2 : 1; // every deck: 3 · all 4 tens: 2 · otherwise 1
   return { team, how, points, tens, count };
 }
 
@@ -721,13 +727,38 @@ export function bondiHardCard(hand, st, me, ctx = {}) {
 
 // DIGU, hard: the computer may look at the next card of the middle pile. Which take leaves the
 // fewest leftover points after the best throw?
-export function diguBestAfter(cards) {
+export function diguBestAfter(cards, banned = null) {
   let best = null;
   for (const c of cards) {
+    if (c === banned) continue; // the card just taken can't be thrown straight back
     const rest = cards.filter((x) => x !== c);
     if (findWinningLayout(rest)) return { c, rest, pts: -1, win: true };
     const pts = bestLayout(rest).points;
     if (!best || pts < best.pts) best = { c, rest, pts };
   }
   return best;
+}
+
+// ======================= BABBUSH =======================
+// 2–6 players, 4 face-down cards each in a row. Card values: A = 1, 2–10 = face value except 8 = 0,
+// J/Q/K = 10. Lowest count wins. J = look at any one face-down card, Q = switch any two cards,
+// K = lock a card face up (or unlock a locked one).
+export const BB_HAND = 4;
+export const BB_PENALTY = 50;
+export function bbValue(id) { const r = parse(id).r; return r === 8 ? 0 : r >= 11 ? 10 : r; }
+export const bbCount = (row) => (row || []).reduce((a, c) => a + bbValue(c), 0);
+export const bbPower = (id) => ({ 11: "J", 12: "Q", 13: "K" })[parse(id).r] || null;
+// The caller scores 0 if nobody has a lower count; if anyone has less, the caller scores 50.
+// Everyone else scores their count.
+export function babbushScores(rows, callerUid) {
+  const counts = Object.fromEntries(Object.entries(rows).map(([u, r]) => [u, bbCount(r)]));
+  const callerCount = counts[callerUid] ?? 0;
+  const lower = Object.entries(counts).filter(([u, v]) => u !== callerUid && v < callerCount).map(([u]) => u);
+  const caught = lower.length > 0;
+  const result = {};
+  for (const [u, v] of Object.entries(counts)) {
+    if (u === callerUid) result[u] = { count: v, pts: caught ? BB_PENALTY : 0, how: caught ? "caught" : "won" };
+    else result[u] = { count: v, pts: v, how: lower.includes(u) ? "caught-caller" : "count" };
+  }
+  return { result, caught, catchers: lower, callerCount };
 }
