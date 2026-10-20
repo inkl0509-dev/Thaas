@@ -2279,3 +2279,6 @@ html, body { overflow-x: hidden; }
   box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 2px rgba(255,255,255,.25); animation: bpIn .35s cubic-bezier(.2,1.5,.4,1), bpOut .4s 2.2s ease-in forwards; }
 .bb-pop.good { background: rgba(20, 110, 60, .94); box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 2px #7ee2a8; }
 .bb-pop.call { background: rgba(170, 20, 60, .95); font-size: 18px; box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 3px #ffd34d; }
+.bb-orow.vertical { flex-direction: column-reverse; transform: translate(-50%, -100%); gap: 3px; }
+.bb-orow.vertical .card { width: 30px; height: 21px; }
+.bb-orow.vertical .card .pip { font-size: 10px; }
