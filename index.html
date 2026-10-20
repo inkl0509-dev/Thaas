@@ -6,7 +6,7 @@
   <title>THAAS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261019s">
+  <link rel="stylesheet" href="style.css?v=20261020a">
 </head>
 <body>
   <!-- LOBBY -->
@@ -120,6 +120,7 @@
         <li>5–6 ކުޅުންތެރިން ކުޅޭނީ އެއްކޮށް އެއްކޮށްލާފައިވާ ދެ ތާސްބައި ބޭނުންކޮށްގެންނެވެ.</li>
       </ul>
       <ul class="rules-en">
+        <li><strong>🙈 BABBUSH</strong> (2–6 players): everyone gets <strong>4 cards face down</strong> in a row; the rest is the middle pile. A random player chooses how many of their own cards everyone may look at (0–2), and each player secretly looks at that many. On your turn take the top card of the middle pile (only you see it). Then either <strong>swap</strong> it for one of your face-down cards (that card is thrown without looking) or <strong>throw</strong> it. Powers when you take them: <strong>J</strong> look at any one face-down card, <strong>Q</strong> switch any two cards, <strong>K</strong> lock a card face up (another K unlocks it). Whenever a card is thrown, anyone with <strong>the same number</strong> can press ⚡ Match and throw theirs too. Wrong card = 2 penalty cards. Values: A = 1, 2–10 face value but <strong>8 = 0</strong>, J/Q/K = 10. Think yours is lowest? Call <strong>BABBUSH</strong>: everyone else has one more turn, then all cards are counted. If anyone has less than the caller, the caller scores 50; otherwise the caller scores 0. Everyone else scores their count. Lowest total wins.</li>
         <li><strong>🔟 DHIHA</strong> (holhuashis only · 4 players in 2 teams): pick your team in the holhuashi; teammates sit opposite. Everyone gets 13 cards and a random player starts. Follow the suit that was led. The first player who can't follow sets the <strong>Hukum</strong> (trump) with the card they play, for the rest of the round. A deck goes to the team of whoever played the highest Hukum, or else the highest card of the led suit (A is high), and they lead next. Decks with a 10 lie face up. The round goes on until <strong>all four 10s</strong> have been taken: a team with <strong>3 or 4 tens wins</strong>. At 2 tens each, play goes on until a team has <strong>7 decks</strong>. Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck at all. First team to the target (or the most after the set rounds) wins the game.</li>
         <li><strong>🛖 Aammu Jagaha</strong> (the public place): there are three, one for each game: <strong>DIGU</strong> (4 tables, 4 seats each), <strong>CALL</strong> and <strong>BONDI</strong> (4 tables, 6 seats each). You only see the people in the one you're in. Switch any time with the tabs at the top; if you're sitting at a table, switching stands you up. Nobody owns the tables. Tap any table and you get a free chair there straight away; once 2 or more are seated anyone at the table can press <strong>▶ Play</strong>. A full table starts by itself. Games here are 4 rounds. Your chair stays yours until you press Stand up.</li>
         <li><strong>📣 CALL</strong> (2–6 players, 5 cards each): on your turn, <strong>throw first</strong>: one card, or several cards of the same number together (for example, three Qs). <strong>Then take</strong> a card: the last card the previous player threw, or one from the middle pile. Card values: A = 1, 2–10 = face value, J/Q/K = 10. At the start of your turn, instead of throwing, if your count is <strong>7 or less</strong>, you can press <strong>CALL</strong> to end the round. If you have the lowest count, you score 0 and everyone else scores their count. If anyone has <em>less</em> than you, you score <strong>50</strong>, they score 0, and everyone else scores their count. <strong>Lowest total wins.</strong></li>
@@ -256,6 +257,7 @@
             <button type="button" id="gameCall">📣 CALL</button>
             <button type="button" id="gameBondi">♠ BONDI</button>
             <button type="button" id="gameDhiha">🔟 DHIHA</button>
+            <button type="button" id="gameBabbush">🙈 BABBUSH</button>
           </div>
           <p id="gameNote" class="muted vis-note"></p>
           <hr>
@@ -363,6 +365,7 @@
         <label><input type="radio" name="game" value="digu" checked><span>🃏 DIGU</span></label>
         <label><input type="radio" name="game" value="call"><span>📣 CALL</span></label>
         <label><input type="radio" name="game" value="bondi"><span>♠ BONDI</span></label>
+        <label><input type="radio" name="game" value="babbush"><span>🙈 BABBUSH</span></label>
       </div>
       <span class="field-label">Computer players</span>
       <div class="pick-row">
@@ -506,6 +509,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261019s"></script>
+  <script type="module" src="game.js?v=20261020a"></script>
 </body>
 </html>
