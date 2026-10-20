@@ -2273,3 +2273,9 @@ html, body { overflow-x: hidden; }
 @keyframes bpIn { from { transform: translate(-50%, -50%) scale(.3); opacity: 0; } }
 @keyframes bpOut { to { transform: translate(-50%, -60%) scale(.9); opacity: 0; } }
 @keyframes bpShake { 25% { transform: rotate(-14deg); } 75% { transform: rotate(14deg); } }
+/* what just happened in Babbush, as a pop-up */
+.bb-pop { position: fixed; left: 50%; top: 30%; transform: translate(-50%, -50%); z-index: 165; pointer-events: none; max-width: calc(100vw - 40px);
+  padding: 10px 18px; border-radius: 14px; background: rgba(10, 30, 40, .92); color: #fff; font-weight: 700; font-size: 15px; text-align: center;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 2px rgba(255,255,255,.25); animation: bpIn .35s cubic-bezier(.2,1.5,.4,1), bpOut .4s 2.2s ease-in forwards; }
+.bb-pop.good { background: rgba(20, 110, 60, .94); box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 2px #7ee2a8; }
+.bb-pop.call { background: rgba(170, 20, 60, .95); font-size: 18px; box-shadow: 0 8px 28px rgba(0,0,0,.45), 0 0 0 3px #ffd34d; }
