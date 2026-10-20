@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261019s";
-import * as CFG from "./firebase-config.js?v=20261019s";
-import * as C from "./cards.js?v=20261019s";
-import * as P from "./profile.js?v=20261019s";
-import { DV } from "./i18n.js?v=20261019s";
+} from "./store.js?v=20261020a";
+import * as CFG from "./firebase-config.js?v=20261020a";
+import * as C from "./cards.js?v=20261020a";
+import * as P from "./profile.js?v=20261020a";
+import { DV } from "./i18n.js?v=20261020a";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -58,14 +58,15 @@ const isLobbyRoom = (r) => r?.public !== false;
 // Two games: DIGU (sets, highest total wins) and CALL (low count, lowest total wins).
 // Three games: DIGU (sets, highest total wins), CALL (low count, lowest total wins) and
 // BONDI (follow suit, get rid of your cards first, lowest total wins).
-const gameOf = (r) => (["call", "bondi", "dhiha"].includes(r?.game) ? r.game : "digu");
+const gameOf = (r) => (["call", "bondi", "dhiha", "babbush"].includes(r?.game) ? r.game : "digu");
+const isBabbush = () => gameOf(room) === "babbush";
 const isCall = () => gameOf(room) === "call";
 const isBondi = () => gameOf(room) === "bondi";
 const isDhiha = () => gameOf(room) === "dhiha";   // team game, holhuashis only
 const DHIHA_TARGETS = [3, 5, 7];
 const teamName = (t) => (t === "A" ? "Team 1" : "Team 2");
-const lowWins = (g) => g === "call" || g === "bondi";
-const GAME_NAME = { digu: "DIGU", call: "CALL", bondi: "BONDI", dhiha: "DHIHA" };
+const lowWins = (g) => g === "call" || g === "bondi" || g === "babbush";
+const GAME_NAME = { digu: "DIGU", call: "CALL", bondi: "BONDI", dhiha: "DHIHA", babbush: "BABBUSH" };
 const LOBBY_SEATS = { digu: 4, call: 6, bondi: 6 }; // lobby tables: DIGU 2–4 players, CALL and BONDI 2–6
 const targetFor = (g) => (g === "dhiha" ? 5 : lowWins(g) ? CALL_DEFAULT_TARGET : DEFAULT_TARGET);
 const CALL_TARGETS = [50, 100, 200];
@@ -1576,6 +1577,7 @@ async function startPractice(game, bots, level = "medium") {
 // Called whenever the room changes: if it's a computer player's turn, play it after a short pause.
 async function maybeBotMove() {
   if (!room || room.status !== "playing" || room.host !== uid || room.paused || roomStale) return;
+  if (isBabbush()) return bbHost();
   const bot = room.playerIds[room.turn];
   if (!isBot(bot)) return;
   const key = `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}`;
@@ -2415,6 +2417,7 @@ async function dealRound() {
   if (n < 2) return toast("Need at least 2 players");
   if (gameOf(room) === "bondi") return dealBondi();
   if (gameOf(room) === "dhiha") return dealDhiha();
+  if (gameOf(room) === "babbush") return dealBabbush();
   // DIGU: 10 cards each (two decks for 5–6 players). CALL: 5 cards each, one deck is enough.
   const call = gameOf(room) === "call";
   const handSize = call ? C.CALL_HAND_SIZE : C.HAND_SIZE;
@@ -2448,6 +2451,401 @@ async function dealRound() {
   });
   try { await batch.commit(); sendNotify(room?.gameRound > 1 ? "round" : "start"); } catch (e) { toast(errMsg(e)); }
 }
+
+// ---------- BABBUSH ----------
+// 2–6 players, 4 cards each, face down in a row; the rest is the middle pile. A random player
+// chooses how many of their own cards everyone may look at (0–2), then each player secretly looks.
+// On your turn: take the top card of the middle pile (only you see it), then either swap it for one
+// of your face-down cards (that card is thrown, unseen) or throw it. J = look at any one card,
+// Q = switch any two cards, K = lock a card face up (or unlock it). Whenever a card is thrown,
+// anyone who has the same number may throw it too (wrong card: 2 penalty cards). Think your count is
+// the lowest? Call BABBUSH: everyone else has one more turn, then all cards are counted.
+// The whole layout lives on the table (room.bb) so J and Q can reach other players' cards.
+const BB_POWER_NAME = { J: "👁 Look", Q: "🔄 Switch", K: "🔒 Lock / unlock" };
+const bbRows = (r = room) => r?.bb?.rows || {};
+const bbRow = (u, r = room) => bbRows(r)[u] || [];
+const bbLocked = (r = room) => r?.bb?.locked || [];
+const bbIsLocked = (c, r = room) => bbLocked(r).includes(c);
+const bbProtected = (u, r = room) => !!r?.bb?.caller && r.bb.caller === u; // the caller's cards can't be touched
+// take k cards from the middle pile (the thrown cards are shuffled back in when it runs out)
+function bbTake(deck, discard, k) {
+  deck = [...deck]; discard = [...discard];
+  const got = [];
+  for (let i = 0; i < k; i++) {
+    if (!deck.length && discard.length > 1) { const top = discard.pop(); deck = C.shuffle(discard); discard = [top]; }
+    if (!deck.length) break;
+    got.push(deck.pop());
+  }
+  return { deck, discard, got };
+}
+async function dealBabbush() {
+  const n = room.playerIds.length;
+  const deck = C.shuffle(C.buildDeck(1));
+  const rows = Object.fromEntries(room.playerIds.map((u) => [u, deck.splice(0, C.BB_HAND)]));
+  const chooser = room.playerIds[Math.floor(Math.random() * n)];
+  const round = (room.round || 0) + 1;
+  try {
+    await updateDoc(roomRef(), {
+      status: "playing", host: uid, deck, discard: [], turn: room.playerIds.indexOf(chooser), phase: "draw", moveId: 0,
+      bb: { stage: "choose", chooser, peekN: null, peeked: {}, rows, locked: [], drawn: null, power: null, snapDone: null,
+        caller: null, finalLeft: null, stageAt: Date.now() },
+      winner: null, winnerSets: null, diguCard: null, scored: false, round, gameRound: (room.gameRound || 0) + 1,
+      reshuffles: 0, track: {}, almost: {},
+      log: `${roundsTotal(room) ? `Round ${(room.gameRound || 0) + 1} of ${roundsTotal(room)} · ` : ""}${nameOf(chooser)} chooses how many cards everyone may look at`,
+    });
+    sendNotify(room?.gameRound > 1 ? "round" : "start");
+  } catch (e) { toast(errMsg(e)); }
+}
+// end of a turn: the next player, or, once BABBUSH has been called and everyone had their last turn, the count
+function bbEndTurn(upd, log, r = room) {
+  const bb = r.bb || {};
+  upd["bb.drawn"] = null; upd["bb.power"] = null;
+  if (bb.caller) {
+    const left = (bb.finalLeft || 0) - 1;
+    if (left <= 0) return Object.assign(upd, { status: "ended", winner: bb.caller, phase: "draw", "bb.finalLeft": 0, moveId: (r.moveId || 0) + 1, log: log + " · everyone has had their turn: count the cards!" });
+    upd["bb.finalLeft"] = left;
+  }
+  return Object.assign(upd, nextTurn(log));
+}
+// someone ran out of time: their drawn card is thrown and the turn moves on
+function bbSkipUpd(r) {
+  const bb = r.bb || {};
+  if (bb.stage !== "play") return { "bb.stage": "play", "bb.peekN": bb.peekN ?? 0, moveId: (r.moveId || 0) + 1, log: "Time's up · the game starts" };
+  const upd = {};
+  if (bb.drawn) upd.discard = [...(r.discard || []), bb.drawn.c];
+  const who = r.playerIds[r.turn];
+  const saved = room; room = r; // nextTurn reads the current table
+  try { return bbEndTurn(upd, `${nameOf(who)} ran out of time`, r); } finally { room = saved; }
+}
+// ----- moves -----
+function bbChoose(n) {
+  if (room.bb?.stage !== "choose" || (room.bb.chooser !== uid && !(isBot(room.bb.chooser) && room.host === uid))) return;
+  const b = moveBatch();
+  b.update(roomRef(), { "bb.peekN": n, "bb.stage": n ? "peek" : "play", "bb.stageAt": Date.now(), moveId: (room.moveId || 0) + 1,
+    log: n ? `Everyone may look at ${n} of their own card${n > 1 ? "s" : ""}` : "No looking this round! The game starts" });
+  commit(b);
+}
+let bbPeekSel = [], bbReveal = new Map(), bbMode = null, bbPicks = [], bbRevealTimer = null;
+const bbKey = (u, i) => `${u}|${i}`;
+function bbShow(u, i, ms) { // show a card to me only, for a moment
+  bbReveal.set(bbKey(u, i), Date.now() + ms);
+  clearTimeout(bbRevealTimer);
+  bbRevealTimer = setTimeout(() => { try { render(); } catch {} }, ms + 30);
+  render();
+}
+function bbPeekTap(i) {
+  const bb = room.bb;
+  if (bb?.stage !== "peek" || bb.peeked?.[uid] || bbPeekSel.includes(i) || bbPeekSel.length >= (bb.peekN || 0)) return;
+  bbPeekSel.push(i);
+  bbShow(uid, i, 5000);
+  if (bbPeekSel.length >= bb.peekN) setTimeout(() => {
+    updateDoc(roomRef(), { [`bb.peeked.${uid}`]: true }).catch(() => {});
+    bbPeekSel = [];
+  }, 5000);
+}
+function bbDraw() {
+  if (!canDraw()) return;
+  if (!claimAction()) return;
+  const t = bbTake(room.deck || [], room.discard || [], 1);
+  if (!t.got.length) return toast("No cards left in the middle pile");
+  const c = t.got[0];
+  const b = moveBatch();
+  b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: uid, c }, moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took a card from the middle pile` });
+  flyCard($("deck"), $("bbDrawn") || $("deck"), null, { back: true });
+  commit(b);
+}
+const bbMyDrawn = () => (isMyTurn() && room.phase === "act" && room.bb?.drawn?.u === uid ? room.bb.drawn.c : null);
+function bbReplace(i) {
+  const c = bbMyDrawn();
+  const row = [...bbRow(uid)];
+  if (!c || i < 0 || i >= row.length) return;
+  if (bbIsLocked(row[i])) return toast("🔒 That card is locked · it can't be swapped");
+  if (!claimAction()) return;
+  const old = row[i]; row[i] = c;
+  const upd = { [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), old], "bb.snapDone": null };
+  bbEndTurn(upd, `${nameOf(uid)} swapped a card and threw ${cardName(old)}`);
+  const b = moveBatch(); b.update(roomRef(), upd);
+  commit(b, upd.status === "ended" ? "ended" : "turn");
+  bbShow(uid, i, 2500);
+}
+function bbThrowDrawn(log) {
+  const c = bbMyDrawn();
+  if (!c || !claimAction()) return;
+  const upd = { discard: [...(room.discard || []), c], "bb.snapDone": null };
+  bbEndTurn(upd, log || `${nameOf(uid)} threw ${cardName(c)}`);
+  const b = moveBatch(); b.update(roomRef(), upd);
+  bbMode = null; bbPicks = [];
+  commit(b, upd.status === "ended" ? "ended" : "turn");
+}
+function bbStartPower() {
+  const c = bbMyDrawn(); const k = c && C.bbPower(c);
+  if (!k) return;
+  bbMode = k; bbPicks = [];
+  toast(k === "J" ? "👁 Tap any face-down card to look at it" : k === "Q" ? "🔄 Tap two cards to switch them" : "🔒 Tap a card to lock it face up (or a locked card to unlock it)");
+  render();
+}
+// a card on the table was tapped (mine or someone else's)
+function bbTapCard(u, i) {
+  const bb = room?.bb; if (!bb || room.status !== "playing") return;
+  const row = bbRow(u), c = row[i];
+  if (!c) return;
+  if (bb.stage === "peek") { if (u === uid) bbPeekTap(i); return; }
+  if (bb.stage !== "play") return;
+  if (bbMode === "snap") { if (u === uid) bbSnap(i); return; }
+  if (bbMode === "J") {
+    if (bbIsLocked(c)) return toast("That card is already face up");
+    bbShow(u, i, 3500);
+    bbMode = null;
+    setTimeout(() => bbThrowDrawn(`${nameOf(uid)} used J 👁 and looked at ${u === uid ? "one of their cards" : `one of ${nameOf(u)}'s cards`}`), 3600);
+    return;
+  }
+  if (bbMode === "Q") {
+    if (bbIsLocked(c)) return toast("🔒 Locked cards can't be switched");
+    if (bbProtected(u)) return toast(`${nameOf(u)} called BABBUSH · their cards can't be touched`);
+    if (bbPicks.some((p) => p.u === u && p.i === i)) { bbPicks = bbPicks.filter((p) => !(p.u === u && p.i === i)); return render(); }
+    bbPicks.push({ u, i });
+    if (bbPicks.length < 2) return render();
+    const [a, z] = bbPicks; bbPicks = []; bbMode = null;
+    return bbFinishPower({ "Q": [a, z] }, `${nameOf(uid)} used Q 🔄 and switched ${a.u === uid ? "their" : `${nameOf(a.u)}'s`} card with ${z.u === uid ? "their own" : `${nameOf(z.u)}'s`}`);
+  }
+  if (bbMode === "K") {
+    if (bbProtected(u)) return toast(`${nameOf(u)} called BABBUSH · their cards can't be touched`);
+    bbMode = null;
+    return bbFinishPower({ K: { u, i } }, `${nameOf(uid)} used K 🔒 and ${bbIsLocked(c) ? "unlocked" : "locked"} ${u === uid ? "their" : `${nameOf(u)}'s`} ${cardName(c)}`);
+  }
+  if (u === uid && bbMyDrawn()) return bbReplace(i);
+}
+function bbFinishPower(act, log) {
+  const drawn = bbMyDrawn();
+  if (!drawn || !claimAction()) return;
+  const upd = { discard: [...(room.discard || []), drawn], "bb.snapDone": null };
+  if (act.Q) {
+    const [a, z] = act.Q;
+    const ra = [...bbRow(a.u)], rz = a.u === z.u ? ra : [...bbRow(z.u)];
+    const t = ra[a.i]; ra[a.i] = rz[z.i]; rz[z.i] = t;
+    upd[`bb.rows.${a.u}`] = ra; if (a.u !== z.u) upd[`bb.rows.${z.u}`] = rz;
+  }
+  if (act.K) {
+    const c = bbRow(act.K.u)[act.K.i];
+    upd["bb.locked"] = bbIsLocked(c) ? bbLocked().filter((x) => x !== c) : [...bbLocked(), c];
+  }
+  bbEndTurn(upd, log);
+  const b = moveBatch(); b.update(roomRef(), upd);
+  commit(b, upd.status === "ended" ? "ended" : "turn");
+}
+function bbCall() {
+  if (!isMyTurn() || room.phase !== "draw" || room.bb?.stage !== "play" || room.bb?.caller) return;
+  if (!claimAction()) return;
+  const others = activeIds(room).length - 1;
+  const b = moveBatch();
+  b.update(roomRef(), { "bb.caller": uid, "bb.finalLeft": others, ...nextTurn(`📣 ${nameOf(uid)} called BABBUSH! Everyone else has one more turn`) });
+  commit(b, "turn");
+}
+// ⚡ the top thrown card has the same number as one of mine: throw it too (wrong: 2 penalty cards)
+function bbSnap(i) {
+  bbMode = null;
+  const bb = room.bb, row = [...bbRow(uid)], c = row[i];
+  const top = room.discard?.[room.discard.length - 1];
+  if (!c || !top || bb.stage !== "play") return render();
+  if (bb.snapDone === top) { toast("Too late · someone already matched that card"); return render(); }
+  if (bbIsLocked(c)) { toast("🔒 Locked cards can't be thrown"); return render(); }
+  if (!claimAction()) return;
+  const upd = { moveId: (room.moveId || 0) + 1 };
+  if (C.parse(c).r === C.parse(top).r) {
+    row.splice(i, 1);
+    Object.assign(upd, { [`bb.rows.${uid}`]: row, discard: [...room.discard, c], "bb.snapDone": c, log: `⚡ ${nameOf(uid)} matched ${cardName(top)} with ${cardName(c)}!` });
+  } else {
+    const t = bbTake(room.deck || [], room.discard || [], 2);
+    Object.assign(upd, { [`bb.rows.${uid}`]: [...row, ...t.got], deck: t.deck, discard: t.discard,
+      log: `❌ ${nameOf(uid)} tried ${cardName(c)} on ${cardName(top)} · wrong! +${t.got.length} cards` });
+  }
+  const b = moveBatch(); b.update(roomRef(), upd);
+  commit(b);
+}
+function bbAuto() { // my time ran out
+  const bb = room.bb;
+  if (bb?.stage === "choose" && bb.chooser === uid) return bbChoose(1);
+  if (bb?.stage !== "play") return;
+  if (room.phase === "draw") { if (!claimAction()) return; const upd = {}; bbEndTurn(upd, `${nameOf(uid)} ran out of time`); const b = moveBatch(); b.update(roomRef(), upd); return commit(b, "turn"); }
+  bbMode = null; bbPicks = [];
+  bbThrowDrawn(`${nameOf(uid)} ran out of time and threw the card`);
+}
+// ----- the host runs the computer players and moves the game from one stage to the next -----
+let bbBotSnapKey = null;
+async function bbHost() {
+  const bb = room.bb; if (!bb) return;
+  const key = `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}-${bb.stage}`;
+  if (bb.stage === "choose") {
+    if (isBot(bb.chooser) && botKey !== key) { botKey = key; await sleep(1200); if (room?.bb?.stage === "choose") bbChoose(1 + Math.floor(Math.random() * 2)); }
+    return;
+  }
+  if (bb.stage === "peek") {
+    const bots = room.playerIds.filter((u) => isBot(u) && !bb.peeked?.[u]);
+    if (bots.length) { updateDoc(roomRef(), Object.fromEntries(bots.map((u) => [`bb.peeked.${u}`, true]))).catch(() => {}); return; }
+    const all = room.playerIds.every((u) => bb.peeked?.[u]);
+    if ((all || Date.now() - (bb.stageAt || 0) > 30_000) && botKey !== key) {
+      botKey = key;
+      const b = moveBatch(); b.update(roomRef(), { "bb.stage": "play", moveId: (room.moveId || 0) + 1, log: `${nameOf(room.playerIds[room.turn])} starts · take a card from the middle pile` }); commit(b);
+    } else if (!all) setTimeout(() => { try { maybeBotMove(); } catch {} }, 3000);
+    return;
+  }
+  bbBotSnaps();
+  const bot = room.playerIds[room.turn];
+  if (!isBot(bot) || botKey === key) return;
+  botKey = key;
+  await sleep(1100 + Math.random() * 1000);
+  while (shuffling()) await sleep(250);
+  if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}-${room.bb?.stage}` !== key) return;
+  try { bbBotTurn(bot); } catch (e) { console.warn("Babbush computer", e); botKey = null; }
+}
+function bbBotTurn(bot) {
+  const bb = room.bb, lvl = botLevel(), row = bbRow(bot);
+  const b = moveBatch();
+  if (room.phase === "draw") {
+    const total = C.bbCount(row), n = room.playerIds.length;
+    const limit = lvl === "hard" ? 7 : lvl === "medium" ? 9 : 5;
+    if (!bb.caller && total <= limit && (room.moveId || 0) >= n * 3) {
+      b.update(roomRef(), { "bb.caller": bot, "bb.finalLeft": activeIds(room).length - 1, ...nextTurn(`📣 ${botName(bot)} called BABBUSH! Everyone else has one more turn`) });
+      return b.commit().catch(() => {});
+    }
+    const t = bbTake(room.deck || [], room.discard || [], 1);
+    if (!t.got.length) return;
+    b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: bot, c: t.got[0] }, moveId: (room.moveId || 0) + 1, log: `${botName(bot)} took a card from the middle pile` });
+    flyCard($("deck"), seatEl(bot), null, { back: true, slow: true });
+    return b.commit().catch(() => {});
+  }
+  const c = bb.drawn?.c; if (!c) return;
+  const v = C.bbValue(c);
+  const free = row.map((x, i) => ({ x, i })).filter((o) => !bbIsLocked(o.x));
+  const worst = free.reduce((a, o) => (!a || C.bbValue(o.x) > C.bbValue(a.x) ? o : a), null);
+  const upd = { discard: [...(room.discard || [])], "bb.snapDone": null };
+  const careless = lvl === "easy" && Math.random() < 0.4;
+  if (worst && v < C.bbValue(worst.x) && !careless) { // swap my worst card for it
+    const nr = [...row]; nr[worst.i] = c; upd[`bb.rows.${bot}`] = nr; upd.discard.push(worst.x);
+    bbEndTurn(upd, `${botName(bot)} swapped a card and threw ${cardName(worst.x)}`);
+  } else if (C.bbPower(c) === "Q" && lvl !== "easy" && worst) { // switch my worst card with someone's low card
+    const others = room.playerIds.filter((u) => u !== bot && !bbProtected(u));
+    let best = null;
+    for (const u of others) bbRow(u).forEach((x, i) => { if (!bbIsLocked(x) && (!best || C.bbValue(x) < C.bbValue(best.x))) best = { u, i, x }; });
+    if (best && C.bbValue(best.x) < C.bbValue(worst.x)) {
+      const nr = [...row], orow = [...bbRow(best.u)];
+      nr[worst.i] = best.x; orow[best.i] = worst.x;
+      upd[`bb.rows.${bot}`] = nr; upd[`bb.rows.${best.u}`] = orow;
+    }
+    upd.discard.push(c);
+    bbEndTurn(upd, `${botName(bot)} used Q 🔄 and switched ${best ? `a card with ${nameOf(best.u)}` : "nothing"}`);
+  } else {
+    upd.discard.push(c);
+    bbEndTurn(upd, C.bbPower(c) === "J" && lvl !== "easy" ? `${botName(bot)} used J 👁 and looked at a card` : `${botName(bot)} threw ${cardName(c)}`);
+  }
+  b.update(roomRef(), upd);
+  return b.commit().catch(() => {});
+}
+// computer players throw a matching card when they have one
+function bbBotSnaps() {
+  const top = room.discard?.[room.discard.length - 1];
+  if (!top || room.bb?.snapDone === top) return;
+  const k = `${roomId}-${room.round}-${room.discard.length}-${top}`;
+  if (bbBotSnapKey === k) return;
+  bbBotSnapKey = k;
+  const chance = { easy: 0.25, medium: 0.6, hard: 0.95 }[botLevel()] ?? 0.6;
+  const cands = room.playerIds.filter((u) => isBot(u)).map((u) => ({ u, i: bbRow(u).findIndex((x) => C.parse(x).r === C.parse(top).r && !bbIsLocked(x)) }))
+    .filter((o) => o.i >= 0 && Math.random() < chance);
+  if (!cands.length) return;
+  const o = cands[Math.floor(Math.random() * cands.length)];
+  setTimeout(() => {
+    if (!room || room.discard?.[room.discard.length - 1] !== top || room.bb?.snapDone === top) return;
+    const row = [...bbRow(o.u)], c = row[o.i];
+    if (!c || C.parse(c).r !== C.parse(top).r) return;
+    row.splice(o.i, 1);
+    const b = moveBatch();
+    b.update(roomRef(), { [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], "bb.snapDone": c, moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} matched ${cardName(top)} with ${cardName(c)}!` });
+    flyCard(seatEl(o.u), $("discardPile"), c, { slow: true });
+    b.commit().catch(() => {});
+  }, 900 + Math.random() * 1400);
+}
+// ----- drawing the table -----
+function bbCardEl(u, i, c, opts = {}) {
+  const shown = bbIsLocked(c) || (bbReveal.get(bbKey(u, i)) || 0) > Date.now() || room.status === "ended";
+  const el = shown ? cardEl(c, opts.small ? { small: true } : {}) : Object.assign(document.createElement("div"), { className: "card back" + (opts.small ? " small" : "") });
+  el.classList.add("bb-card");
+  if (bbIsLocked(c)) el.classList.add("bb-locked");
+  el.dataset.uid = u; el.dataset.idx = i;
+  return el;
+}
+function renderBabbush() {
+  const bb = room.bb || {};
+  let area = $("bbArea");
+  if (!area) {
+    area = Object.assign(document.createElement("section"), { id: "bbArea", className: "bb-area" });
+    $("table").after(area);
+    area.addEventListener("click", (e) => { const el = e.target.closest(".bb-card[data-uid]"); if (el) bbTapCard(el.dataset.uid, Number(el.dataset.idx)); });
+  }
+  area.hidden = !room.playerIds.includes(uid) || room.status === "lobby";
+  area.innerHTML = "";
+  const myTurn = isMyTurn(), drawn = bbMyDrawn();
+  // what to do now
+  const msg = document.createElement("p");
+  msg.className = "bb-msg";
+  if (room.status === "ended") msg.textContent = "Round over · all cards are shown";
+  else if (bb.stage === "choose") msg.textContent = bb.chooser === uid ? "You choose: how many of their own cards may everyone look at?" : `${nameOf(bb.chooser)} is choosing how many cards everyone may look at…`;
+  else if (bb.stage === "peek") msg.textContent = bb.peeked?.[uid] ? "Waiting for everyone to look at their cards…" : `Tap ${bb.peekN} of your cards to look at ${bb.peekN > 1 ? "them" : "it"} · remember ${bb.peekN > 1 ? "them" : "it"}!`;
+  else if (bbMode === "snap") msg.textContent = "⚡ Tap the card of yours with the same number as the thrown card";
+  else if (bbMode === "J") msg.textContent = "👁 Tap any face-down card (yours or someone else's) to look at it";
+  else if (bbMode === "Q") msg.textContent = `🔄 Tap two cards to switch them${bbPicks.length ? " · 1 picked" : ""}`;
+  else if (bbMode === "K") msg.textContent = "🔒 Tap a card to lock it face up, or a locked card to unlock it";
+  else if (drawn) msg.textContent = "Tap one of your cards to swap it for this card, or throw it" + (C.bbPower(drawn) ? ` · or use its power: ${BB_POWER_NAME[C.bbPower(drawn)]}` : "");
+  else if (myTurn) msg.textContent = bb.caller ? "Last turn! Take a card from the middle pile" : "Your turn: take a card from the middle pile, or call BABBUSH";
+  else msg.textContent = `${nameOf(room.playerIds[room.turn])} is playing…` + (bb.caller ? ` · ${nameOf(bb.caller)} called BABBUSH` : "");
+  area.append(msg);
+  // choosing 0–2
+  if (bb.stage === "choose" && bb.chooser === uid && room.status === "playing") {
+    const row = document.createElement("div"); row.className = "bb-btns";
+    for (const n of [0, 1, 2]) { const btn = Object.assign(document.createElement("button"), { type: "button", className: "primary", textContent: `${n} card${n === 1 ? "" : "s"}` }); btn.onclick = () => bbChoose(n); row.append(btn); }
+    area.append(row);
+  }
+  // the card I took
+  if (drawn) {
+    const box = Object.assign(document.createElement("div"), { id: "bbDrawn", className: "bb-drawn" });
+    box.append(Object.assign(document.createElement("small"), { textContent: "Your card" }), cardEl(drawn));
+    const btns = document.createElement("div"); btns.className = "bb-btns";
+    const th = Object.assign(document.createElement("button"), { type: "button", className: "ghost", textContent: "Throw it" }); th.onclick = () => bbThrowDrawn();
+    btns.append(th);
+    const pw = C.bbPower(drawn);
+    if (pw && !bbMode) { const u = Object.assign(document.createElement("button"), { type: "button", className: "primary", textContent: `Use ${BB_POWER_NAME[pw]}` }); u.onclick = bbStartPower; btns.append(u); }
+    if (bbMode && bbMode !== "snap") { const x = Object.assign(document.createElement("button"), { type: "button", className: "ghost", textContent: "Cancel power" }); x.onclick = () => { bbMode = null; bbPicks = []; render(); }; btns.append(x); }
+    box.append(btns);
+    area.append(box);
+  }
+  // my row
+  const mine = document.createElement("div");
+  mine.className = "bb-mine" + ((drawn && !bbMode) || bbMode || (bb.stage === "peek" && !bb.peeked?.[uid]) ? " pickable" : "");
+  bbRow(uid).forEach((c, i) => {
+    const el = bbCardEl(uid, i, c);
+    if (bbPicks.some((p) => p.u === uid && p.i === i)) el.classList.add("bb-picked");
+    mine.append(el);
+  });
+  if (!bbRow(uid).length) mine.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No cards left · count 0!" }));
+  area.append(mine);
+  // buttons
+  const ctl = document.createElement("div"); ctl.className = "bb-btns";
+  const top = room.discard?.[room.discard.length - 1];
+  if (bb.stage === "play" && room.status === "playing" && top && bb.snapDone !== top && bbRow(uid).length) {
+    const sn = Object.assign(document.createElement("button"), { type: "button", className: "bb-snap" + (bbMode === "snap" ? " on" : ""), textContent: bbMode === "snap" ? "Cancel" : `⚡ Match! (${C.label(C.parse(top).r)})` });
+    sn.onclick = () => { bbMode = bbMode === "snap" ? null : "snap"; render(); };
+    ctl.append(sn);
+  }
+  if (myTurn && bb.stage === "play" && room.phase === "draw" && !bb.caller && room.status === "playing") {
+    const cb = Object.assign(document.createElement("button"), { type: "button", className: "bb-call", textContent: "📣 BABBUSH" });
+    cb.onclick = () => { if (confirm("Call BABBUSH? Everyone else gets one more turn, then all cards are counted.")) bbCall(); };
+    ctl.append(cb);
+  }
+  if (ctl.children.length) area.append(ctl);
+  // others' cards are tappable for J / Q / K
+  document.querySelectorAll(".bb-orow").forEach((el) => el.classList.toggle("pickable", bbMode === "J" || bbMode === "Q" || bbMode === "K"));
+  document.querySelectorAll(".bb-orow .bb-card").forEach((el) => el.classList.toggle("bb-picked", bbPicks.some((p) => p.u === el.dataset.uid && p.i === Number(el.dataset.idx))));
+}
+document.addEventListener("click", (e) => { const el = e.target.closest(".bb-orow .bb-card[data-uid]"); if (el && room && isBabbush()) bbTapCard(el.dataset.uid, Number(el.dataset.idx)); });
 
 // ---------- BONDI ----------
 // The whole deck is dealt out; whoever has K♠ leads. Follow the suit that was led. If everyone
@@ -2886,7 +3284,8 @@ function renderPause() {
 // DIGU turn: take a card ("draw"), then throw one ("discard").
 // CALL turn: throw first ("throw"), then take a card ("draw") — the previous player's last thrown
 // card (room.pickable) or the top of the middle pile.
-const canDraw = () => !isBondi() && isMyTurn() && room.phase === "draw" && (isCall() || hand.length <= C.HAND_SIZE);
+const canDraw = () => (isBabbush() ? isMyTurn() && room.bb?.stage === "play" && room.phase === "draw" && !shuffling()
+  : !isBondi() && isMyTurn() && room.phase === "draw" && (isCall() || hand.length <= C.HAND_SIZE));
 // DIGU: holding 11 cards in the "take" step (e.g. my turn was skipped right after I took one): just throw
 const holdingExtra = () => gameOf(room) === "digu" && room.phase === "draw" && hand.length > C.HAND_SIZE;
 const canThrow = () => isMyTurn() && (isDhiha() ? room.phase === "play" : isBondi() ? room.phase === "play" && !pendingPickup()
@@ -3132,6 +3531,7 @@ function nextTurn(log) {
 }
 
 function draw(from) {
+  if (isBabbush()) return from === "deck" ? bbDraw() : toast("Tap ⚡ Match! to throw a card of the same number");
   if (shuffling()) return toast("🎩 Wait: the new middle pile is being shuffled");
   if (mustThrowFirst()) return toast("Throw a card first");
   if (isMyTurn() && holdingExtra()) return toast(`You already have ${hand.length} cards · throw one away`);
@@ -3383,6 +3783,7 @@ function showBubble(fromUid, text, special = false) {
 // if you have, the card you just picked up (or your worst card) is thrown away.
 // If a player's device is offline, the others skip them a few seconds later.
 function autoPlay() {
+  if (isBabbush()) return bbAuto();
   if (isDhiha()) { if (hand.length) throwCard(C.dhihaAutoCard(hand, room.trick || [], room.hukum), true); return; }
   if (isBondi()) { // out of time: play the card the computer would
     if (!pendingPickup() && hand.length) throwCard(C.bondiBotCard(hand, room.trick || [], bondiCtx(room, uid)), true);
@@ -3440,6 +3841,7 @@ async function skipOfflinePlayer() {
         skipped = true;
         return;
       }
+      if (r.game === "babbush") { tx.update(roomRef(), { ...bbSkipUpd(r), ...extra }); skipped = true; return; }
       const call = r.game === "call";
       tx.update(roomRef(), {
         ...extra,
@@ -3657,6 +4059,12 @@ async function showResults() {
       return { ...p, pts: sc[p.uid] ?? order.length * C.BONDI_STEP, bondi: true, place: place || order.length + 1,
         last: !place || place === order.length, sets: left.length ? [C.sortBondi(left)] : [], leftover: [] };
     });
+  } else if (gameOf(room) === "babbush") {
+    const rows = room.bb?.rows || {};
+    const cs = C.babbushScores(Object.fromEntries(room.playerIds.map((u) => [u, rows[u] || []])), room.winner);
+    lastRows = room.players.map((p) => ({ ...p, ...cs.result[p.uid], call: true, bb: true, sets: (rows[p.uid] || []).length ? [rows[p.uid]] : [], leftover: [] }));
+    lastRows.caught = cs.caught;
+    lastRows.catchers = cs.catchers;
   } else if (gameOf(room) === "call") {
     // players already out before this round (not the ones this round's points just put out)
     const out = outOf(room).filter((u) => (room.outRound?.[u] ?? -1) < room.round);
@@ -3706,7 +4114,7 @@ function renderResults() {
     head.className = "result-head";
     const name = document.createElement("strong");
     name.textContent = row.name + (row.uid === uid ? " (you)" : "") + (row.digu ? " · DIGU" : "") + (row.bondi && row.place === 1 ? " · 🏆" : "")
-      + (row.how === "won" || row.how === "caught" ? " · CALL" : "");
+      + (row.how === "won" || row.how === "caught" ? (row.bb ? " · BABBUSH" : " · CALL") : "");
     const pts = document.createElement("span");
     pts.className = "round-pts";
     pts.textContent = (row.pts > 0 ? "+" : "") + row.pts;
@@ -3721,8 +4129,8 @@ function renderResults() {
         : row.last ? `Loser · ${row.sets[0]?.length ? `left holding ${row.sets[0].length} cards` : "out last"}`
         : `${ordinal(row.place)} out`)
       : row.call
-      ? ({ won: `Called with ${row.count} · lowest`, caught: `Called with ${row.count} · caught! +${C.CALL_PENALTY}`,
-           "caught-caller": `Count ${row.count} · caught the CALL`, count: `Count ${row.count}`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
+      ? ({ won: `Called with ${row.count} · lowest`, caught: `Called with ${row.count} · caught! +${row.bb ? C.BB_PENALTY : C.CALL_PENALTY}`,
+           "caught-caller": `Count ${row.count} · ${row.bb ? "lower than the caller" : "caught the CALL"}`, count: `Count ${row.count}`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
       : row.digu
       ? `DIGU bonus +${C.DIGU_BONUS} · cards +${row.setPts}`
       : row.noSets
@@ -3757,8 +4165,8 @@ function renderResults() {
       ? `🏆 ${room.winner === uid ? "You" : nameOf(room.winner)} went out first and ${room.winner === uid ? "win" : "wins"} the round!`
     : low
       ? (lastRows.caught
-        ? `${nameOf(room.winner)} called CALL, but ${lastRows.catchers.map(nameOf).join(" & ")} had less!`
-        : `${nameOf(room.winner)} called CALL and won the round!`)
+        ? `${nameOf(room.winner)} called ${isBabbush() ? "BABBUSH" : "CALL"}, but ${lastRows.catchers.map(nameOf).join(" & ")} had less!`
+        : `${nameOf(room.winner)} called ${isBabbush() ? "BABBUSH" : "CALL"} and won the round!`)
       : `${nameOf(room.winner)} called DIGU!`;
   const boardNote = isLoungeDoc(room) && hasBots(room) ? " · 🤖 played with the computer: no points"
     : over && isLoungeDoc(room) && !room.practice
@@ -4954,6 +5362,7 @@ function seatTagPos(u) { const s = seatSlot(u); return { x: s.tag.x, y: s.tag.y,
 function cardsHeld(u) {
   if (!room || room.status !== "playing" || outOf(room).includes(u)) return 0;
   const g = gameOf(room);
+  if (g === "babbush") return bbRow(u).length;
   if (g === "call") return room.ccount?.[u] ?? C.CALL_HAND_SIZE;
   if (g === "bondi") return room.counts?.[u] ?? 0;
   if (g === "dhiha") {
@@ -5015,7 +5424,17 @@ function renderSeats() {
       // their cards, face down and standing upright, fanned out next to their name (towards the
       // middle of the table, so they're never cut off by the edge of the screen)
       const nCards = mine ? 0 : cardsHeld(p.uid);
-      if (nCards > 0) {
+      if (!mine && isBabbush()) { // BABBUSH: their cards lie face down in a row (tappable for J / Q / K)
+        const orow = document.createElement("div");
+        orow.className = "bb-orow";
+        orow.dataset.uid = p.uid;
+        const vx = W / 2 - slot.tag.x, vy = H / 2 - slot.tag.y, vl = Math.hypot(vx, vy) || 1;
+        const fx = Math.min(W - 64, Math.max(64, slot.tag.x + (vx / vl) * 58));
+        const fy = Math.min(H - 80, Math.max(48, slot.tag.y + (vy / vl) * 52));
+        Object.assign(orow.style, { left: fx + "px", top: fy + "px" });
+        box.append(orow);
+        t._bbrow = orow;
+      } else if (nCards > 0) {
         const fan = document.createElement("span");
         fan.className = "seat-fan";
         fan.dataset.uid = p.uid;
@@ -5048,6 +5467,10 @@ function renderSeats() {
       info.append(nm, sub);
       t.append(info, Object.assign(document.createElement("span"), { className: "st-time" }));
       box.append(t);
+      if (t._bbrow && Math.abs(slot.tag.rot) === 90) { // left / right players: their row sits above their name
+        const half = (t.offsetWidth || 90) / 2;
+        Object.assign(t._bbrow.style, { left: Math.min(W - 60, Math.max(60, slot.tag.x)) + "px", top: Math.max(48, slot.tag.y - half - 28) + "px" });
+      }
       // left and right players: their cards sit just above their name
       if (t._fan && Math.abs(slot.tag.rot) === 90) {
         const half = (t.offsetWidth || 90) / 2;
@@ -5055,6 +5478,12 @@ function renderSeats() {
       }
     }
   }
+  if (isBabbush()) box.querySelectorAll(".bb-orow").forEach((orow) => {
+    const u = orow.dataset.uid;
+    orow.innerHTML = "";
+    bbRow(u).forEach((c, i) => orow.append(bbCardEl(u, i, c, { small: true })));
+    orow.classList.toggle("caller", room.bb?.caller === u);
+  });
   const cur = room.status === "playing" ? room.playerIds[room.turn] : null;
   const nxt = nextPlayerUid();
   box.querySelectorAll(".seat-tag").forEach((t) => {
@@ -5672,6 +6101,8 @@ function render() {
     else if (myTurn && hand.some((c) => C.suitOf(c) === lead)) status = `Your turn: play a ${C.SUIT_SYMBOL[lead]} card`;
     else if (myTurn) status = `No ${C.SUIT_SYMBOL[lead]}? Cut with any card · ${nameOf(trickLeader())} picks up the pile`;
     else status = `${nameOf(room.playerIds[room.turn])} is playing…` + (lead ? ` (${C.SUIT_SYMBOL[lead]} was led)` : "");
+  } else if (playing && isBabbush()) {
+    status = ""; // the Babbush area says what to do
   } else if (playing) {
     if (myTurn && isCall()) status = room.phase === "throw"
       ? (canCall() ? "Your turn: CALL now, or throw a card first" : "Your turn: throw a card first (or several of the same number)")
@@ -5699,10 +6130,20 @@ function render() {
   if (isDhiha()) $("discardPile").nextElementSibling.textContent = "On the table";
   renderHeap();
   const pile = $("discardPile");
-  pile.classList.toggle("clickable", canDraw() && (isCall() ? !!room.pickable : !!room.discard?.length));
+  pile.classList.toggle("clickable", !isBabbush() && canDraw() && (isCall() ? !!room.pickable : !!room.discard?.length));
   pile.classList.toggle("target", canThrow());
 
   // my hand
+  if (isBabbush()) {
+    $("handSection").hidden = true;
+    for (const id of ["discardBtn", "diguBtn", "callBtn", "almostBtn", "groupSets", "callCount"]) $(id).hidden = true;
+    renderBabbush();
+    renderTargetSetup(); renderLoungeScene(); renderMembers(); renderPremiumPanel(); renderChat();
+    $("startBtn").hidden = true;
+    tick();
+    return;
+  }
+  $("bbArea")?.remove();
   const handDiv = $("hand");
   const dragId = drag?.moved && drag.src === "hand" ? drag.id : "";
   const legal = canThrow() ? (isBondi() ? C.bondiLegal(hand, room.trick || []) : isDhiha() ? C.dhihaLegal(hand, room.trick || []) : null) : null;
@@ -6027,9 +6468,13 @@ function renderTargetSetup() {
   $("gameCall").classList.toggle("on", g === "call");
   $("gameBondi").classList.toggle("on", g === "bondi");
   $("gameDhiha").classList.toggle("on", g === "dhiha");
+  $("gameBabbush").classList.toggle("on", g === "babbush");
+  $("gameBabbush").disabled = !host;
   $("gameDhiha").hidden = !isLoungeDoc(room);
   $("gameDigu").disabled = $("gameCall").disabled = $("gameBondi").disabled = $("gameDhiha").disabled = !host;
-  $("gameNote").textContent = g === "call"
+  $("gameNote").textContent = g === "babbush"
+    ? "BABBUSH: 4 cards each, face down. Look at 0–2 of yours, then take a card each turn: swap it for one of yours or throw it. J looks, Q switches, K locks. Throw a match when you have the same number. 8 = 0. Call BABBUSH when you think yours is lowest. Lowest total wins."
+    : g === "call"
     ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
     : g === "dhiha"
     ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: once all four 10s are out, 3 tens wins (2 each: first to 7 decks). Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck."
@@ -6215,7 +6660,8 @@ function showBanner(text) {
 function playShout(r) {
   if (gameOf(r) === "bondi") return playBondiEnd(r);
   if (gameOf(r) === "dhiha") return playDhihaEnd(r);
-  const call = gameOf(r) === "call";
+  const call = gameOf(r) === "call" || gameOf(r) === "babbush";
+  if (gameOf(r) === "babbush" && r.winner && !r._slapped) { r._slapped = true; return slapCard((r.bb?.rows?.[r.winner] || []).length ? r.bb.rows[r.winner] : null, r.winner, () => playShout(r)); }
   if (!call && r.diguCard && !r._slapped) { r._slapped = true; return slapCard(r.diguCard, r.winner, () => playShout(r)); }
   if (call && r.winner && !r._slapped) { // CALL: the caller slaps their whole hand down, face up
     r._slapped = true;
@@ -6228,12 +6674,13 @@ function playShout(r) {
   fx.className = "shout-fx " + (call ? "is-call" : "is-digu");
   const rays = document.createElement("div");
   rays.className = "fx-rays";
-  const word = shoutEl(r.diguStyle, call ? "CALL!" : "DIGU!");
+  const callWord = gameOf(r) === "babbush" ? "BABBUSH" : "CALL";
+  const word = shoutEl(r.diguStyle, call ? callWord + "!" : "DIGU!");
   word.classList.add("fx-word");
   const who = document.createElement("div");
   who.className = "fx-who";
   const winner = r.players.find((p) => p.uid === r.winner);
-  who.textContent = r.winner === uid ? `You called ${call ? "CALL" : "DIGU"}!` : `${winner?.name || "Someone"} called ${call ? "CALL" : "DIGU"}`;
+  who.textContent = r.winner === uid ? `You called ${call ? callWord : "DIGU"}!` : `${winner?.name || "Someone"} called ${call ? callWord : "DIGU"}`;
   fx.append(rays, word, who);
   confetti(fx, call);
   shakeAndFade(fx);
@@ -6614,6 +7061,7 @@ $("gameDigu").onclick = () => setGame("digu");
 $("gameCall").onclick = () => setGame("call");
 $("gameBondi").onclick = () => setGame("bondi");
 $("gameDhiha").onclick = () => setGame("dhiha");
+$("gameBabbush").onclick = () => setGame("babbush");
 $("diguBtn").onclick = onDigu;
 $("almostBtn").onclick = announceAlmost;
 $("leaveBtn").onclick = exitRoom;
@@ -6629,7 +7077,7 @@ $("botClose").onclick = () => ($("botModal").hidden = true);
 $("botForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  startPractice(["call", "bondi"].includes(f.get("game")) ? f.get("game") : "digu", Number(f.get("bots")) || 1,
+  startPractice(["call", "bondi", "babbush"].includes(f.get("game")) ? f.get("game") : "digu", Number(f.get("bots")) || 1,
     ["easy", "hard"].includes(f.get("level")) ? f.get("level") : "medium");
 });
 $("lobbyBackBtn").onclick = closeLobby;
