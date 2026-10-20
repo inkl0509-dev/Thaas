@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020g";
-import * as CFG from "./firebase-config.js?v=20261020g";
-import * as C from "./cards.js?v=20261020g";
-import * as P from "./profile.js?v=20261020g";
-import { DV } from "./i18n.js?v=20261020g";
+} from "./store.js?v=20261020h";
+import * as CFG from "./firebase-config.js?v=20261020h";
+import * as C from "./cards.js?v=20261020h";
+import * as P from "./profile.js?v=20261020h";
+import { DV } from "./i18n.js?v=20261020h";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -2754,8 +2754,17 @@ function bbBotTurn(bot) {
   const b = moveBatch();
   if (room.phase === "draw") {
     const total = C.bbCount(row), n = room.playerIds.length;
-    const limit = lvl === "hard" ? 7 : lvl === "medium" ? 9 : 5;
-    if (!bb.caller && total <= limit && (room.moveId || 0) >= n * 3) {
+    // When to call BABBUSH: not before everyone has had about 3 turns, and only when the count is
+    // really low. Hard looks at everyone's real count and calls only when it's lower than all of them.
+    // Medium guesses the others (cards it can't see count about 6 each). Easy waits for 3 or less.
+    const others = room.playerIds.filter((u) => u !== bot);
+    const guess = (u) => bbRow(u).reduce((a, x) => a + (bbIsLocked(x) ? C.bbValue(x) : 6), 0);
+    const late = (room.moveId || 0) >= n * 6;
+    const callNow = !bb.caller && late && (
+      lvl === "hard" ? total <= 10 && others.every((u) => C.bbCount(bbRow(u)) > total)
+      : lvl === "medium" ? total <= 6 && others.every((u) => guess(u) >= total + 4)
+      : total <= 3);
+    if (callNow) {
       b.update(roomRef(), { "bb.caller": bot, "bb.finalLeft": activeIds(room).length - 1, ...nextTurn(`📣 ${botName(bot)} called BABBUSH! Everyone else has one more turn`) });
       return b.commit().catch(() => {});
     }
