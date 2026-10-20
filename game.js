@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020c";
-import * as CFG from "./firebase-config.js?v=20261020c";
-import * as C from "./cards.js?v=20261020c";
-import * as P from "./profile.js?v=20261020c";
-import { DV } from "./i18n.js?v=20261020c";
+} from "./store.js?v=20261020d";
+import * as CFG from "./firebase-config.js?v=20261020d";
+import * as C from "./cards.js?v=20261020d";
+import * as P from "./profile.js?v=20261020d";
+import { DV } from "./i18n.js?v=20261020d";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -2626,16 +2626,13 @@ function bbTapCard(u, i) {
     return bbFinishPower({ K: { u, i } }, `${nameOf(uid)} used K 🔒 and ${bbIsLocked(c) ? "unlocked" : "locked"} ${u === uid ? "their" : `${nameOf(u)}'s`} ${cardName(c)}`);
   }
   if (u === uid && bbMyDrawn()) return bbReplace(i);
-  // not swapping: tapping my own card twice throws it as a match of the last thrown number
+  // not swapping: pick my cards with the same number as the thrown card, then press Throw
   if (u === uid && bb.matchRank != null) {
-    if (bbArm === i) { bbArm = null; return bbSnap(i); }
-    bbArm = i;
-    toast(`Tap it again to throw it as a ${C.label(bb.matchRank)} (wrong card = 2 penalty cards)`);
-    clearTimeout(bbArmTimer); bbArmTimer = setTimeout(() => { bbArm = null; try { render(); } catch {} }, 4000);
+    bbSel = bbSel.includes(i) ? bbSel.filter((x) => x !== i) : [...bbSel, i];
     return render();
   }
 }
-let bbArm = null, bbArmTimer = null;
+let bbSel = [], bbSelKey = null;
 function bbFinishPower(act, log) {
   const drawn = bbMyDrawn();
   if (!drawn || !claimAction()) return;
@@ -2663,24 +2660,29 @@ function bbCall() {
   commit(b, "turn");
 }
 // ⚡ the top thrown card has the same number as one of mine: throw it too (wrong: 2 penalty cards)
-function bbSnap(i) {
-  const bb = room.bb, row = [...bbRow(uid)], c = row[i];
-  const top = room.discard?.[room.discard.length - 1];
-  if (!c || bb.stage !== "play" || room.status !== "playing") return render();
+// throw the picked cards as matches of the last thrown number (any wrong one: back it goes, +2 cards)
+function bbSnap(picks) {
+  const bb = room.bb, row = [...bbRow(uid)];
+  picks = [...new Set(picks)].filter((i) => row[i]).sort((a, b) => b - a);
+  bbSel = [];
+  if (!picks.length || bb.stage !== "play" || room.status !== "playing") return render();
   if (bb.matchRank == null) { toast("There's no thrown card to match right now"); return render(); }
-  if (bbIsLocked(c)) { toast("🔒 Locked cards can't be thrown"); return render(); }
+  if (picks.some((i) => bbIsLocked(row[i]))) { toast("🔒 Locked cards can't be thrown"); return render(); }
   if (!claimAction()) return;
+  const good = picks.filter((i) => C.parse(row[i]).r === bb.matchRank), bad = picks.filter((i) => !good.includes(i));
+  const thrown = good.map((i) => row[i]), wrong = bad.map((i) => row[i]);
+  for (const i of good) row.splice(i, 1); // (highest place first, so the others don't move)
   const upd = { moveId: (room.moveId || 0) + 1 };
-  const want = C.label(bb.matchRank);
-  if (C.parse(c).r === bb.matchRank) { // right: the card goes, and the place goes with it
-    row.splice(i, 1);
-    Object.assign(upd, { [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), c], log: `⚡ ${nameOf(uid)} threw a matching ${cardName(c)}!` });
-  } else {
-    const t = bbTake(room.deck || [], room.discard || [], 2);
-    Object.assign(upd, { [`bb.rows.${uid}`]: [...row, ...t.got], deck: t.deck, discard: t.discard,
-      "bb.penalty": { u: uid, c, want: bb.matchRank, n: t.got.length, id: `${room.round}-${Date.now()}` },
-      log: `❌ ${nameOf(uid)} threw ${cardName(c)} but it isn't a ${want} · it goes back with +${t.got.length} cards` });
+  let discard = [...(room.discard || []), ...thrown], deck = room.deck || [];
+  let log = thrown.length ? `⚡ ${nameOf(uid)} threw ${thrown.length > 1 ? `${thrown.length} matching cards` : `a matching ${cardName(thrown[0])}`}!` : "";
+  let newRow = row;
+  if (wrong.length) {
+    const t = bbTake(deck, discard, 2);
+    deck = t.deck; discard = t.discard; newRow = [...row, ...t.got];
+    upd["bb.penalty"] = { u: uid, c: wrong[0], want: bb.matchRank, n: t.got.length, id: `${room.round}-${Date.now()}` };
+    log = (log ? log + " · " : "") + `❌ ${cardName(wrong[0])}${wrong.length > 1 ? ` and ${wrong.length - 1} more` : ""} ${wrong.length > 1 ? "aren't" : "isn't"} a ${C.label(bb.matchRank)} · +${t.got.length} cards`;
   }
+  Object.assign(upd, { [`bb.rows.${uid}`]: newRow, discard, deck, log });
   const b = moveBatch(); b.update(roomRef(), upd);
   commit(b);
 }
@@ -2840,9 +2842,25 @@ function bbCardEl(u, i, c, opts = {}) {
   el.dataset.uid = u; el.dataset.idx = i;
   return el;
 }
+let bbLogSeen = null;
+function bbPopupLog() { // what just happened, as a pop-up in the middle of the screen
+  const k = `${room.round}|${room.moveId}|${room.log}`;
+  if (bbLogSeen === null) { bbLogSeen = k; return; }
+  if (k === bbLogSeen) return;
+  bbLogSeen = k;
+  const t = room.log || "";
+  if (!t || /took a card from the middle pile$/.test(t) || t.startsWith("❌")) return; // (a wrong match has its own pop-up)
+  const p = document.createElement("div");
+  p.className = "bb-pop" + (t.startsWith("⚡") ? " good" : t.startsWith("📣") ? " call" : "");
+  p.textContent = t;
+  document.querySelectorAll(".bb-pop").forEach((x) => x.remove());
+  document.body.append(p);
+  setTimeout(() => p.remove(), 2600);
+}
 function renderBabbush() {
   const bb = room.bb || {};
   bbPenaltyShow();
+  bbPopupLog();
   let area = $("bbArea");
   if (!area) {
     area = Object.assign(document.createElement("section"), { id: "bbArea", className: "bb-area" });
@@ -2890,15 +2908,26 @@ function renderBabbush() {
   mine.className = "bb-mine" + ((drawn && !bbMode) || bbMode || (bb.stage === "peek" && !bb.peeked?.[uid]) ? " pickable" : "");
   bbRow(uid).forEach((c, i) => {
     const el = bbCardEl(uid, i, c);
-    if (bbPicks.some((p) => p.u === uid && p.i === i) || bbArm === i) el.classList.add("bb-picked");
+    if (bbPicks.some((p) => p.u === uid && p.i === i) || bbSel.includes(i)) el.classList.add("bb-picked");
     mine.append(el);
   });
   if (!bbRow(uid).length) mine.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No cards left · count 0!" }));
   area.append(mine);
   // buttons
   const ctl = document.createElement("div"); ctl.className = "bb-btns";
-  if (bb.stage === "play" && room.status === "playing" && bb.matchRank != null && bbRow(uid).length && !drawn && !bbMode && room.discard?.length)
-    area.append(Object.assign(document.createElement("p"), { className: "bb-hint", textContent: `Got a ${C.label(bb.matchRank)} too? Tap it twice to throw it (as many as you have)` }));
+  // picked cards are kept only while the same number is up
+  const selKey = `${room.round}|${bb.matchRank}|${bbRow(uid).join()}`;
+  if (bbSelKey !== selKey) { bbSelKey = selKey; bbSel = []; }
+  if (bb.stage === "play" && room.status === "playing" && bb.matchRank != null && bbRow(uid).length && !drawn && !bbMode && room.discard?.length) {
+    area.append(Object.assign(document.createElement("p"), { className: "bb-hint", textContent: `Got a ${C.label(bb.matchRank)} too? Pick your card${bbSel.length ? "s" : "(s)"} and throw` }));
+    if (bbSel.length) {
+      const tb = Object.assign(document.createElement("button"), { type: "button", className: "bb-snap", textContent: `⚡ Throw ${bbSel.length} card${bbSel.length > 1 ? "s" : ""} as ${C.label(bb.matchRank)}` });
+      tb.onclick = () => bbSnap(bbSel);
+      const cl = Object.assign(document.createElement("button"), { type: "button", className: "ghost small", textContent: "Clear" });
+      cl.onclick = () => { bbSel = []; render(); };
+      ctl.append(tb, cl);
+    }
+  }
   if (myTurn && bb.stage === "play" && room.phase === "draw" && !bb.caller && room.status === "playing") {
     const cb = Object.assign(document.createElement("button"), { type: "button", className: "bb-call", textContent: "📣 BABBUSH" });
     cb.onclick = () => { if (confirm("Call BABBUSH? Everyone else gets one more turn, then all cards are counted.")) bbCall(); };
@@ -5343,7 +5372,7 @@ function renderHeap() {
     if (digu) front.append(cardEl(digu));
     const back = document.createElement("div");
     back.className = "flip-back";
-    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : "DIGU!"));
+    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABBUSH!" : "DIGU!"));
     inner.append(front, back);
     f.append(inner);
     pile.append(f);
