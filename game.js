@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020h";
-import * as CFG from "./firebase-config.js?v=20261020h";
-import * as C from "./cards.js?v=20261020h";
-import * as P from "./profile.js?v=20261020h";
-import { DV } from "./i18n.js?v=20261020h";
+} from "./store.js?v=20261020i";
+import * as CFG from "./firebase-config.js?v=20261020i";
+import * as C from "./cards.js?v=20261020i";
+import * as P from "./profile.js?v=20261020i";
+import { DV } from "./i18n.js?v=20261020i";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -732,6 +732,11 @@ function lobbyTable(r) {
   title.textContent = GAME_NAME[r.game];
   const no = Object.assign(document.createElement("small"), { className: "table-no", textContent: `Table ${r.no}` });
   felt.append(title, no);
+  // at a glance: free, people waiting, or a game going on
+  t.append(Object.assign(document.createElement("span"), {
+    className: "tstate " + (!waiting ? "playing" : n ? "seated" : "free"),
+    textContent: !waiting ? `🔴 Playing · ${n}/${seats}` : n ? `👥 ${n}/${seats} seated` : "🟢 Free",
+  }));
   if (!waiting) {
     felt.append(Object.assign(document.createElement("small"), { textContent: `Playing · ${Math.max(1, r.gameRound || 1)}/${LOBBY_ROUNDS}` }));
   } else if (mine) {
@@ -1116,6 +1121,10 @@ function renderTableCards(tables) {
       }));
     }
     rt.append(felt);
+    card.append(Object.assign(document.createElement("span"), { // free / people waiting / a game going on
+      className: "tstate " + (playing ? "playing" : n ? "seated" : "free"),
+      textContent: playing ? `🔴 Playing · ${n}/${seats}` : n ? `👥 ${n}/${seats} seated` : "🟢 Free",
+    }));
     const label = Object.assign(document.createElement("div"), {
       className: "rt-label",
       textContent: mine ? (n >= 2 ? `✓ Your table · ${n} players` : "✓ Your table · waiting for 1 more") : playing ? "Game on" : n >= seats ? "Full" : "Tap to join",
@@ -5056,6 +5065,7 @@ async function runCleanup(asAdmin) {
 }
 setTimeout(() => runCleanup(false).catch(() => {}), 25_000); // the server does this at most every 30 minutes
 
+const isOnlineNow = (u) => !u.deleted && Date.now() - untilMs(u.lastSeen) < 4 * 60_000;
 // "online now", "5 min ago", "yesterday 21:04", …
 function seenAgo(ms) {
   const d = Date.now() - ms;
@@ -5073,13 +5083,15 @@ function renderAdmin() {
       || (adminFilter === "registered" && u.registered)
       || (adminFilter === "guests" && !u.registered && !u.deleted)
       || (adminFilter === "blocked" && adminBanned.has(u.id))
-      || (adminFilter === "recent" && untilMs(u.lastSeen)))
+      || (adminFilter === "recent" && untilMs(u.lastSeen))
+      || (adminFilter === "online" && isOnlineNow(u)))
     .filter((u) => !q || (u.name || "").toLowerCase().includes(q) || u.id.toLowerCase().includes(q))
-    .sort((a, b) => adminFilter === "recent" ? untilMs(b.lastSeen) - untilMs(a.lastSeen)
+    .sort((a, b) => adminFilter === "recent" || adminFilter === "online" ? untilMs(b.lastSeen) - untilMs(a.lastSeen)
       : (b.careerPoints || 0) - (a.careerPoints || 0) || (b.gamesPlayed || 0) - (a.gamesPlayed || 0));
 
   const reg = adminUsers.filter((u) => u.registered).length;
-  $("adminCount").textContent = `${adminUsers.length} players · ${reg} registered · ${adminBanned.size} blocked`;
+  const onlineN = adminUsers.filter(isOnlineNow).length;
+  $("adminCount").textContent = `${adminUsers.length} players · 🟢 ${onlineN} online now · ${reg} registered · ${adminBanned.size} blocked`;
   const box = $("adminList");
   box.innerHTML = "";
   if (!list.length) box.innerHTML = '<p class="muted">No players match.</p>';
@@ -5098,8 +5110,14 @@ function renderAdmin() {
     const meta = document.createElement("small");
     meta.textContent = u.deleted ? `ID ${u.id}`
       : `${u.registered ? `${rk.icon} ${rk.name} · ${u.careerPoints || 0} pts` : "Guest"} · ${u.gamesPlayed || 0} rounds`
-        + (untilMs(u.lastSeen) ? ` · ${seenAgo(untilMs(u.lastSeen))}` : "") + ` · ID ${u.id.slice(0, 8)}…`;
+        + ` · ID ${u.id.slice(0, 8)}…`;
     info.append(name, meta);
+    // online status on its own line, so the buttons never hide it
+    if (!u.deleted) {
+      const on = isOnlineNow(u), ms = untilMs(u.lastSeen);
+      info.append(Object.assign(document.createElement("span"), { className: "admin-seen" + (on ? " on" : ""), textContent: on ? "🟢 Online now" : ms ? `⚪ ${seenAgo(ms).replace("last online", "Last online")}` : "⚪ Not seen yet" }));
+      if (on) row.classList.add("is-online");
+    }
     if (adminBanned.has(u.id)) info.append(Object.assign(document.createElement("span"), { className: "tag-blocked", textContent: "BLOCKED" }));
     const pu = adminPremium.get(u.id) || 0;
     if (pu > Date.now()) info.append(Object.assign(document.createElement("span"), { className: "tag-prem", textContent: `💎 until ${new Date(pu).toLocaleDateString()}` }));
