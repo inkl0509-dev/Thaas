@@ -2261,3 +2261,15 @@ html, body { overflow-x: hidden; }
 .bb-orow .card .pip { font-size: 12px; }
 .bb-orow.pickable .bb-card:not(.bb-locked) { box-shadow: 0 0 0 2px #3b9cff; cursor: pointer; }
 .bb-orow.caller::before { content: "📣"; position: absolute; left: -16px; top: 6px; font-size: 12px; }
+.bb-hint { margin: 0; font-size: 12.5px; opacity: .85; text-align: center; }
+/* 😬 wrong match */
+.bb-penalty { position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%); z-index: 170; pointer-events: none;
+  display: grid; justify-items: center; gap: 2px; padding: 14px 22px; border-radius: 18px; text-align: center;
+  background: rgba(120, 10, 30, .92); color: #fff; box-shadow: 0 10px 40px rgba(0,0,0,.5), 0 0 0 3px #ff4d6d;
+  animation: bpIn .5s cubic-bezier(.2,1.6,.4,1), bpOut .4s 2.2s ease-in forwards; }
+.bb-penalty .bp-emoji { font-size: 64px; line-height: 1; animation: bpShake .5s .3s 2; }
+.bb-penalty b { font-size: 20px; }
+.bb-penalty small { font-size: 13px; opacity: .9; }
+@keyframes bpIn { from { transform: translate(-50%, -50%) scale(.3); opacity: 0; } }
+@keyframes bpOut { to { transform: translate(-50%, -60%) scale(.9); opacity: 0; } }
+@keyframes bpShake { 25% { transform: rotate(-14deg); } 75% { transform: rotate(14deg); } }
