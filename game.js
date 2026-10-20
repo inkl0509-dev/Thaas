@@ -10,11 +10,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020d";
-import * as CFG from "./firebase-config.js?v=20261020d";
-import * as C from "./cards.js?v=20261020d";
-import * as P from "./profile.js?v=20261020d";
-import { DV } from "./i18n.js?v=20261020d";
+} from "./store.js?v=20261020e";
+import * as CFG from "./firebase-config.js?v=20261020e";
+import * as C from "./cards.js?v=20261020e";
+import * as P from "./profile.js?v=20261020e";
+import { DV } from "./i18n.js?v=20261020e";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -5562,7 +5562,8 @@ function renderSeats() {
       box.append(t);
       if (t._bbrow && Math.abs(slot.tag.rot) === 90) { // left / right players: their row sits above their name
         const half = (t.offsetWidth || 90) / 2;
-        Object.assign(t._bbrow.style, { left: Math.min(W - 60, Math.max(60, slot.tag.x)) + "px", top: Math.max(48, slot.tag.y - half - 28) + "px" });
+        t._bbrow.classList.add("vertical"); // a column along the edge, going up from the top of the name
+        Object.assign(t._bbrow.style, { left: Math.min(W - 16, Math.max(16, slot.tag.x)) + "px", top: (slot.tag.y - half - 8) + "px" });
       }
       // left and right players: their cards sit just above their name
       if (t._fan && Math.abs(slot.tag.rot) === 90) {
