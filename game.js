@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261022a";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261023g";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261022a";
-import * as CFG from "./firebase-config.js?v=20261022a";
-import * as C from "./cards.js?v=20261022a";
-import * as P from "./profile.js?v=20261022a";
-import { DV } from "./i18n.js?v=20261022a";
+} from "./store.js?v=20261023g";
+import * as CFG from "./firebase-config.js?v=20261023g";
+import * as C from "./cards.js?v=20261023g";
+import * as P from "./profile.js?v=20261023g";
+import { DV } from "./i18n.js?v=20261023g";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -3102,12 +3102,43 @@ function applyPickup() {
   applyPickup.busy = true;
   const add = mine.filter((c) => !hand.includes(c));
   // wait until my hand is up to date (it arrives separately from the table)
-  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid]) { applyPickup.busy = false; return; }
+  // (but never longer than a moment: after 1.2 s the cards go straight into my hand anyway)
+  const key = mine.join(",");
+  if (applyPickup.key !== key) { applyPickup.key = key; applyPickup.since = Date.now(); }
+  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid] && Date.now() - applyPickup.since < 1200) {
+    applyPickup.busy = false; setTimeout(applyPickup, 300); return;
+  }
   const b = writeBatch(db);
-  if (add.length) b.update(handRef(), { cards: [...hand, ...add] });
+  if (add.length) { hand = [...hand, ...add]; b.update(handRef(), { cards: hand }); try { render(); } catch {} }
   b.update(roomRef(), { [`pickups.${uid}`]: deleteField() });
   b.commit().catch((e) => toast(errMsg(e))).finally(() => { applyPickup.busy = false; });
 }
+
+// BONDI safety net: if my hand and the table disagree for a few seconds (a save got lost on a bad
+// connection), reload my hand from the server, take in any picked-up cards, and if the count is still
+// off, correct it, so the game never gets stuck on "your turn" with nothing working.
+let bondiStuckSince = 0;
+setInterval(async () => {
+  if (!room || !isBondi() || room.status !== "playing" || !room.playerIds?.includes(uid) || !pendingPickup()) { bondiStuckSince = 0; return; }
+  if (!bondiStuckSince) { bondiStuckSince = Date.now(); return; }
+  if (Date.now() - bondiStuckSince < 4000 || applyPickup.busy || pendingMoves.length) return;
+  bondiStuckSince = Date.now();
+  applyPickup.busy = true;
+  try {
+    const fresh = (await getDoc(handRef())).data()?.cards || [];
+    const pick = (room.pickups?.[uid] || []).filter((c) => !fresh.includes(c));
+    const cards = [...fresh, ...pick];
+    const b = writeBatch(db);
+    if (pick.length) b.update(handRef(), { cards });
+    const upd = {};
+    if (room.pickups?.[uid]) upd[`pickups.${uid}`] = deleteField();
+    if (room.counts?.[uid] !== cards.length) upd[`counts.${uid}`] = cards.length;
+    if (Object.keys(upd).length) b.update(roomRef(), upd);
+    await b.commit();
+    setHandCards(cards);
+    render();
+  } catch (e) { console.warn("BONDI fix-up", e); } finally { applyPickup.busy = false; }
+}, 1000);
 
 async function botBondi(bot, cards) {
   const got = room.pickups?.[bot] || [];
@@ -3153,7 +3184,7 @@ function bondiRemoval(r, out, ids, pick) {
 function renderTrick() {
   const pile = $("discardPile");
   const live = room.trick || [];
-  const last = room.lastTrick;
+  const last = room.status === "playing" && room.lastTrick && sweptTricks.has(room.lastTrick.id) ? null : room.lastTrick; // gone once it has flown away
   const showing = live.length ? live : last ? last.cards.map((card, i) => ({ card, uid: last.players[i] })) : [];
   const key = `${room.round}|${room.status}|${JSON.stringify(showing)}|${last?.id}`;
   if (key === heapKey) return;
@@ -3177,11 +3208,16 @@ function renderTrick() {
     slot.append(el, Object.assign(document.createElement("small"), { textContent: t.uid === uid ? "You" : nameOf(t.uid) }));
     pile.append(slot);
   });
+  // a finished deck never waits on the table: it flies to whoever picks it up (or out of play) by itself
+  if (!live.length && last && room.status === "playing" && !sweepPlanned.has(last.id)) {
+    sweepPlanned.add(last.id);
+    setTimeout(() => sweepTrick(last), isBondi() ? 450 : 900);
+  }
   if (!live.length && last) {
     const note = document.createElement("div");
     note.className = "trick-note" + (last.to ? " cut" : "");
     note.textContent = isDhiha() ? `✓ Deck to ${teamName(last.team)}${last.tens ? " · 🔟" : ""}`
-      : last.to ? `✋ Cut! → ${last.to === uid ? "you pick up" : nameOf(last.to) + " picks up"}` : "✓ Set aside";
+      : last.to ? `✋ Cut! → ${last.to === uid ? "you pick up" : nameOf(last.to) + " picks up"}` : "✓ Out of play";
     pile.append(note);
   }
 }
@@ -4251,8 +4287,8 @@ function renderResults() {
   list.innerHTML = "";
   [...lastRows].sort((a, b) => (low ? a.pts - b.pts : b.pts - a.pts)).forEach((row) => {
     const div = document.createElement("div");
-    const good = row.dhiha ? row.won : low ? row.pts === 0 : row.uid === room.winner;
-    const bad = low ? row.how === "caught" || (row.bondi && row.last && row.pts > 0) : row.pts < 0;
+    const good = row.dhiha ? row.won : low ? row.pts === 0 || row.how === "caught-caller" : row.uid === room.winner;
+    const bad = low ? row.how === "caught" || row.how === "penalty" || (row.bondi && row.last && row.pts > 0) : row.pts < 0;
     div.className = "result-row" + (good ? " winner" : "") + (bad ? " negative" : "");
     const head = document.createElement("div");
     head.className = "result-head";
@@ -4274,7 +4310,8 @@ function renderResults() {
         : `${ordinal(row.place)} out`)
       : row.call
       ? ({ won: `Called with ${row.count} · lowest`, caught: `Called with ${row.count} · caught! +${row.bb ? C.BB_PENALTY : C.CALL_PENALTY}`,
-           "caught-caller": `Count ${row.count} · ${row.bb ? "lower than the caller" : "caught the CALL"}`, count: `Count ${row.count}`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
+           "caught-caller": `Count ${row.count} · ${row.bb ? "lower than the caller" : "caught the CALL"}`, count: `Count ${row.count}`,
+           penalty: `Count ${row.count} · +${C.CALL_PENALTY} (the CALL was caught)`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
       : row.digu
       ? `DIGU bonus +${C.DIGU_BONUS} · cards +${row.setPts}`
       : row.noSets
@@ -4763,10 +4800,19 @@ async function forgotPassword() {
   if (!email) { $("authError").textContent = "Type your email above first, then press Forgot password."; $("authEmail").focus(); return; }
   $("authForgot").disabled = true;
   try {
-    await sendPasswordResetEmail(auth, email);
+    // THAAS sends its own email (api/reset.js); if that isn't set up yet, Firebase's standard email is used
+    let sent = false;
+    const url = NOTIFY_URL ? NOTIFY_URL.replace(/notify$/, "reset") : "";
+    if (url) {
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      if (r?.ok) sent = true;
+      else if (r && (r.status === 429 || r.status === 400)) throw { code: "x", message: j.error };
+    }
+    if (!sent) await sendPasswordResetEmail(auth, email);
     $("authError").textContent = "";
-    toast(`📧 We sent a link to ${email} to choose a new password · check your inbox (and spam)`);
-    $("authInfo").textContent = `📧 Reset link sent to ${email}. Open it, choose a new password, then sign in here.`;
+    toast("📧 Check your email for a link to choose a new password");
+    $("authInfo").textContent = `📧 If ${email} has a THAAS account, a reset link is on its way. Open it, choose a new password, then sign in here. (Check spam too.)`;
   } catch (err) {
     $("authError").textContent = err.code === "auth/user-not-found" ? "No account with that email." : AUTH_ERRORS[err.code] || err.message || "Couldn't send the email · try again";
   } finally { $("authForgot").disabled = false; }
@@ -6207,6 +6253,43 @@ function renderTurnGlow() {
 }
 addEventListener("resize", () => { if (room) renderTurnGlow(); });
 
+// ---------- 🔄 forced updates ----------
+// version.json on the website says which version is current. When it's newer than this copy (an old
+// copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
+// can't be closed. Updating reloads the page from the server; the game carries on where it was.
+const APP_VERSION = "20261023g";
+let updateShown = false;
+async function checkForUpdate() {
+  if (updateShown || document.hidden) return;
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!r.ok) return;
+    const v = String((await r.json()).version || "");
+    if (v && v > APP_VERSION) showUpdate(v);
+  } catch { /* offline: try again later */ }
+}
+function showUpdate(v) {
+  updateShown = true;
+  const o = document.createElement("div");
+  o.className = "update-wall";
+  o.innerHTML = `<div class="uw-card"><div class="uw-icon">🔄</div><h2>Update available</h2>
+    <p>A new version of THAAS is ready, with new features and fixes. Please update to keep playing.</p>
+    <button type="button" class="primary">Update now</button>
+    <small>Your game and points are safe · you'll be back where you were.</small></div>`;
+  o.querySelector("button").onclick = () => {
+    o.querySelector("button").textContent = "Updating…";
+    // a new address makes the phone fetch everything fresh instead of using its saved copy
+    const u = new URL(location.href);
+    u.searchParams.set("v", v);
+    try { caches?.keys?.().then((ks) => ks.forEach((k) => caches.delete(k))); } catch {}
+    location.replace(u.toString());
+  };
+  document.body.append(o);
+}
+setTimeout(checkForUpdate, 3000);
+setInterval(checkForUpdate, 120_000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
+
 // 🎵 background music while at a table (game or round results), unless muted
 function syncMusic() {
   const at = !!room && room.playerIds?.includes(uid) && room.status !== "lobby" && !$("game").hidden && !document.hidden;
@@ -6333,7 +6416,7 @@ function render() {
   $("table").hidden = room.status === "lobby";
   $("deckCount").textContent = isBondi() ? room.aside || 0 : room.deck?.length ?? 0;
   $("deck").classList.toggle("aside-pile", isBondi());
-  $("deck").nextElementSibling.textContent = isBondi() ? "Set aside" : "Middle pile";
+  $("deck").nextElementSibling.textContent = isBondi() ? "Out of play" : "Middle pile";
   $("discardPile").nextElementSibling.textContent = isBondi() ? "On the table" : "Discard";
   $("deck").classList.toggle("clickable", canDraw());
   $("deck").parentElement.hidden = isDhiha();
@@ -6682,14 +6765,15 @@ function renderTargetSetup() {
   $("gameBabbush").disabled = !host;
   $("gameDhiha").hidden = !isLoungeDoc(room);
   $("gameDigu").disabled = $("gameCall").disabled = $("gameBondi").disabled = $("gameDhiha").disabled = !host;
-  $("gameNote").textContent = g === "babbush"
+  $("gameNote").textContent = g === "call" ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Caught (someone has less)? The caller scores 50 and everyone else their count. Lowest total wins."
+    : g === "babbush"
     ? "BABBUSH: 4 cards each, face down. Look at 0–2 of yours, then each turn take a card (middle pile or the last thrown card) and put it in the place of one of yours. J looks, Q switches, K locks. Same number as the thrown card? Tap yours twice to throw it too. 8 = 0. Call BABBUSH when you think yours is lowest. Lowest total wins."
     : g === "call"
     ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
     : g === "dhiha"
     ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: once all four 10s are out, 3 tens wins (2 each: first to 7 decks). Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck."
     : g === "bondi"
-    ? "BONDI: all cards dealt, K♠ starts. Follow suit; if you can't, cut and the highest card picks up the pile. First out scores 0, then 10, 20… Lowest total wins."
+    ? "BONDI: all cards are dealt, there's no pile to take from. K♠ starts. Follow suit; if you can't, cut with any card (your biggest!) and the player with the highest card of the suit picks up all the cards and plays next. When everyone follows, the cards go out of play and the highest card plays next. First out scores 0, then 10, 20… Lowest total wins."
     : "DIGU: make two sets of 3 and one set of 4. Highest total wins.";
   const mode = room.endMode === "rounds" ? "rounds" : "points";
   $("endPoints").classList.toggle("on", mode === "points");
@@ -6794,7 +6878,7 @@ function funMoment(emoji, text, floaters, kind) {
 // BONDI: someone cut, someone ran out of cards.
 function bondiMoments(prev) {
   const t = room.lastTrick;
-  if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), 650); // let everyone see the trick first
+  if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), isBondi() ? 250 : 650); // BONDI: straight to the picker / out of play
   if (t?.id && t.id !== prev.lastTrick?.id && t.cut) {
     // big cards picked up (A, K, Q, J) → the table laughs
     const big = t.cards.map((c) => C.parse(c).r).filter((r) => r === 1 || r >= 11).sort((a, b) => (a === 1 ? 14 : a) < (b === 1 ? 14 : b) ? 1 : -1);
@@ -6817,8 +6901,12 @@ function bondiMoments(prev) {
 
 // The cards on the table fly to whoever picks them up (into my hand if it's me),
 // or onto the set-aside pile when everyone followed suit.
+const sweptTricks = new Set(), sweepPlanned = new Set();
 function sweepTrick(t) {
-  if (!room || room.lastTrick?.id !== t.id || (room.trick || []).length) return; // a new trick already started
+  if (!room) return;
+  sweptTricks.add(t.id);
+  if (room.lastTrick?.id !== t.id || (room.trick || []).length) { heapKey = null; try { render(); } catch {} return; } // a new deck already started
+  setTimeout(() => { heapKey = null; try { render(); } catch {} }, 1300); // then the table is clear
   const slots = [...$("discardPile").querySelectorAll(".trick-slot")];
   if (!slots.length) return;
   const target = t.team ? $("teamPile-" + t.team)
@@ -7261,6 +7349,19 @@ $("adminCleanGuests").onclick = async () => {
     openAdmin();
   } catch (e) { toast(errMsg(e)); }
 };
+$("adminUpdateAlert").onclick = async () => {
+  const text = prompt("Notification text for every phone with the THAAS app:", "New features and fixes are ready. Open THAAS to update.");
+  if (text === null) return;
+  try {
+    if (!NOTIFY_URL || !auth.currentUser) throw new Error("The notification service isn't set up");
+    const r = await fetch(NOTIFY_URL, { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
+      body: JSON.stringify({ roomId: "-", kind: "update", text, version: APP_VERSION }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "Sending failed");
+    toast(`📣 Update alert sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}`);
+  } catch (e) { toast(errMsg(e)); }
+};
 $("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
 $("targetCustom").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -7360,7 +7461,7 @@ async function setupPush() {
     await PN.addListener("registration", ({ value }) => { pushToken = value; savePushToken(); });
     await PN.addListener("registrationError", (e) => console.warn("Push registration failed", e));
     // tapping a notification opens that table
-    await PN.addListener("pushNotificationActionPerformed", ({ notification }) => openFromPush(notification?.data?.roomId));
+    await PN.addListener("pushNotificationActionPerformed", ({ notification }) => (notification?.data?.kind === "update" ? checkForUpdate() : openFromPush(notification?.data?.roomId)));
     await PN.register();
   } catch (e) { console.warn("Push setup failed", e); }
 }
