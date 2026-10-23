@@ -2308,3 +2308,17 @@ html, body { overflow-x: hidden; }
   background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.3); }
 #authForgot { font-size: 13px; opacity: .85; }
 #authInfo:empty { display: none; }
+/* BONDI: the cleared cards are out of play (nobody takes from them) */
+#deck.aside-pile { opacity: .45; filter: grayscale(.7); transform: scale(.72) rotate(-8deg); pointer-events: none; box-shadow: none; }
+#deck.aside-pile + small { opacity: .7; font-size: 11px; }
+/* 🔄 forced update notice (can't be closed) */
+.update-wall { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px;
+  background: rgba(5, 25, 25, .9); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.update-wall .uw-card { width: 100%; max-width: 360px; text-align: center; padding: 26px 22px; border-radius: 18px;
+  background: #134a48; color: #f4efe2; border: 1px solid rgba(255,255,255,.15); box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+.update-wall .uw-icon { font-size: 52px; animation: uwSpin 2.4s linear infinite; display: inline-block; }
+.update-wall h2 { margin: 8px 0 6px; color: #e8b64c; }
+.update-wall p { margin: 0 0 16px; color: #cfdcd8; line-height: 1.5; }
+.update-wall button { width: 100%; padding: 13px; font-size: 16px; }
+.update-wall small { display: block; margin-top: 12px; color: #9fb3ae; }
+@keyframes uwSpin { to { transform: rotate(360deg); } }
