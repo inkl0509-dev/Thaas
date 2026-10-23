@@ -2,19 +2,20 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import {
   getAuth, signInAnonymously, onAuthStateChanged, signOut, updateProfile,
   setPersistence, browserLocalPersistence, browserSessionPersistence,
-  EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword,
+  EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261022a";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261020i";
-import * as CFG from "./firebase-config.js?v=20261020i";
-import * as C from "./cards.js?v=20261020i";
-import * as P from "./profile.js?v=20261020i";
-import { DV } from "./i18n.js?v=20261020i";
+} from "./store.js?v=20261022a";
+import * as CFG from "./firebase-config.js?v=20261022a";
+import * as C from "./cards.js?v=20261022a";
+import * as P from "./profile.js?v=20261022a";
+import { DV } from "./i18n.js?v=20261022a";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -2346,7 +2347,9 @@ function hideTableOverlays() {
   $("game").classList.remove("in-play");
   chatOpen = false; tipOpen = false;
 }
+function leaveRoomMusic() { stopMusic(); }
 function leaveRoom() {
+  leaveRoomMusic();
   $("tourneyBtn").hidden = true;
   stopPresence();
   hideTableOverlays();
@@ -4648,6 +4651,8 @@ function openAuth(mode) {
   $("authAvatarRow").hidden = mode !== "register";
   $("authSwitch").textContent = mode === "register" ? "Already registered? Sign in" : tr("auth.toRegister", "New here? Register");
   $("authError").textContent = "";
+  $("authForgot").hidden = mode === "register";
+  $("authInfo").textContent = "";
   if (mode === "register") {
     $("authName").value = $("name").value.trim();
     renderAvatarPicker($("authAvatars"), pickedAvatar, (a) => { pickedAvatar = a; });
@@ -4749,6 +4754,22 @@ async function submitAuth(e) {
   } finally {
     $("authSubmit").disabled = false;
   }
+}
+
+// Forgot password: Firebase emails a link to choose a new one
+async function forgotPassword() {
+  const email = $("authEmail").value.trim();
+  $("authError").textContent = "";
+  if (!email) { $("authError").textContent = "Type your email above first, then press Forgot password."; $("authEmail").focus(); return; }
+  $("authForgot").disabled = true;
+  try {
+    await sendPasswordResetEmail(auth, email);
+    $("authError").textContent = "";
+    toast(`📧 We sent a link to ${email} to choose a new password · check your inbox (and spam)`);
+    $("authInfo").textContent = `📧 Reset link sent to ${email}. Open it, choose a new password, then sign in here.`;
+  } catch (err) {
+    $("authError").textContent = err.code === "auth/user-not-found" ? "No account with that email." : AUTH_ERRORS[err.code] || err.message || "Couldn't send the email · try again";
+  } finally { $("authForgot").disabled = false; }
 }
 
 async function logOut() {
@@ -6186,8 +6207,19 @@ function renderTurnGlow() {
 }
 addEventListener("resize", () => { if (room) renderTurnGlow(); });
 
+// 🎵 background music while at a table (game or round results), unless muted
+function syncMusic() {
+  const at = !!room && room.playerIds?.includes(uid) && room.status !== "lobby" && !$("game").hidden && !document.hidden;
+  if (at && !isMuted()) startMusic(); else stopMusic();
+  const b = $("musicBtn");
+  if (b) { b.textContent = isMuted() ? "🔇" : "🔊"; b.title = isMuted() ? "Music off · tap to turn on" : "Music on · tap to mute"; }
+}
+setMuted(load("thaas-music") === "off");
+addEventListener("pointerdown", () => { unlockMusic(); syncMusic(); }, { passive: true });
+document.addEventListener("visibilitychange", syncMusic);
 function render() {
   if (!room) return;
+  queueMicrotask(syncMusic);
   if ($("game").hidden) hideTableOverlays();
   renderTurnGlow();
   renderOfflineAsk();
@@ -7169,6 +7201,8 @@ $("joinBtn").onclick = () => joinRoom($("code").value);
 $("tourneyCreate").onclick = createTournament;
 $("tourneyJoin").onclick = () => joinTournament($("tourneyCode").value);
 $("tourneyClose").onclick = closeTournament;
+$("authForgot").onclick = forgotPassword;
+$("musicBtn").onclick = () => { setMuted(!isMuted()); store("thaas-music", isMuted() ? "off" : "on"); toast(isMuted() ? "🔇 Music off" : "🔊 Music on"); syncMusic(); };
 $("tourneyBtn").onclick = $("resTourneyBtn").onclick = () => { if (room?.tourney) { $("results").hidden = true; openTournament(room.tourney.code); } };
 $("code").addEventListener("keydown", (e) => e.key === "Enter" && joinRoom($("code").value));
 $("startBtn").onclick = dealRound;
