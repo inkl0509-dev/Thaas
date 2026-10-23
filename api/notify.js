@@ -79,6 +79,7 @@ module.exports = async function handler(req, res) {
 
   const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
   const { roomId, kind } = body;
+  if (kind === "update") return sendUpdate(app, caller, body, res);
   if (!roomId || typeof roomId !== "string" || roomId.includes("/")) return res.status(400).json({ error: "bad roomId" });
 
   // 2. they must be at that table
@@ -126,5 +127,27 @@ module.exports = async function handler(req, res) {
 
   return res.json({ sent: result.successCount, failed: result.failureCount });
 };
+
+// Admin only: tell every phone with the app that a new version is out.
+async function sendUpdate(app, caller, body, res) {
+  const db = app.firestore();
+  if (!(await db.doc(`admins/${caller}`).get()).exists) return res.status(403).json({ error: "admins only" });
+  const all = await db.collection("pushTokens").get();
+  const tokens = [];
+  all.forEach((u) => (u.get("tokens") || []).forEach((t) => tokens.push(t)));
+  if (!tokens.length) return res.json({ sent: 0 });
+  const text = String(body.text || "").slice(0, 140) || "New features and fixes are ready. Open THAAS to update.";
+  let sent = 0, failed = 0;
+  for (let i = 0; i < tokens.length; i += 500) {
+    const r = await app.messaging().sendEachForMulticast({
+      tokens: tokens.slice(i, i + 500),
+      notification: { title: "🔄 THAAS update available", body: text },
+      data: { kind: "update", version: String(body.version || "") },
+      android: { priority: "high", notification: { channelId: "turns", tag: "thaas-update", color: "#E8B64C", sound: "default" } },
+    });
+    sent += r.successCount; failed += r.failureCount;
+  }
+  return res.json({ sent, failed });
+}
 
 module.exports.plan = plan; // for tests
