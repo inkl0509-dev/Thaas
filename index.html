@@ -6,7 +6,7 @@
   <title>THAAS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261020i">
+  <link rel="stylesheet" href="style.css?v=20261022a">
 </head>
 <body>
   <!-- LOBBY -->
@@ -350,7 +350,9 @@
       <label>Password <input id="authPassword" type="password" minlength="6" autocomplete="current-password" required></label>
       <label class="remember"><input type="checkbox" id="authRemember" checked> <span data-i18n="auth.remember">Remember me on this device</span></label>
       <p id="authError" class="error"></p>
+      <p id="authInfo" class="muted small-note"></p>
       <button id="authSubmit" class="primary"></button>
+      <button type="button" id="authForgot" class="link">Forgot password?</button>
       <button type="button" id="authSwitch" class="link"></button>
     </form>
   </div>
@@ -490,6 +492,7 @@
   <button id="tourneyBtn" class="tourney-btn" hidden title="Tournament schedule">🏆</button>
   <div id="bottomBar" class="bottom-bar" hidden>
     <span id="bottomBack"></span>
+    <button id="musicBtn" class="corner-btn music-btn" title="Music">🔊</button>
     <button id="pauseBtn" class="corner-btn pause-btn" hidden title="Pause">⏸</button>
     <button id="endGameBtn" class="corner-btn end-btn" hidden title="End the game">⏹</button>
     <div id="premTools" class="prem-tools" hidden>
@@ -510,6 +513,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261020i"></script>
+  <script type="module" src="game.js?v=20261022a"></script>
 </body>
 </html>
