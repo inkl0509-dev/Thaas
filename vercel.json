@@ -1,6 +1,42 @@
 {
   "functions": {
-    "api/move.js": { "maxDuration": 60 },
-    "api/cleanup.js": { "maxDuration": 60 }
-  }
+    "api/move.js": {
+      "maxDuration": 60
+    },
+    "api/cleanup.js": {
+      "maxDuration": 60
+    },
+    "api/reset.js": {
+      "maxDuration": 20
+    }
+  },
+  "headers": [
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/version.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    }
+  ]
 }
