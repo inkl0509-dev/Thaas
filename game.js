@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024h";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024k";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261024h";
-import * as CFG from "./firebase-config.js?v=20261024h";
-import * as C from "./cards.js?v=20261024h";
-import * as P from "./profile.js?v=20261024h";
-import { DV } from "./i18n.js?v=20261024h";
+} from "./store.js?v=20261024k";
+import * as CFG from "./firebase-config.js?v=20261024k";
+import * as C from "./cards.js?v=20261024k";
+import * as P from "./profile.js?v=20261024k";
+import { DV } from "./i18n.js?v=20261024k";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -2328,8 +2328,7 @@ function enterRoom(code) {
   unsubHand = onSnapshot(handRef(), (snap) => {
     handLoaded = !snap.metadata?.hasPendingWrites && !snap.metadata?.fromCache;
     serverHand = snap.exists() ? snap.data().cards : []; handSeen = true;
-    let cards = pendingHand() || serverHand;
-    if (isBondi()) { const pk = pickList(uid); cards = [...cards, ...pk.filter((c) => !cards.includes(c))]; }
+    const cards = pendingHand() || serverHand;
     // keep my own arrangement: existing cards stay in place, new ones go on the end
     const added = cards.filter((c) => !hand.includes(c));
     hand = [...hand.filter((c) => cards.includes(c)), ...added];
@@ -3013,25 +3012,13 @@ function trickLeader() {
 // true while cards I've been given haven't reached my hand yet, or my hand hasn't caught up with
 // the table (the two arrive separately) — I can't play until it's all in step
 // (never for more than a moment: after 2 s I can play anyway, and my next card fixes the count)
-const pendingPickup = () => {
-  if (!isBondi() || !room) return false;
-  mergePickupLocal();
-  const off = room.status === "playing" && room.counts && hand.length !== room.counts[uid];
-  if (!off) { pendingPickup.since = 0; return false; }
-  if (!pendingPickup.since) pendingPickup.since = Date.now();
-  return Date.now() - pendingPickup.since < 2000;
-};
+const pendingPickup = () => isBondi() && !!room && (pickList(uid).some((c) => !hand.includes(c))
+  || (room.status === "playing" && room.counts && hand.length !== room.counts[uid]));
 const toList = (v) => (!v ? [] : Array.isArray(v) ? v.filter((x) => x != null) : typeof v === "object" ? Object.keys(v).sort((a, b) => a - b).map((k) => v[k]).filter((x) => x != null) : []);
 const listMap = (m) => Object.fromEntries(Object.entries(m || {}).map(([k, v]) => [k, toList(v)]));
 // picked-up cards as a list (the live database can hand back a list as {0: …, 1: …})
-const pickList = (u) => { const v = room?.pickups?.[u]; return !v ? [] : Array.isArray(v) ? v.filter(Boolean) : Object.keys(v).sort((a, b) => a - b).map((k) => v[k]).filter((x) => typeof x === "string"); };
-// cards the table says I picked up are in my hand on screen straight away, whatever the save is doing
-function mergePickupLocal() {
-  const add = pickList(uid).filter((c) => !hand.includes(c));
-  if (!add.length) return false;
-  hand = C.sortBondi([...hand, ...add]);
-  return true;
-}
+const isCardId = (x) => typeof x === "string" && /^\d+-[SHDC]-\d+$/.test(x);
+const pickList = (u) => toList(room?.pickups?.[u]).filter(isCardId);
 
 async function dealBondi() {
   const ids = room.playerIds, n = ids.length;
@@ -3108,12 +3095,8 @@ function bondiThrow(card, timedOut) {
   if (!claimAction()) return;
   const res = C.bondiPlay(bondiState(room), uid, card);
   const b = moveBatch();
-  const left = hand.filter((c) => c !== card);
-  const upd = bondiUpdate(room, res, uid, card, timedOut);
-  if (room.pickups?.[uid]) upd[`pickups.${uid}`] = deleteField();
-  if (upd.counts) upd.counts = { ...upd.counts, [uid]: left.length };
-  b.update(handRef(), { cards: left });
-  b.update(roomRef(), upd);
+  b.update(handRef(), { cards: hand.filter((c) => c !== card) });
+  b.update(roomRef(), bondiUpdate(room, res, uid, card, timedOut));
   previewThrow([card]);
   selected = null;
   lastDrawn = null;
@@ -3122,17 +3105,20 @@ function bondiThrow(card, timedOut) {
 
 // Cards I've been given: move them into my hand.
 function applyPickup() {
-  const mine = room?.pickups?.[uid];
-  if (!isBondi() || !mine || !pickList(uid).length) return;
-  if (mergePickupLocal()) { try { render(); } catch {} }
-  if (!handSeen || (applyPickup.busy && Date.now() - applyPickup.busy < 5000)) return; // never save a half-loaded hand
+  if (!isBondi() || !room?.pickups?.[uid] || !handSeen) return;
+  if (applyPickup.busy && Date.now() - applyPickup.busy < 5000) return;
+  const add = pickList(uid).filter((c) => !hand.includes(c));
+  // wait until my hand is up to date (it arrives separately from the table); the safety net below
+  // sorts it out if that never happens
+  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid]) return;
   applyPickup.busy = Date.now();
   const b = writeBatch(db);
-  b.update(handRef(), { cards: hand });
-  b.update(roomRef(), { [`pickups.${uid}`]: deleteField(), ...(room.status === "playing" ? { [`counts.${uid}`]: hand.length } : {}) });
+  if (add.length) b.update(handRef(), { cards: [...hand, ...add] });
+  b.update(roomRef(), { [`pickups.${uid}`]: deleteField() });
   b.commit().catch((e) => console.warn("pickup", e)).finally(() => { applyPickup.busy = 0; });
 }
 
+window.__bondiDbg = () => ({ hand: hand.length, count: room?.counts?.[uid], pick: pickList(uid), busy: applyPickup.busy, handSeen, pending: pendingMoves.length, server: serverHand.length });
 // BONDI safety net: if my hand and the table disagree for a few seconds (a save got lost on a bad
 // connection), reload my hand from the server, take in any picked-up cards, and if the count is still
 // off, correct it, so the game never gets stuck on "your turn" with nothing working.
@@ -3142,7 +3128,7 @@ setInterval(async () => {
     && (room.pickups?.[uid] || (room.counts && hand.length !== room.counts[uid]));
   if (!off) { bondiStuckSince = 0; return; }
   if (!bondiStuckSince) { bondiStuckSince = Date.now(); return; }
-  if (Date.now() - bondiStuckSince < 3000 || pendingMoves.length || (applyPickup.busy && Date.now() - applyPickup.busy < 5000)) return;
+  if (Date.now() - bondiStuckSince < 4000 || pendingMoves.length || (applyPickup.busy && Date.now() - applyPickup.busy < 5000)) return;
   bondiStuckSince = Date.now();
   applyPickup.busy = Date.now();
   try {
@@ -3599,7 +3585,7 @@ function undoPreview() {
 // my screen goes back to the real table.
 let handSeen = false; // my hand has arrived from the server at least once at this table
 let serverRoom = null, serverHand = [], pendingMoves = [], moveChain = Promise.resolve();
-const isSentinel = (v) => v && typeof v === "object" && ("_methodName" in v || "__union" in v || "__inc" in v || "__del" in v || "__remove" in v || "__ts" in v);
+const isSentinel = (v) => v && typeof v === "object" && ("__s" in v || "_methodName" in v || "__union" in v || "__inc" in v || "__del" in v || "__remove" in v || "__ts" in v);
 function applyLocal(obj, data) {
   const res = { ...obj };
   for (const [k, v] of Object.entries(data)) {
@@ -6309,7 +6295,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261024h";
+const APP_VERSION = "20261024k";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6955,7 +6941,7 @@ function bondiMoments(prev) {
 // or onto the set-aside pile when everyone followed suit.
 const sweptTricks = new Set(), sweepPlanned = new Set();
 function sweepTrick(t) {
-  if (!room) return;
+  if (!room || sweptTricks.has(t.id)) return; // each deck flies away once
   sweptTricks.add(t.id);
   if (room.lastTrick?.id !== t.id || (room.trick || []).length) { heapKey = null; try { render(); } catch {} return; } // a new deck already started
   setTimeout(() => { heapKey = null; try { render(); } catch {} }, 1300); // then the table is clear
@@ -6970,8 +6956,14 @@ function sweepTrick(t) {
     const card = slot.querySelector(".card");
     const r = card.getBoundingClientRect();
     const fly = card.cloneNode(true);
-    fly.className = "card flying" + (t.to ? "" : " back-fade");
-    Object.assign(fly.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    // keep the card's own look (red/black, size) exactly as it sat on the table
+    const cs = getComputedStyle(card);
+    fly.classList.add("flying"); if (!t.to) fly.classList.add("back-fade");
+    const w = card.offsetWidth || r.width, h = card.offsetHeight || r.height; // its real size (the box around a tilted card is bigger)
+    Object.assign(fly.style, { position: "fixed", margin: "0", left: r.left + r.width / 2 - w / 2 + "px", top: r.top + r.height / 2 - h / 2 + "px", width: w + "px", height: h + "px",
+      fontSize: cs.fontSize, color: cs.color, transform: "none" });
+    // the little corner/centre marks keep their table size too
+    card.querySelectorAll("*").forEach((src, k) => { const dst = fly.querySelectorAll("*")[k]; if (dst) dst.style.fontSize = getComputedStyle(src).fontSize; });
     document.body.append(fly);
     slot.style.visibility = "hidden";
     const dx = to.left + to.width / 2 - (r.left + r.width / 2) + (i - (slots.length - 1) / 2) * 6;
