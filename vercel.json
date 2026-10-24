@@ -1,36 +1,10 @@
 {
   "functions": {
-    "api/*.js": {
-      "maxDuration": 60
-    }
+    "api/*.js": { "maxDuration": 60 }
   },
   "headers": [
-    {
-      "source": "/",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-cache, no-store, must-revalidate"
-        }
-      ]
-    },
-    {
-      "source": "/index.html",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-cache, no-store, must-revalidate"
-        }
-      ]
-    },
-    {
-      "source": "/version.json",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-cache, no-store, must-revalidate"
-        }
-      ]
-    }
+    { "source": "/", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] },
+    { "source": "/index.html", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] },
+    { "source": "/version.json", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] }
   ]
 }
