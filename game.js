@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024a";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024b";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261024a";
-import * as CFG from "./firebase-config.js?v=20261024a";
-import * as C from "./cards.js?v=20261024a";
-import * as P from "./profile.js?v=20261024a";
-import { DV } from "./i18n.js?v=20261024a";
+} from "./store.js?v=20261024b";
+import * as CFG from "./firebase-config.js?v=20261024b";
+import * as C from "./cards.js?v=20261024b";
+import * as P from "./profile.js?v=20261024b";
+import { DV } from "./i18n.js?v=20261024b";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -5142,6 +5142,10 @@ function seenAgo(ms) {
   const t = new Date(ms);
   return `last online ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
+const adminPick = new Set(); // players chosen for a 📣 update alert
+function syncPickLabel() {
+  $("adminUpdateAlert").textContent = adminPick.size ? `📣 Alert ${adminPick.size} selected` : "📣 Update alert";
+}
 function renderAdmin() {
   if (adminFilter === "lounges") return renderAdminLounges();
   const q = $("adminSearch").value.trim().toLowerCase();
@@ -5168,6 +5172,13 @@ function renderAdmin() {
     const who = { uid: u.id, name: u.name || (u.registered ? "Player" : "Guest"), avatar: u.registered ? u.avatar : null,
       photoV: u.usePhoto && u.photo ? u.photoV || 1 : null };
     if (who.photoV) photoCache.set(u.id, { v: who.photoV, url: u.photo });
+    if (!u.deleted) {
+      const pick = document.createElement("input");
+      pick.type = "checkbox"; pick.className = "admin-pick"; pick.title = "Select for 📣 update alert";
+      pick.checked = adminPick.has(u.id);
+      pick.onchange = () => { pick.checked ? adminPick.add(u.id) : adminPick.delete(u.id); syncPickLabel(); };
+      row.append(pick);
+    }
     row.append(avatarEl(who, "avatar"));
     const info = document.createElement("div");
     info.className = "admin-info";
@@ -6257,7 +6268,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261024a";
+const APP_VERSION = "20261024b";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7350,16 +7361,19 @@ $("adminCleanGuests").onclick = async () => {
   } catch (e) { toast(errMsg(e)); }
 };
 $("adminUpdateAlert").onclick = async () => {
-  const text = prompt("Notification text for every phone with the THAAS app:", "New features and fixes are ready. Open THAAS to update.");
+  const picked = [...adminPick];
+  const text = prompt(picked.length ? `Notification text for the ${picked.length} selected player${picked.length === 1 ? "" : "s"}:` : "Notification text for EVERY phone with the THAAS app (tick players first to send to only them):", "New features and fixes are ready. Open THAAS to update.");
   if (text === null) return;
   try {
     if (!NOTIFY_URL || !auth.currentUser) throw new Error("The notification service isn't set up");
     const r = await fetch(NOTIFY_URL, { method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
-      body: JSON.stringify({ roomId: "-", kind: "update", text, version: APP_VERSION }) });
+      body: JSON.stringify({ roomId: "-", kind: "update", text, version: APP_VERSION, ...(picked.length ? { to: picked } : {}) }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "Sending failed");
-    toast(`📣 Update alert sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}`);
+    toast(picked.length && !j.sent ? "📣 None of the selected players has the Android app with notifications on"
+      : `📣 Update alert sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}`);
+    if (picked.length) { adminPick.clear(); syncPickLabel(); renderAdmin(); }
   } catch (e) { toast(errMsg(e)); }
 };
 $("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
