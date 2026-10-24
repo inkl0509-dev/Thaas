@@ -4,9 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>THAAS</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="THAAS">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0f2a26">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261024b">
+  <link rel="stylesheet" href="style.css?v=20261024c">
 </head>
 <body>
   <!-- LOBBY -->
@@ -21,6 +28,11 @@
     </div>
     <div class="logo-suits" aria-hidden="true"><span>♠</span><span class="r">♥</span><span>♣</span><span class="r">♦</span></div>
     
+    <div id="webPushBar" class="webpush-bar" hidden>
+      <span id="webPushText">🔔 Get a notification when it's your turn and when THAAS updates.</span>
+      <button type="button" id="webPushBtn" class="primary small">Turn on</button>
+      <button type="button" id="webPushX" class="ghost small" aria-label="Not now">✕</button>
+    </div>
     <section class="intro panel">
       <img src="thaas-intro.jpg" alt="Friends playing cards on a woven mat by the beach, a dhoni boat on the lagoon behind them" loading="lazy">
       <div class="intro-text">
@@ -514,6 +526,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261024b"></script>
+  <script type="module" src="game.js?v=20261024c"></script>
 </body>
 </html>
