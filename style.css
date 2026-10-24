@@ -2324,3 +2324,8 @@ html, body { overflow-x: hidden; }
 @keyframes uwSpin { to { transform: rotate(360deg); } }
 
 .admin-pick { width: 20px; height: 20px; flex: none; accent-color: #E8B64C; cursor: pointer; margin-right: 2px; }
+
+.webpush-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 12px;
+  border-radius: 14px; background: rgba(232, 182, 76, .14); border: 1px solid rgba(232, 182, 76, .45); font-size: 14px; }
+.webpush-bar[hidden] { display: none; }
+.webpush-bar span { flex: 1 1 200px; }
