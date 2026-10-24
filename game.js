@@ -2,20 +2,19 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import {
   getAuth, signInAnonymously, onAuthStateChanged, signOut, updateProfile,
   setPersistence, browserLocalPersistence, browserSessionPersistence,
-  EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
+  EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024c";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261024c";
-import * as CFG from "./firebase-config.js?v=20261024c";
-import * as C from "./cards.js?v=20261024c";
-import * as P from "./profile.js?v=20261024c";
-import { DV } from "./i18n.js?v=20261024c";
+} from "./store.js?v=20261020c";
+import * as CFG from "./firebase-config.js?v=20261020c";
+import * as C from "./cards.js?v=20261020c";
+import * as P from "./profile.js?v=20261020c";
+import { DV } from "./i18n.js?v=20261020c";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -733,11 +732,6 @@ function lobbyTable(r) {
   title.textContent = GAME_NAME[r.game];
   const no = Object.assign(document.createElement("small"), { className: "table-no", textContent: `Table ${r.no}` });
   felt.append(title, no);
-  // at a glance: free, people waiting, or a game going on
-  t.append(Object.assign(document.createElement("span"), {
-    className: "tstate " + (!waiting ? "playing" : n ? "seated" : "free"),
-    textContent: !waiting ? `🔴 Playing · ${n}/${seats}` : n ? `👥 ${n}/${seats} seated` : "🟢 Free",
-  }));
   if (!waiting) {
     felt.append(Object.assign(document.createElement("small"), { textContent: `Playing · ${Math.max(1, r.gameRound || 1)}/${LOBBY_ROUNDS}` }));
   } else if (mine) {
@@ -1122,10 +1116,6 @@ function renderTableCards(tables) {
       }));
     }
     rt.append(felt);
-    card.append(Object.assign(document.createElement("span"), { // free / people waiting / a game going on
-      className: "tstate " + (playing ? "playing" : n ? "seated" : "free"),
-      textContent: playing ? `🔴 Playing · ${n}/${seats}` : n ? `👥 ${n}/${seats} seated` : "🟢 Free",
-    }));
     const label = Object.assign(document.createElement("div"), {
       className: "rt-label",
       textContent: mine ? (n >= 2 ? `✓ Your table · ${n} players` : "✓ Your table · waiting for 1 more") : playing ? "Game on" : n >= seats ? "Full" : "Tap to join",
@@ -2347,9 +2337,7 @@ function hideTableOverlays() {
   $("game").classList.remove("in-play");
   chatOpen = false; tipOpen = false;
 }
-function leaveRoomMusic() { stopMusic(); }
 function leaveRoom() {
-  leaveRoomMusic();
   $("tourneyBtn").hidden = true;
   stopPresence();
   hideTableOverlays();
@@ -2529,13 +2517,6 @@ function bbSkipUpd(r) {
   const saved = room; room = r; // nextTurn reads the current table
   try { return bbEndTurn(upd, `${nameOf(who)} ran out of time`, r); } finally { room = saved; }
 }
-// every card move is recorded, so every screen can show it flying (bb.ev, the last few)
-function bbEv(upd, evs) {
-  const list = (room.bb?.ev || []).filter((e) => e.r === room.round);
-  let n = list.reduce((m, e) => Math.max(m, e.n), 0);
-  upd["bb.ev"] = [...list, ...[].concat(evs).map((e) => ({ ...e, r: room.round, n: ++n }))].slice(-6);
-  return upd;
-}
 // ----- moves -----
 function bbChoose(n) {
   if (room.bb?.stage !== "choose" || (room.bb.chooser !== uid && !(isBot(room.bb.chooser) && room.host === uid))) return;
@@ -2556,29 +2537,11 @@ function bbPeekTap(i) {
   const bb = room.bb;
   if (bb?.stage !== "peek" || bb.peeked?.[uid] || bbPeekSel.includes(i) || bbPeekSel.length >= (bb.peekN || 0)) return;
   bbPeekSel.push(i);
-  bbShow(uid, i, 60_000); // stays up while I pick the rest
-  if (bbPeekSel.length >= bb.peekN) {
-    const picked = [...bbPeekSel];
-    picked.forEach((x) => bbShow(uid, x, 5200));
-    bbCountdown(4, () => { // 4 · 3 · 2 · 1 · 0 … then the cards turn face down
-      picked.forEach((x) => bbReveal.delete(bbKey(uid, x)));
-      updateDoc(roomRef(), { [`bb.peeked.${uid}`]: true }).catch(() => {});
-      bbPeekSel = [];
-      try { render(); } catch {}
-    });
-  }
-}
-function bbCountdown(from, done) {
-  const el = Object.assign(document.createElement("div"), { className: "bb-count" });
-  document.body.append(el);
-  let n = from;
-  const step = () => {
-    el.textContent = n;
-    el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick");
-    if (n-- <= 0) { setTimeout(() => { el.remove(); done(); }, 900); return; }
-    setTimeout(step, 1000);
-  };
-  step();
+  bbShow(uid, i, 5000);
+  if (bbPeekSel.length >= bb.peekN) setTimeout(() => {
+    updateDoc(roomRef(), { [`bb.peeked.${uid}`]: true }).catch(() => {});
+    bbPeekSel = [];
+  }, 5000);
 }
 function bbDraw() {
   if (!canDraw()) return;
@@ -2587,7 +2550,8 @@ function bbDraw() {
   if (!t.got.length) return toast("No cards left in the middle pile");
   const c = t.got[0];
   const b = moveBatch();
-  b.update(roomRef(), bbEv({ deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: uid, c }, moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took a card from the middle pile` }, { k: "draw", u: uid }));
+  b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: uid, c }, moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took a card from the middle pile` });
+  flyCard($("deck"), $("bbDrawn") || $("deck"), null, { back: true });
   commit(b);
 }
 // take the last thrown card instead (everyone sees it); it must go into one of my places
@@ -2597,8 +2561,8 @@ function bbTakeThrown() {
   if (!top) return toast("Nothing has been thrown yet · take from the middle pile");
   if (!claimAction()) return;
   const b = moveBatch();
-  b.update(roomRef(), bbEv({ discard: room.discard.slice(0, -1), phase: "act", "bb.drawn": { u: uid, c: top, from: "thrown" }, "bb.matchRank": null,
-    moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took the thrown ${cardName(top)}` }, { k: "take", u: uid, c: top }));
+  b.update(roomRef(), { discard: room.discard.slice(0, -1), phase: "act", "bb.drawn": { u: uid, c: top, from: "thrown" }, "bb.matchRank": null,
+    moveId: (room.moveId || 0) + 1, log: `${nameOf(uid)} took the thrown ${cardName(top)}` });
   commit(b);
 }
 const bbMyDrawn = () => (isMyTurn() && room.phase === "act" && room.bb?.drawn?.u === uid ? room.bb.drawn.c : null);
@@ -2609,7 +2573,7 @@ function bbReplace(i) {
   if (bbIsLocked(row[i])) return toast("🔒 That card is locked · it can't be swapped");
   if (!claimAction()) return;
   const old = row[i]; row[i] = c;
-  const upd = bbEv({ [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), old], "bb.matchRank": C.parse(old).r }, { k: "swap", u: uid, i, c: old });
+  const upd = { [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), old], "bb.matchRank": C.parse(old).r };
   bbEndTurn(upd, `${nameOf(uid)} put ${room.bb.drawn?.from === "thrown" ? cardName(c) : "a card"} in place and threw ${cardName(old)}`);
   const b = moveBatch(); b.update(roomRef(), upd);
   commit(b, upd.status === "ended" ? "ended" : "turn");
@@ -2620,7 +2584,7 @@ function bbThrowDrawn(log) {
   if (!c) return;
   if (room.bb.drawn?.from === "thrown" && !log) return toast("You took the thrown card · tap one of your cards to put it in its place");
   if (!claimAction()) return;
-  const upd = bbEv({ discard: [...(room.discard || []), c], "bb.matchRank": C.parse(c).r }, { k: "throw", u: uid, c });
+  const upd = { discard: [...(room.discard || []), c], "bb.matchRank": C.parse(c).r };
   bbEndTurn(upd, log || `${nameOf(uid)} threw ${cardName(c)}`);
   const b = moveBatch(); b.update(roomRef(), upd);
   bbMode = null; bbPicks = [];
@@ -2662,18 +2626,20 @@ function bbTapCard(u, i) {
     return bbFinishPower({ K: { u, i } }, `${nameOf(uid)} used K 🔒 and ${bbIsLocked(c) ? "unlocked" : "locked"} ${u === uid ? "their" : `${nameOf(u)}'s`} ${cardName(c)}`);
   }
   if (u === uid && bbMyDrawn()) return bbReplace(i);
-  // not swapping: pick my cards with the same number as the thrown card, then press Throw
+  // not swapping: tapping my own card twice throws it as a match of the last thrown number
   if (u === uid && bb.matchRank != null) {
-    bbSel = bbSel.includes(i) ? bbSel.filter((x) => x !== i) : [...bbSel, i];
+    if (bbArm === i) { bbArm = null; return bbSnap(i); }
+    bbArm = i;
+    toast(`Tap it again to throw it as a ${C.label(bb.matchRank)} (wrong card = 2 penalty cards)`);
+    clearTimeout(bbArmTimer); bbArmTimer = setTimeout(() => { bbArm = null; try { render(); } catch {} }, 4000);
     return render();
   }
 }
-let bbSel = [], bbSelKey = null;
+let bbArm = null, bbArmTimer = null;
 function bbFinishPower(act, log) {
   const drawn = bbMyDrawn();
   if (!drawn || !claimAction()) return;
   const upd = { discard: [...(room.discard || []), drawn], "bb.matchRank": C.parse(drawn).r };
-  bbEv(upd, act.Q ? [{ k: "switch", u: uid, a: act.Q[0], z: act.Q[1] }, { k: "throw", u: uid, c: drawn }] : { k: "throw", u: uid, c: drawn });
   if (act.Q) {
     const [a, z] = act.Q;
     const ra = [...bbRow(a.u)], rz = a.u === z.u ? ra : [...bbRow(z.u)];
@@ -2697,31 +2663,24 @@ function bbCall() {
   commit(b, "turn");
 }
 // ⚡ the top thrown card has the same number as one of mine: throw it too (wrong: 2 penalty cards)
-// throw the picked cards as matches of the last thrown number (any wrong one: back it goes, +2 cards)
-function bbSnap(picks) {
-  const bb = room.bb, row = [...bbRow(uid)];
-  picks = [...new Set(picks)].filter((i) => row[i]).sort((a, b) => b - a);
-  bbSel = [];
-  if (!picks.length || bb.stage !== "play" || room.status !== "playing") return render();
+function bbSnap(i) {
+  const bb = room.bb, row = [...bbRow(uid)], c = row[i];
+  const top = room.discard?.[room.discard.length - 1];
+  if (!c || bb.stage !== "play" || room.status !== "playing") return render();
   if (bb.matchRank == null) { toast("There's no thrown card to match right now"); return render(); }
-  if (picks.some((i) => bbIsLocked(row[i]))) { toast("🔒 Locked cards can't be thrown"); return render(); }
+  if (bbIsLocked(c)) { toast("🔒 Locked cards can't be thrown"); return render(); }
   if (!claimAction()) return;
-  const good = picks.filter((i) => C.parse(row[i]).r === bb.matchRank), bad = picks.filter((i) => !good.includes(i));
-  const thrown = good.map((i) => row[i]), wrong = bad.map((i) => row[i]);
-  const evs = good.map((i) => ({ k: "match", u: uid, i, c: row[i] }));
-  for (const i of good) row.splice(i, 1); // (highest place first, so the others don't move)
   const upd = { moveId: (room.moveId || 0) + 1 };
-  let discard = [...(room.discard || []), ...thrown], deck = room.deck || [];
-  let log = thrown.length ? `⚡ ${nameOf(uid)} threw ${thrown.length > 1 ? `${thrown.length} matching cards` : `a matching ${cardName(thrown[0])}`}!` : "";
-  let newRow = row;
-  if (wrong.length) {
-    const t = bbTake(deck, discard, 2);
-    deck = t.deck; discard = t.discard; newRow = [...row, ...t.got];
-    upd["bb.penalty"] = { u: uid, c: wrong[0], want: bb.matchRank, n: t.got.length, id: `${room.round}-${Date.now()}` };
-    log = (log ? log + " · " : "") + `❌ ${cardName(wrong[0])}${wrong.length > 1 ? ` and ${wrong.length - 1} more` : ""} ${wrong.length > 1 ? "aren't" : "isn't"} a ${C.label(bb.matchRank)} · +${t.got.length} cards`;
+  const want = C.label(bb.matchRank);
+  if (C.parse(c).r === bb.matchRank) { // right: the card goes, and the place goes with it
+    row.splice(i, 1);
+    Object.assign(upd, { [`bb.rows.${uid}`]: row, discard: [...(room.discard || []), c], log: `⚡ ${nameOf(uid)} threw a matching ${cardName(c)}!` });
+  } else {
+    const t = bbTake(room.deck || [], room.discard || [], 2);
+    Object.assign(upd, { [`bb.rows.${uid}`]: [...row, ...t.got], deck: t.deck, discard: t.discard,
+      "bb.penalty": { u: uid, c, want: bb.matchRank, n: t.got.length, id: `${room.round}-${Date.now()}` },
+      log: `❌ ${nameOf(uid)} threw ${cardName(c)} but it isn't a ${want} · it goes back with +${t.got.length} cards` });
   }
-  Object.assign(upd, { [`bb.rows.${uid}`]: newRow, discard, deck, log });
-  if (evs.length) bbEv(upd, evs);
   const b = moveBatch(); b.update(roomRef(), upd);
   commit(b);
 }
@@ -2766,17 +2725,8 @@ function bbBotTurn(bot) {
   const b = moveBatch();
   if (room.phase === "draw") {
     const total = C.bbCount(row), n = room.playerIds.length;
-    // When to call BABBUSH: not before everyone has had about 3 turns, and only when the count is
-    // really low. Hard looks at everyone's real count and calls only when it's lower than all of them.
-    // Medium guesses the others (cards it can't see count about 6 each). Easy waits for 3 or less.
-    const others = room.playerIds.filter((u) => u !== bot);
-    const guess = (u) => bbRow(u).reduce((a, x) => a + (bbIsLocked(x) ? C.bbValue(x) : 6), 0);
-    const late = (room.moveId || 0) >= n * 6;
-    const callNow = !bb.caller && late && (
-      lvl === "hard" ? total <= 10 && others.every((u) => C.bbCount(bbRow(u)) > total)
-      : lvl === "medium" ? total <= 6 && others.every((u) => guess(u) >= total + 4)
-      : total <= 3);
-    if (callNow) {
+    const limit = lvl === "hard" ? 7 : lvl === "medium" ? 9 : 5;
+    if (!bb.caller && total <= limit && (room.moveId || 0) >= n * 3) {
       b.update(roomRef(), { "bb.caller": bot, "bb.finalLeft": activeIds(room).length - 1, ...nextTurn(`📣 ${botName(bot)} called BABBUSH! Everyone else has one more turn`) });
       return b.commit().catch(() => {});
     }
@@ -2785,15 +2735,15 @@ function bbBotTurn(bot) {
     const worstNow = freeNow.reduce((a, o) => (!a || C.bbValue(o.x) > C.bbValue(a.x) ? o : a), null);
     if (top && worstNow && lvl !== "easy" && C.bbValue(top) + 2 <= C.bbValue(worstNow.x)) { // the thrown card is low: take it
       const nr = [...row]; nr[worstNow.i] = top;
-      const upd = bbEv({ [`bb.rows.${bot}`]: nr, discard: [...room.discard.slice(0, -1), worstNow.x], "bb.matchRank": C.parse(worstNow.x).r },
-        [{ k: "take", u: bot, c: top }, { k: "swap", u: bot, i: worstNow.i, c: worstNow.x }]);
+      const upd = { [`bb.rows.${bot}`]: nr, discard: [...room.discard.slice(0, -1), worstNow.x], "bb.matchRank": C.parse(worstNow.x).r };
       bbEndTurn(upd, `${botName(bot)} took the thrown ${cardName(top)} and threw ${cardName(worstNow.x)}`);
       b.update(roomRef(), upd);
       return b.commit().catch(() => {});
     }
     const t = bbTake(room.deck || [], room.discard || [], 1);
     if (!t.got.length) return;
-    b.update(roomRef(), bbEv({ deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: bot, c: t.got[0] }, moveId: (room.moveId || 0) + 1, log: `${botName(bot)} took a card from the middle pile` }, { k: "draw", u: bot }));
+    b.update(roomRef(), { deck: t.deck, discard: t.discard, phase: "act", "bb.drawn": { u: bot, c: t.got[0] }, moveId: (room.moveId || 0) + 1, log: `${botName(bot)} took a card from the middle pile` });
+    flyCard($("deck"), seatEl(bot), null, { back: true, slow: true });
     return b.commit().catch(() => {});
   }
   const c = bb.drawn?.c; if (!c) return;
@@ -2804,7 +2754,6 @@ function bbBotTurn(bot) {
   const careless = lvl === "easy" && Math.random() < 0.4;
   if (worst && v < C.bbValue(worst.x) && !careless) { // swap my worst card for it
     const nr = [...row]; nr[worst.i] = c; upd[`bb.rows.${bot}`] = nr; upd.discard.push(worst.x); upd["bb.matchRank"] = C.parse(worst.x).r;
-    bbEv(upd, { k: "swap", u: bot, i: worst.i, c: worst.x });
     bbEndTurn(upd, `${botName(bot)} swapped a card and threw ${cardName(worst.x)}`);
   } else if (C.bbPower(c) === "Q" && lvl !== "easy" && worst) { // switch my worst card with someone's low card
     const others = room.playerIds.filter((u) => u !== bot && !bbProtected(u));
@@ -2816,11 +2765,9 @@ function bbBotTurn(bot) {
       upd[`bb.rows.${bot}`] = nr; upd[`bb.rows.${best.u}`] = orow;
     }
     upd.discard.push(c); upd["bb.matchRank"] = C.parse(c).r;
-    bbEv(upd, { k: "throw", u: bot, c });
     bbEndTurn(upd, `${botName(bot)} used Q 🔄 and switched ${best ? `a card with ${nameOf(best.u)}` : "nothing"}`);
   } else {
     upd.discard.push(c); upd["bb.matchRank"] = C.parse(c).r;
-    bbEv(upd, { k: "throw", u: bot, c });
     bbEndTurn(upd, C.bbPower(c) === "J" && lvl !== "easy" ? `${botName(bot)} used J 👁 and looked at a card` : `${botName(bot)} threw ${cardName(c)}`);
   }
   b.update(roomRef(), upd);
@@ -2844,7 +2791,8 @@ function bbBotSnaps() {
     if (i < 0) return;
     const c = row[i]; row.splice(i, 1);
     const b = moveBatch();
-    b.update(roomRef(), bbEv({ [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} threw a matching ${cardName(c)}!` }, { k: "match", u: o.u, i, c }));
+    b.update(roomRef(), { [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} threw a matching ${cardName(c)}!` });
+    flyCard(seatEl(o.u), $("discardPile"), c, { slow: true });
     b.commit().catch(() => {});
   }, 900 + Math.random() * 1400);
 }
@@ -2892,26 +2840,9 @@ function bbCardEl(u, i, c, opts = {}) {
   el.dataset.uid = u; el.dataset.idx = i;
   return el;
 }
-let bbLogSeen = null;
-function bbPopupLog() { // what just happened, as a pop-up in the middle of the screen
-  const k = `${room.round}|${room.moveId}|${room.log}`;
-  if (bbLogSeen === null) { bbLogSeen = k; return; }
-  if (k === bbLogSeen) return;
-  bbLogSeen = k;
-  const t = room.log || "";
-  // only the big moments pop up (BABBUSH, J / Q / K): throws and matches are for the players to watch
-  if (!t.startsWith("📣") && !/used [JQK] /.test(t)) return;
-  const p = document.createElement("div");
-  p.className = "bb-pop" + (t.startsWith("⚡") ? " good" : t.startsWith("📣") ? " call" : "");
-  p.textContent = t;
-  document.querySelectorAll(".bb-pop").forEach((x) => x.remove());
-  document.body.append(p);
-  setTimeout(() => p.remove(), 2600);
-}
 function renderBabbush() {
   const bb = room.bb || {};
   bbPenaltyShow();
-  bbPopupLog();
   let area = $("bbArea");
   if (!area) {
     area = Object.assign(document.createElement("section"), { id: "bbArea", className: "bb-area" });
@@ -2959,26 +2890,15 @@ function renderBabbush() {
   mine.className = "bb-mine" + ((drawn && !bbMode) || bbMode || (bb.stage === "peek" && !bb.peeked?.[uid]) ? " pickable" : "");
   bbRow(uid).forEach((c, i) => {
     const el = bbCardEl(uid, i, c);
-    if (bbPicks.some((p) => p.u === uid && p.i === i) || bbSel.includes(i)) el.classList.add("bb-picked");
+    if (bbPicks.some((p) => p.u === uid && p.i === i) || bbArm === i) el.classList.add("bb-picked");
     mine.append(el);
   });
   if (!bbRow(uid).length) mine.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "No cards left · count 0!" }));
   area.append(mine);
   // buttons
   const ctl = document.createElement("div"); ctl.className = "bb-btns";
-  // picked cards are kept only while the same number is up
-  const selKey = `${room.round}|${bb.matchRank}|${bbRow(uid).join()}`;
-  if (bbSelKey !== selKey) { bbSelKey = selKey; bbSel = []; }
-  if (bb.stage === "play" && room.status === "playing" && bb.matchRank != null && bbRow(uid).length && !drawn && !bbMode && room.discard?.length) {
-    area.append(Object.assign(document.createElement("p"), { className: "bb-hint", textContent: `Got a ${C.label(bb.matchRank)} too? Pick your card${bbSel.length ? "s" : "(s)"} and throw` }));
-    if (bbSel.length) {
-      const tb = Object.assign(document.createElement("button"), { type: "button", className: "bb-snap", textContent: `⚡ Throw ${bbSel.length} card${bbSel.length > 1 ? "s" : ""} as ${C.label(bb.matchRank)}` });
-      tb.onclick = () => bbSnap(bbSel);
-      const cl = Object.assign(document.createElement("button"), { type: "button", className: "ghost small", textContent: "Clear" });
-      cl.onclick = () => { bbSel = []; render(); };
-      ctl.append(tb, cl);
-    }
-  }
+  if (bb.stage === "play" && room.status === "playing" && bb.matchRank != null && bbRow(uid).length && !drawn && !bbMode && room.discard?.length)
+    area.append(Object.assign(document.createElement("p"), { className: "bb-hint", textContent: `Got a ${C.label(bb.matchRank)} too? Tap it twice to throw it (as many as you have)` }));
   if (myTurn && bb.stage === "play" && room.phase === "draw" && !bb.caller && room.status === "playing") {
     const cb = Object.assign(document.createElement("button"), { type: "button", className: "bb-call", textContent: "📣 BABBUSH" });
     cb.onclick = () => { if (confirm("Call BABBUSH? Everyone else gets one more turn, then all cards are counted.")) bbCall(); };
@@ -3102,43 +3022,12 @@ function applyPickup() {
   applyPickup.busy = true;
   const add = mine.filter((c) => !hand.includes(c));
   // wait until my hand is up to date (it arrives separately from the table)
-  // (but never longer than a moment: after 1.2 s the cards go straight into my hand anyway)
-  const key = mine.join(",");
-  if (applyPickup.key !== key) { applyPickup.key = key; applyPickup.since = Date.now(); }
-  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid] && Date.now() - applyPickup.since < 1200) {
-    applyPickup.busy = false; setTimeout(applyPickup, 300); return;
-  }
+  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid]) { applyPickup.busy = false; return; }
   const b = writeBatch(db);
-  if (add.length) { hand = [...hand, ...add]; b.update(handRef(), { cards: hand }); try { render(); } catch {} }
+  if (add.length) b.update(handRef(), { cards: [...hand, ...add] });
   b.update(roomRef(), { [`pickups.${uid}`]: deleteField() });
   b.commit().catch((e) => toast(errMsg(e))).finally(() => { applyPickup.busy = false; });
 }
-
-// BONDI safety net: if my hand and the table disagree for a few seconds (a save got lost on a bad
-// connection), reload my hand from the server, take in any picked-up cards, and if the count is still
-// off, correct it, so the game never gets stuck on "your turn" with nothing working.
-let bondiStuckSince = 0;
-setInterval(async () => {
-  if (!room || !isBondi() || room.status !== "playing" || !room.playerIds?.includes(uid) || !pendingPickup()) { bondiStuckSince = 0; return; }
-  if (!bondiStuckSince) { bondiStuckSince = Date.now(); return; }
-  if (Date.now() - bondiStuckSince < 4000 || applyPickup.busy || pendingMoves.length) return;
-  bondiStuckSince = Date.now();
-  applyPickup.busy = true;
-  try {
-    const fresh = (await getDoc(handRef())).data()?.cards || [];
-    const pick = (room.pickups?.[uid] || []).filter((c) => !fresh.includes(c));
-    const cards = [...fresh, ...pick];
-    const b = writeBatch(db);
-    if (pick.length) b.update(handRef(), { cards });
-    const upd = {};
-    if (room.pickups?.[uid]) upd[`pickups.${uid}`] = deleteField();
-    if (room.counts?.[uid] !== cards.length) upd[`counts.${uid}`] = cards.length;
-    if (Object.keys(upd).length) b.update(roomRef(), upd);
-    await b.commit();
-    setHandCards(cards);
-    render();
-  } catch (e) { console.warn("BONDI fix-up", e); } finally { applyPickup.busy = false; }
-}, 1000);
 
 async function botBondi(bot, cards) {
   const got = room.pickups?.[bot] || [];
@@ -3184,7 +3073,7 @@ function bondiRemoval(r, out, ids, pick) {
 function renderTrick() {
   const pile = $("discardPile");
   const live = room.trick || [];
-  const last = room.status === "playing" && room.lastTrick && sweptTricks.has(room.lastTrick.id) ? null : room.lastTrick; // gone once it has flown away
+  const last = room.lastTrick;
   const showing = live.length ? live : last ? last.cards.map((card, i) => ({ card, uid: last.players[i] })) : [];
   const key = `${room.round}|${room.status}|${JSON.stringify(showing)}|${last?.id}`;
   if (key === heapKey) return;
@@ -3208,16 +3097,11 @@ function renderTrick() {
     slot.append(el, Object.assign(document.createElement("small"), { textContent: t.uid === uid ? "You" : nameOf(t.uid) }));
     pile.append(slot);
   });
-  // a finished deck never waits on the table: it flies to whoever picks it up (or out of play) by itself
-  if (!live.length && last && room.status === "playing" && !sweepPlanned.has(last.id)) {
-    sweepPlanned.add(last.id);
-    setTimeout(() => sweepTrick(last), isBondi() ? 450 : 900);
-  }
   if (!live.length && last) {
     const note = document.createElement("div");
     note.className = "trick-note" + (last.to ? " cut" : "");
     note.textContent = isDhiha() ? `✓ Deck to ${teamName(last.team)}${last.tens ? " · 🔟" : ""}`
-      : last.to ? `✋ Cut! → ${last.to === uid ? "you pick up" : nameOf(last.to) + " picks up"}` : "✓ Out of play";
+      : last.to ? `✋ Cut! → ${last.to === uid ? "you pick up" : nameOf(last.to) + " picks up"}` : "✓ Set aside";
     pile.append(note);
   }
 }
@@ -4287,8 +4171,8 @@ function renderResults() {
   list.innerHTML = "";
   [...lastRows].sort((a, b) => (low ? a.pts - b.pts : b.pts - a.pts)).forEach((row) => {
     const div = document.createElement("div");
-    const good = row.dhiha ? row.won : low ? row.pts === 0 || row.how === "caught-caller" : row.uid === room.winner;
-    const bad = low ? row.how === "caught" || row.how === "penalty" || (row.bondi && row.last && row.pts > 0) : row.pts < 0;
+    const good = row.dhiha ? row.won : low ? row.pts === 0 : row.uid === room.winner;
+    const bad = low ? row.how === "caught" || (row.bondi && row.last && row.pts > 0) : row.pts < 0;
     div.className = "result-row" + (good ? " winner" : "") + (bad ? " negative" : "");
     const head = document.createElement("div");
     head.className = "result-head";
@@ -4310,8 +4194,7 @@ function renderResults() {
         : `${ordinal(row.place)} out`)
       : row.call
       ? ({ won: `Called with ${row.count} · lowest`, caught: `Called with ${row.count} · caught! +${row.bb ? C.BB_PENALTY : C.CALL_PENALTY}`,
-           "caught-caller": `Count ${row.count} · ${row.bb ? "lower than the caller" : "caught the CALL"}`, count: `Count ${row.count}`,
-           penalty: `Count ${row.count} · +${C.CALL_PENALTY} (the CALL was caught)`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
+           "caught-caller": `Count ${row.count} · ${row.bb ? "lower than the caller" : "caught the CALL"}`, count: `Count ${row.count}`, out: `❌ Out · reached ${room.target || DEFAULT_TARGET}` })[row.how]
       : row.digu
       ? `DIGU bonus +${C.DIGU_BONUS} · cards +${row.setPts}`
       : row.noSets
@@ -4688,8 +4571,6 @@ function openAuth(mode) {
   $("authAvatarRow").hidden = mode !== "register";
   $("authSwitch").textContent = mode === "register" ? "Already registered? Sign in" : tr("auth.toRegister", "New here? Register");
   $("authError").textContent = "";
-  $("authForgot").hidden = mode === "register";
-  $("authInfo").textContent = "";
   if (mode === "register") {
     $("authName").value = $("name").value.trim();
     renderAvatarPicker($("authAvatars"), pickedAvatar, (a) => { pickedAvatar = a; });
@@ -4791,31 +4672,6 @@ async function submitAuth(e) {
   } finally {
     $("authSubmit").disabled = false;
   }
-}
-
-// Forgot password: Firebase emails a link to choose a new one
-async function forgotPassword() {
-  const email = $("authEmail").value.trim();
-  $("authError").textContent = "";
-  if (!email) { $("authError").textContent = "Type your email above first, then press Forgot password."; $("authEmail").focus(); return; }
-  $("authForgot").disabled = true;
-  try {
-    // THAAS sends its own email (api/reset.js); if that isn't set up yet, Firebase's standard email is used
-    let sent = false;
-    const url = NOTIFY_URL ? NOTIFY_URL.replace(/notify$/, "reset") : "";
-    if (url) {
-      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) }).catch(() => null);
-      const j = r ? await r.json().catch(() => ({})) : {};
-      if (r?.ok) sent = true;
-      else if (r && (r.status === 429 || r.status === 400)) throw { code: "x", message: j.error };
-    }
-    if (!sent) await sendPasswordResetEmail(auth, email);
-    $("authError").textContent = "";
-    toast("📧 Check your email for a link to choose a new password");
-    $("authInfo").textContent = `📧 If ${email} has a THAAS account, a reset link is on its way. Open it, choose a new password, then sign in here. (Check spam too.)`;
-  } catch (err) {
-    $("authError").textContent = err.code === "auth/user-not-found" ? "No account with that email." : AUTH_ERRORS[err.code] || err.message || "Couldn't send the email · try again";
-  } finally { $("authForgot").disabled = false; }
 }
 
 async function logOut() {
@@ -5132,7 +4988,6 @@ async function runCleanup(asAdmin) {
 }
 setTimeout(() => runCleanup(false).catch(() => {}), 25_000); // the server does this at most every 30 minutes
 
-const isOnlineNow = (u) => !u.deleted && Date.now() - untilMs(u.lastSeen) < 4 * 60_000;
 // "online now", "5 min ago", "yesterday 21:04", …
 function seenAgo(ms) {
   const d = Date.now() - ms;
@@ -5142,10 +4997,6 @@ function seenAgo(ms) {
   const t = new Date(ms);
   return `last online ${t.toLocaleDateString()} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
-const adminPick = new Set(); // players chosen for a 📣 update alert
-function syncPickLabel() {
-  $("adminUpdateAlert").textContent = adminPick.size ? `📣 Alert ${adminPick.size} selected` : "📣 Update alert";
-}
 function renderAdmin() {
   if (adminFilter === "lounges") return renderAdminLounges();
   const q = $("adminSearch").value.trim().toLowerCase();
@@ -5154,15 +5005,13 @@ function renderAdmin() {
       || (adminFilter === "registered" && u.registered)
       || (adminFilter === "guests" && !u.registered && !u.deleted)
       || (adminFilter === "blocked" && adminBanned.has(u.id))
-      || (adminFilter === "recent" && untilMs(u.lastSeen))
-      || (adminFilter === "online" && isOnlineNow(u)))
+      || (adminFilter === "recent" && untilMs(u.lastSeen)))
     .filter((u) => !q || (u.name || "").toLowerCase().includes(q) || u.id.toLowerCase().includes(q))
-    .sort((a, b) => adminFilter === "recent" || adminFilter === "online" ? untilMs(b.lastSeen) - untilMs(a.lastSeen)
+    .sort((a, b) => adminFilter === "recent" ? untilMs(b.lastSeen) - untilMs(a.lastSeen)
       : (b.careerPoints || 0) - (a.careerPoints || 0) || (b.gamesPlayed || 0) - (a.gamesPlayed || 0));
 
   const reg = adminUsers.filter((u) => u.registered).length;
-  const onlineN = adminUsers.filter(isOnlineNow).length;
-  $("adminCount").textContent = `${adminUsers.length} players · 🟢 ${onlineN} online now · ${reg} registered · ${adminBanned.size} blocked`;
+  $("adminCount").textContent = `${adminUsers.length} players · ${reg} registered · ${adminBanned.size} blocked`;
   const box = $("adminList");
   box.innerHTML = "";
   if (!list.length) box.innerHTML = '<p class="muted">No players match.</p>';
@@ -5172,13 +5021,6 @@ function renderAdmin() {
     const who = { uid: u.id, name: u.name || (u.registered ? "Player" : "Guest"), avatar: u.registered ? u.avatar : null,
       photoV: u.usePhoto && u.photo ? u.photoV || 1 : null };
     if (who.photoV) photoCache.set(u.id, { v: who.photoV, url: u.photo });
-    if (!u.deleted) {
-      const pick = document.createElement("input");
-      pick.type = "checkbox"; pick.className = "admin-pick"; pick.title = "Select for 📣 update alert";
-      pick.checked = adminPick.has(u.id);
-      pick.onchange = () => { pick.checked ? adminPick.add(u.id) : adminPick.delete(u.id); syncPickLabel(); };
-      row.append(pick);
-    }
     row.append(avatarEl(who, "avatar"));
     const info = document.createElement("div");
     info.className = "admin-info";
@@ -5188,14 +5030,8 @@ function renderAdmin() {
     const meta = document.createElement("small");
     meta.textContent = u.deleted ? `ID ${u.id}`
       : `${u.registered ? `${rk.icon} ${rk.name} · ${u.careerPoints || 0} pts` : "Guest"} · ${u.gamesPlayed || 0} rounds`
-        + ` · ID ${u.id.slice(0, 8)}…`;
+        + (untilMs(u.lastSeen) ? ` · ${seenAgo(untilMs(u.lastSeen))}` : "") + ` · ID ${u.id.slice(0, 8)}…`;
     info.append(name, meta);
-    // online status on its own line, so the buttons never hide it
-    if (!u.deleted) {
-      const on = isOnlineNow(u), ms = untilMs(u.lastSeen);
-      info.append(Object.assign(document.createElement("span"), { className: "admin-seen" + (on ? " on" : ""), textContent: on ? "🟢 Online now" : ms ? `⚪ ${seenAgo(ms).replace("last online", "Last online")}` : "⚪ Not seen yet" }));
-      if (on) row.classList.add("is-online");
-    }
     if (adminBanned.has(u.id)) info.append(Object.assign(document.createElement("span"), { className: "tag-blocked", textContent: "BLOCKED" }));
     const pu = adminPremium.get(u.id) || 0;
     if (pu > Date.now()) info.append(Object.assign(document.createElement("span"), { className: "tag-prem", textContent: `💎 until ${new Date(pu).toLocaleDateString()}` }));
@@ -5507,7 +5343,7 @@ function renderHeap() {
     if (digu) front.append(cardEl(digu));
     const back = document.createElement("div");
     back.className = "flip-back";
-    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABBUSH!" : "DIGU!"));
+    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : "DIGU!"));
     inner.append(front, back);
     f.append(inner);
     pile.append(f);
@@ -5697,8 +5533,7 @@ function renderSeats() {
       box.append(t);
       if (t._bbrow && Math.abs(slot.tag.rot) === 90) { // left / right players: their row sits above their name
         const half = (t.offsetWidth || 90) / 2;
-        t._bbrow.classList.add("vertical"); // a column along the edge, going up from the top of the name
-        Object.assign(t._bbrow.style, { left: Math.min(W - 16, Math.max(16, slot.tag.x)) + "px", top: (slot.tag.y - half - 8) + "px" });
+        Object.assign(t._bbrow.style, { left: Math.min(W - 60, Math.max(60, slot.tag.x)) + "px", top: Math.max(48, slot.tag.y - half - 28) + "px" });
       }
       // left and right players: their cards sit just above their name
       if (t._fan && Math.abs(slot.tag.rot) === 90) {
@@ -5801,36 +5636,9 @@ const seatOrHand = (u) => (u === uid ? $("hand") : seatEl(u));
 // one taken from the thrown pile (face up), cards thrown, cards played to the table.
 const animated = new Set();
 function once(key) { if (animated.has(key)) return false; animated.add(key); if (animated.size > 300) animated.clear(); return true; }
-// BABBUSH: show every card move flying (pile → player, player's place → thrown pile, …)
-function bbMoves(prev) {
-  const seen = (prev.bb?.ev || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
-  const evs = (room.bb?.ev || []).filter((e) => e.r === room.round && e.n > seen).sort((a, b) => a.n - b.n);
-  const slot = (u, i) => (u === uid ? document.querySelector(`.bb-mine .bb-card[data-idx="${i}"]`) || document.querySelector(".bb-mine")
-    : document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"] .bb-card[data-idx="${i}"]`) || document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"]`) || seatEl(u));
-  const holder = (u) => (u === uid ? $("bbDrawn") || document.querySelector(".bb-mine") : document.querySelector(`.bb-orow[data-uid="${CSS.escape(u)}"]`) || seatEl(u));
-  let at = 0;
-  for (const e of evs) {
-    if (!once(`${room.round}|bb|${e.n}|${e.k}`)) continue;
-    const slow = e.u !== uid, d = at;
-    const go = (fn) => setTimeout(fn, d);
-    if (e.k === "draw") go(() => flyCard($("deck"), holder(e.u), null, { back: true, slow }));
-    else if (e.k === "take") go(() => flyCard($("discardPile"), holder(e.u), e.c, { slow }));
-    else if (e.k === "throw") flyCard(holder(e.u), $("discardPile"), e.c, { delay: d, slow });
-    else if (e.k === "match") flyCard(slot(e.u, e.i), $("discardPile"), e.c, { delay: d, slow });
-    else if (e.k === "swap") { // the old card flies to the pile, the new one (face down) into its place
-      const hold = holder(e.u);
-      flyCard(slot(e.u, e.i), $("discardPile"), e.c, { delay: d, slow });
-      if (e.u !== uid) go(() => flyCard(hold?.isConnected ? hold : holder(e.u), slot(e.u, e.i), null, { back: true, slow }));
-    } else if (e.k === "switch") {
-      go(() => { const A = slot(e.a.u, e.a.i), Z = slot(e.z.u, e.z.i); flyCard(A, Z, null, { back: true, slow: true }); flyCard(Z, A, null, { back: true, slow: true }); });
-    }
-    at += slow ? 700 : 350;
-  }
-}
 function cardMoves(prev) {
   if (!prev || prev.status !== "playing" || room.status === "lobby" || prev.round !== room.round) return;
   const g = gameOf(room);
-  if (g === "babbush") return bbMoves(prev);
   if (g === "bondi" || g === "dhiha") {
     const pt = prev.trick || [], nt = room.trick || [];
     const fresh = nt.length > pt.length && pt.every((t, i) => nt[i]?.card === t.card) ? nt.slice(pt.length)
@@ -6264,56 +6072,8 @@ function renderTurnGlow() {
 }
 addEventListener("resize", () => { if (room) renderTurnGlow(); });
 
-// ---------- 🔄 forced updates ----------
-// version.json on the website says which version is current. When it's newer than this copy (an old
-// copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
-// can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261024c";
-let updateShown = false;
-async function checkForUpdate() {
-  if (updateShown || document.hidden) return;
-  try {
-    const r = await fetch(`version.json?t=${Date.now()}`, { cache: "no-store" });
-    if (!r.ok) return;
-    const v = String((await r.json()).version || "");
-    if (v && v > APP_VERSION) showUpdate(v);
-  } catch { /* offline: try again later */ }
-}
-function showUpdate(v) {
-  updateShown = true;
-  const o = document.createElement("div");
-  o.className = "update-wall";
-  o.innerHTML = `<div class="uw-card"><div class="uw-icon">🔄</div><h2>Update available</h2>
-    <p>A new version of THAAS is ready, with new features and fixes. Please update to keep playing.</p>
-    <button type="button" class="primary">Update now</button>
-    <small>Your game and points are safe · you'll be back where you were.</small></div>`;
-  o.querySelector("button").onclick = () => {
-    o.querySelector("button").textContent = "Updating…";
-    // a new address makes the phone fetch everything fresh instead of using its saved copy
-    const u = new URL(location.href);
-    u.searchParams.set("v", v);
-    try { caches?.keys?.().then((ks) => ks.forEach((k) => caches.delete(k))); } catch {}
-    location.replace(u.toString());
-  };
-  document.body.append(o);
-}
-setTimeout(checkForUpdate, 3000);
-setInterval(checkForUpdate, 120_000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
-
-// 🎵 background music while at a table (game or round results), unless muted
-function syncMusic() {
-  const at = !!room && room.playerIds?.includes(uid) && room.status !== "lobby" && !$("game").hidden && !document.hidden;
-  if (at && !isMuted()) startMusic(); else stopMusic();
-  const b = $("musicBtn");
-  if (b) { b.textContent = isMuted() ? "🔇" : "🔊"; b.title = isMuted() ? "Music off · tap to turn on" : "Music on · tap to mute"; }
-}
-setMuted(load("thaas-music") === "off");
-addEventListener("pointerdown", () => { unlockMusic(); syncMusic(); }, { passive: true });
-document.addEventListener("visibilitychange", syncMusic);
 function render() {
   if (!room) return;
-  queueMicrotask(syncMusic);
   if ($("game").hidden) hideTableOverlays();
   renderTurnGlow();
   renderOfflineAsk();
@@ -6427,7 +6187,7 @@ function render() {
   $("table").hidden = room.status === "lobby";
   $("deckCount").textContent = isBondi() ? room.aside || 0 : room.deck?.length ?? 0;
   $("deck").classList.toggle("aside-pile", isBondi());
-  $("deck").nextElementSibling.textContent = isBondi() ? "Out of play" : "Middle pile";
+  $("deck").nextElementSibling.textContent = isBondi() ? "Set aside" : "Middle pile";
   $("discardPile").nextElementSibling.textContent = isBondi() ? "On the table" : "Discard";
   $("deck").classList.toggle("clickable", canDraw());
   $("deck").parentElement.hidden = isDhiha();
@@ -6776,15 +6536,14 @@ function renderTargetSetup() {
   $("gameBabbush").disabled = !host;
   $("gameDhiha").hidden = !isLoungeDoc(room);
   $("gameDigu").disabled = $("gameCall").disabled = $("gameBondi").disabled = $("gameDhiha").disabled = !host;
-  $("gameNote").textContent = g === "call" ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Caught (someone has less)? The caller scores 50 and everyone else their count. Lowest total wins."
-    : g === "babbush"
+  $("gameNote").textContent = g === "babbush"
     ? "BABBUSH: 4 cards each, face down. Look at 0–2 of yours, then each turn take a card (middle pile or the last thrown card) and put it in the place of one of yours. J looks, Q switches, K locks. Same number as the thrown card? Tap yours twice to throw it too. 8 = 0. Call BABBUSH when you think yours is lowest. Lowest total wins."
     : g === "call"
     ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
     : g === "dhiha"
     ? "DHIHA: 4 players in 2 teams, 13 cards each. Follow suit; the first player who can't sets the Hukum (trump). Win decks with 10s: once all four 10s are out, 3 tens wins (2 each: first to 7 decks). Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck."
     : g === "bondi"
-    ? "BONDI: all cards are dealt, there's no pile to take from. K♠ starts. Follow suit; if you can't, cut with any card (your biggest!) and the player with the highest card of the suit picks up all the cards and plays next. When everyone follows, the cards go out of play and the highest card plays next. First out scores 0, then 10, 20… Lowest total wins."
+    ? "BONDI: all cards dealt, K♠ starts. Follow suit; if you can't, cut and the highest card picks up the pile. First out scores 0, then 10, 20… Lowest total wins."
     : "DIGU: make two sets of 3 and one set of 4. Highest total wins.";
   const mode = room.endMode === "rounds" ? "rounds" : "points";
   $("endPoints").classList.toggle("on", mode === "points");
@@ -6889,7 +6648,7 @@ function funMoment(emoji, text, floaters, kind) {
 // BONDI: someone cut, someone ran out of cards.
 function bondiMoments(prev) {
   const t = room.lastTrick;
-  if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), isBondi() ? 250 : 650); // BONDI: straight to the picker / out of play
+  if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), 650); // let everyone see the trick first
   if (t?.id && t.id !== prev.lastTrick?.id && t.cut) {
     // big cards picked up (A, K, Q, J) → the table laughs
     const big = t.cards.map((c) => C.parse(c).r).filter((r) => r === 1 || r >= 11).sort((a, b) => (a === 1 ? 14 : a) < (b === 1 ? 14 : b) ? 1 : -1);
@@ -6912,12 +6671,8 @@ function bondiMoments(prev) {
 
 // The cards on the table fly to whoever picks them up (into my hand if it's me),
 // or onto the set-aside pile when everyone followed suit.
-const sweptTricks = new Set(), sweepPlanned = new Set();
 function sweepTrick(t) {
-  if (!room) return;
-  sweptTricks.add(t.id);
-  if (room.lastTrick?.id !== t.id || (room.trick || []).length) { heapKey = null; try { render(); } catch {} return; } // a new deck already started
-  setTimeout(() => { heapKey = null; try { render(); } catch {} }, 1300); // then the table is clear
+  if (!room || room.lastTrick?.id !== t.id || (room.trick || []).length) return; // a new trick already started
   const slots = [...$("discardPile").querySelectorAll(".trick-slot")];
   if (!slots.length) return;
   const target = t.team ? $("teamPile-" + t.team)
@@ -7300,8 +7055,6 @@ $("joinBtn").onclick = () => joinRoom($("code").value);
 $("tourneyCreate").onclick = createTournament;
 $("tourneyJoin").onclick = () => joinTournament($("tourneyCode").value);
 $("tourneyClose").onclick = closeTournament;
-$("authForgot").onclick = forgotPassword;
-$("musicBtn").onclick = () => { setMuted(!isMuted()); store("thaas-music", isMuted() ? "off" : "on"); toast(isMuted() ? "🔇 Music off" : "🔊 Music on"); syncMusic(); };
 $("tourneyBtn").onclick = $("resTourneyBtn").onclick = () => { if (room?.tourney) { $("results").hidden = true; openTournament(room.tourney.code); } };
 $("code").addEventListener("keydown", (e) => e.key === "Enter" && joinRoom($("code").value));
 $("startBtn").onclick = dealRound;
@@ -7358,22 +7111,6 @@ $("adminCleanGuests").onclick = async () => {
     if (!r?.ok) throw new Error(r?.error || "The cleanup service isn't reachable");
     toast(`🧹 ${r.removed} guest${r.removed === 1 ? "" : "s"} removed`);
     openAdmin();
-  } catch (e) { toast(errMsg(e)); }
-};
-$("adminUpdateAlert").onclick = async () => {
-  const picked = [...adminPick];
-  const text = prompt(picked.length ? `Notification text for the ${picked.length} selected player${picked.length === 1 ? "" : "s"}:` : "Notification text for EVERY phone with the THAAS app (tick players first to send to only them):", "New features and fixes are ready. Open THAAS to update.");
-  if (text === null) return;
-  try {
-    if (!NOTIFY_URL || !auth.currentUser) throw new Error("The notification service isn't set up");
-    const r = await fetch(NOTIFY_URL, { method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
-      body: JSON.stringify({ roomId: "-", kind: "update", text, version: APP_VERSION, ...(picked.length ? { to: picked } : {}) }) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || "Sending failed");
-    toast(picked.length && !j.sent ? "📣 None of the selected players has the Android app with notifications on"
-      : `📣 Update alert sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}`);
-    if (picked.length) { adminPick.clear(); syncPickLabel(); renderAdmin(); }
   } catch (e) { toast(errMsg(e)); }
 };
 $("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
@@ -7449,61 +7186,6 @@ async function sendNotify(kind, code = roomId) {
   } catch { /* notifications are a bonus; the game never waits for them */ }
 }
 
-// ---------- Web push (iPhone home-screen app, and Chrome/Edge/Firefox on any device) ----------
-// iPhone: only works when THAAS was added to the Home Screen (Share → Add to Home Screen), iOS 16.4+.
-// Needs `export const vapidKey = "…"` in firebase-config.js (Firebase → Project settings → Cloud Messaging
-// → Web Push certificates → Generate key pair).
-const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const IS_STANDALONE = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
-const WEB_PUSH_OK = !IS_APP && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window
-  && !!CFG.vapidKey && !String(CFG.vapidKey).includes("PASTE");
-let swReg = null, webPushBusy = false;
-if (!IS_APP && "serviceWorker" in navigator) {
-  navigator.serviceWorker.register("sw.js").then((r) => { swReg = r; }).catch(() => {});
-  navigator.serviceWorker.addEventListener("message", (e) => {
-    const d = e.data?.thaasPush;
-    if (!d) return;
-    if (d.kind === "update") checkForUpdate(); else if (d.roomId) openFromPush(d.roomId);
-  });
-}
-{ // a tapped notification opened a fresh window
-  const q = new URLSearchParams(location.search).get("push");
-  if (q && q !== "0" && q !== "1") setTimeout(() => openFromPush(q), 2500);
-}
-async function enableWebPush(ask) {
-  if (!WEB_PUSH_OK || webPushBusy || !uid) return false;
-  webPushBusy = true;
-  try {
-    let perm = Notification.permission;
-    if (perm === "default" && ask) perm = await Notification.requestPermission();
-    if (perm !== "granted") return false;
-    const reg = swReg || await navigator.serviceWorker.ready;
-    const { getMessaging, getToken } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js");
-    const t = await getToken(getMessaging(app), { vapidKey: CFG.vapidKey, serviceWorkerRegistration: reg });
-    if (!t) return false;
-    pushToken = t; savePushToken();
-    return true;
-  } catch (e) { console.warn("web push", e); if (ask) toast("Couldn't turn on notifications: " + (e.message || e)); return false; }
-  finally { webPushBusy = false; syncWebPushBar(); }
-}
-function syncWebPushBar() {
-  const bar = $("webPushBar");
-  if (!bar) return;
-  let dismissed = false;
-  try { dismissed = localStorage.getItem("thaas-webpush-x") === "1"; } catch {}
-  if (IS_APP || dismissed || !uid) { bar.hidden = true; return; }
-  if (IS_IOS && !IS_STANDALONE) { // Safari tab: notifications only exist in the home-screen app
-    $("webPushText").textContent = "🔔 Want notifications on iPhone? Tap Share ⬆️ → Add to Home Screen, then open THAAS from there.";
-    $("webPushBtn").hidden = true; bar.hidden = false; return;
-  }
-  if (!WEB_PUSH_OK || Notification.permission !== "default") { bar.hidden = true; return; }
-  $("webPushBtn").hidden = false; bar.hidden = false;
-}
-$("webPushBtn").onclick = () => enableWebPush(true).then((ok) => ok && toast("🔔 Notifications are on"));
-$("webPushX").onclick = () => { try { localStorage.setItem("thaas-webpush-x", "1"); } catch {} $("webPushBar").hidden = true; };
-setInterval(syncWebPushBar, 5000);
-setTimeout(() => { syncWebPushBar(); if (WEB_PUSH_OK && Notification.permission === "granted") enableWebPush(false); }, 4000);
-
 function savePushToken() {
   if (!pushToken || !uid) return;
   // kept in its own private place: only this player (and the server) can read it
@@ -7530,7 +7212,7 @@ async function setupPush() {
     await PN.addListener("registration", ({ value }) => { pushToken = value; savePushToken(); });
     await PN.addListener("registrationError", (e) => console.warn("Push registration failed", e));
     // tapping a notification opens that table
-    await PN.addListener("pushNotificationActionPerformed", ({ notification }) => (notification?.data?.kind === "update" ? checkForUpdate() : openFromPush(notification?.data?.roomId)));
+    await PN.addListener("pushNotificationActionPerformed", ({ notification }) => openFromPush(notification?.data?.roomId));
     await PN.register();
   } catch (e) { console.warn("Push setup failed", e); }
 }
