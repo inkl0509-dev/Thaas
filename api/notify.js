@@ -132,9 +132,11 @@ module.exports = async function handler(req, res) {
 async function sendUpdate(app, caller, body, res) {
   const db = app.firestore();
   if (!(await db.doc(`admins/${caller}`).get()).exists) return res.status(403).json({ error: "admins only" });
-  const all = await db.collection("pushTokens").get();
+  // only the chosen players, or everyone
+  const pick = Array.isArray(body.to) ? body.to.filter((u) => typeof u === "string" && u && !u.includes("/")).slice(0, 500) : null;
+  const all = pick ? (pick.length ? await db.getAll(...pick.map((u) => db.doc(`pushTokens/${u}`))) : []) : (await db.collection("pushTokens").get()).docs;
   const tokens = [];
-  all.forEach((u) => (u.get("tokens") || []).forEach((t) => tokens.push(t)));
+  all.forEach((u) => u.exists && (u.get("tokens") || []).forEach((t) => tokens.push(t)));
   if (!tokens.length) return res.json({ sent: 0 });
   const text = String(body.text || "").slice(0, 140) || "New features and fixes are ready. Open THAAS to update.";
   let sent = 0, failed = 0;
