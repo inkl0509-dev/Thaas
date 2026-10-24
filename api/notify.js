@@ -108,6 +108,7 @@ module.exports = async function handler(req, res) {
     tokens,
     notification: { title: msg.title, body: msg.body },
     data: { roomId, kind },
+    webpush: { headers: { Urgency: "high", TTL: "3600" } },
     android: {
       priority: "high",
       notification: { channelId: "turns", tag: `${roomId}-${kind}`, color: "#E8B64C", sound: "default" },
@@ -145,6 +146,7 @@ async function sendUpdate(app, caller, body, res) {
       tokens: tokens.slice(i, i + 500),
       notification: { title: "🔄 THAAS update available", body: text },
       data: { kind: "update", version: String(body.version || "") },
+      webpush: { headers: { Urgency: "high", TTL: "86400" } },
       android: { priority: "high", notification: { channelId: "turns", tag: "thaas-update", color: "#E8B64C", sound: "default" } },
     });
     sent += r.successCount; failed += r.failureCount;
