@@ -2322,3 +2322,5 @@ html, body { overflow-x: hidden; }
 .update-wall button { width: 100%; padding: 13px; font-size: 16px; }
 .update-wall small { display: block; margin-top: 12px; color: #9fb3ae; }
 @keyframes uwSpin { to { transform: rotate(360deg); } }
+
+.admin-pick { width: 20px; height: 20px; flex: none; accent-color: #E8B64C; cursor: pointer; margin-right: 2px; }
