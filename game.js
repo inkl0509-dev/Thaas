@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261023g";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024a";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261023g";
-import * as CFG from "./firebase-config.js?v=20261023g";
-import * as C from "./cards.js?v=20261023g";
-import * as P from "./profile.js?v=20261023g";
-import { DV } from "./i18n.js?v=20261023g";
+} from "./store.js?v=20261024a";
+import * as CFG from "./firebase-config.js?v=20261024a";
+import * as C from "./cards.js?v=20261024a";
+import * as P from "./profile.js?v=20261024a";
+import { DV } from "./i18n.js?v=20261024a";
 
 const { firebaseConfig } = CFG;
 const app = initializeApp(firebaseConfig);
@@ -6257,7 +6257,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261023g";
+const APP_VERSION = "20261024a";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;

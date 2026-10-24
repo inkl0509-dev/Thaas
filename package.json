@@ -1,9 +1,12 @@
 {
   "name": "thaas",
   "private": true,
-  "description": "THAAS card games. The website is plain static files; this file only gives the push-notification function (api/notify.js) its dependency.",
-  "engines": { "node": ">=18" },
+  "description": "THAAS card games. The website is plain static files; this file only gives the server functions in api/ (notifications, password reset email, cleanup) their dependencies.",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "firebase-admin": "^12.7.0"
+    "firebase-admin": "^12.7.0",
+    "nodemailer": "^6.9.14"
   }
 }

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>THAAS · Reset your password</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0e3b3a; --panel: #134a48; --gold: #e8b64c; --ink: #f4efe2; --muted: #b9c9c4; --bad: #ff8a80; --ok: #7ee2a8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;
+    background: radial-gradient(circle at 50% 0%, #1d6b66, var(--bg) 70%); color: var(--ink); font: 15px/1.5 Inter, system-ui, sans-serif; }
+  .card { width: 100%; max-width: 420px; background: var(--panel); border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 26px 22px; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+  .logo { font: 400 40px/1 Bungee, Georgia, serif; color: var(--gold); text-align: center; letter-spacing: 2px; text-shadow: 0 3px 0 #8c1d2c; }
+  .suits { text-align: center; color: var(--muted); letter-spacing: 6px; margin: 4px 0 18px; }
+  .suits .r { color: #ff6b81; }
+  h1 { font-size: 20px; margin: 0 0 6px; text-align: center; }
+  p { margin: 0 0 14px; color: var(--muted); text-align: center; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.2); background: rgba(0,0,0,.25); color: var(--ink); font: inherit; }
+  button, .btn { display: block; width: 100%; margin-top: 18px; padding: 12px; border: 0; border-radius: 12px; background: var(--gold); color: #1b1b1b; font: 700 15px Inter, sans-serif; cursor: pointer; text-align: center; text-decoration: none; }
+  button:disabled { opacity: .6; }
+  .msg { margin-top: 12px; text-align: center; font-size: 14px; min-height: 1em; }
+  .bad { color: var(--bad); } .ok { color: var(--ok); }
+  .show { display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .show input { width: auto; }
+  .foot { margin-top: 18px; text-align: center; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="logo">THAAS</div>
+  <div class="suits">♠ <span class="r">♥</span> ♣ <span class="r">♦</span></div>
+  <div id="view"><p>Checking your link…</p></div>
+  <div class="foot">THAAS · the Maldivian card games</div>
+</main>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, verifyPasswordResetCode, confirmPasswordReset } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import * as CFG from "./firebase-config.js";
+  const auth = getAuth(initializeApp(CFG.firebaseConfig));
+  const view = document.getElementById("view");
+  const q = new URLSearchParams(location.search);
+  const mode = q.get("mode"), code = q.get("oobCode");
+  const home = (CFG.siteUrl && !CFG.siteUrl.includes("PASTE") ? CFG.siteUrl : "./");
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const done = (title, text, ok = true) => {
+    view.innerHTML = `<h1>${esc(title)}</h1><p class="${ok ? "" : "bad"}">${esc(text)}</p><a class="btn" href="${esc(home)}">Back to THAAS</a>`;
+  };
+  if (mode !== "resetPassword" || !code) {
+    done("Link not valid", "This link isn't a password reset link. Please request a new one from the Sign in screen.", false);
+  } else {
+    try {
+      const email = await verifyPasswordResetCode(auth, code);
+      view.innerHTML = `
+        <h1>Choose a new password</h1>
+        <p>For your THAAS account <b style="color:#f4efe2">${esc(email)}</b></p>
+        <form id="f">
+          <label for="p1">New password</label><input id="p1" type="password" minlength="6" autocomplete="new-password" required>
+          <label for="p2">Type it again</label><input id="p2" type="password" minlength="6" autocomplete="new-password" required>
+          <label class="show"><input type="checkbox" id="sh"> Show password</label>
+          <button id="go" type="submit">Save new password</button>
+          <div id="m" class="msg"></div>
+        </form>`;
+      const m = document.getElementById("m");
+      document.getElementById("sh").onchange = (e) => { for (const id of ["p1", "p2"]) document.getElementById(id).type = e.target.checked ? "text" : "password"; };
+      document.getElementById("f").onsubmit = async (e) => {
+        e.preventDefault();
+        const p1 = document.getElementById("p1").value, p2 = document.getElementById("p2").value;
+        m.className = "msg bad";
+        if (p1.length < 6) return (m.textContent = "Please use at least 6 characters.");
+        if (p1 !== p2) return (m.textContent = "The two passwords don't match.");
+        const go = document.getElementById("go"); go.disabled = true; m.textContent = "";
+        try {
+          await confirmPasswordReset(auth, code, p1);
+          done("Password changed ✓", "Your new password is saved. You can now sign in to THAAS with it.");
+        } catch (err) {
+          go.disabled = false;
+          m.textContent = err.code === "auth/weak-password" ? "That password is too weak · try a longer one." : "This link has expired or was already used. Please request a new one.";
+        }
+      };
+    } catch {
+      done("Link expired", "This password reset link has expired or was already used. Please request a new one from the Sign in screen.", false);
+    }
+  }
+</script>
+</body>
+</html>

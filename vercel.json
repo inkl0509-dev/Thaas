@@ -1,13 +1,7 @@
 {
   "functions": {
-    "api/move.js": {
+    "api/*.js": {
       "maxDuration": 60
-    },
-    "api/cleanup.js": {
-      "maxDuration": 60
-    },
-    "api/reset.js": {
-      "maxDuration": 20
     }
   },
   "headers": [

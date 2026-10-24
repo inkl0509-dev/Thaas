@@ -253,8 +253,9 @@ export function callScores(hands, callerUid) {
   const result = {};
   for (const [u, v] of Object.entries(counts)) {
     let pts, how;
+    // caught (someone had less than the caller): the caller scores 50, everyone else their count
     if (u === callerUid) { pts = caught ? CALL_PENALTY : 0; how = caught ? "caught" : "won"; }
-    else if (catchers.includes(u)) { pts = 0; how = "caught-caller"; }
+    else if (catchers.includes(u)) { pts = v; how = "caught-caller"; }
     else { pts = v; how = "count"; }
     result[u] = { count: v, pts, how };
   }
