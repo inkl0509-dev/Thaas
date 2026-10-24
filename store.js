@@ -78,6 +78,8 @@ export function query(c, ...filters) {
 // ---------- special values ----------
 export const serverTimestamp = () => ({ __s: "ts" });
 export const increment = (n) => ({ __s: "inc", n });
+// the live database can give a list back as {0: …, 1: …}; treat that as the list it is
+const asList = (v) => (Array.isArray(v) ? v.filter((x) => x != null) : v && typeof v === "object" ? Object.keys(v).sort((a, b) => a - b).map((k) => v[k]).filter((x) => x != null) : []);
 export const arrayUnion = (...v) => ({ __s: "union", v });
 export const arrayRemove = (...v) => ({ __s: "remove", v });
 export const deleteField = () => ({ __s: "del" });
@@ -110,8 +112,8 @@ function applyLocal(cur, upd) {
       if (val.__s === "del") delete o[last];
       else if (val.__s === "ts") o[last] = rtNow();
       else if (val.__s === "inc") o[last] = (Number(o[last]) || 0) + val.n;
-      else if (val.__s === "union") { const a = Array.isArray(o[last]) ? o[last] : []; o[last] = [...a, ...val.v.filter((x) => !a.some((y) => JSON.stringify(y) === JSON.stringify(x)))]; }
-      else if (val.__s === "remove") { const ks = val.v.map((x) => JSON.stringify(x)); o[last] = (Array.isArray(o[last]) ? o[last] : []).filter((x) => !ks.includes(JSON.stringify(x))); }
+      else if (val.__s === "union") { const a = asList(o[last]); o[last] = [...a, ...val.v.filter((x) => !a.some((y) => JSON.stringify(y) === JSON.stringify(x)))]; }
+      else if (val.__s === "remove") { const ks = val.v.map((x) => JSON.stringify(x)); o[last] = asList(o[last]).filter((x) => !ks.includes(JSON.stringify(x))); }
     } else o[last] = JSON.parse(JSON.stringify(toRtLocal(val)));
   }
   return d;
