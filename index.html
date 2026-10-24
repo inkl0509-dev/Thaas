@@ -4,16 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>THAAS</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="THAAS">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0f2a26">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261024c">
+  <link rel="stylesheet" href="style.css?v=20261020c">
 </head>
 <body>
   <!-- LOBBY -->
@@ -28,11 +21,6 @@
     </div>
     <div class="logo-suits" aria-hidden="true"><span>♠</span><span class="r">♥</span><span>♣</span><span class="r">♦</span></div>
     
-    <div id="webPushBar" class="webpush-bar" hidden>
-      <span id="webPushText">🔔 Get a notification when it's your turn and when THAAS updates.</span>
-      <button type="button" id="webPushBtn" class="primary small">Turn on</button>
-      <button type="button" id="webPushX" class="ghost small" aria-label="Not now">✕</button>
-    </div>
     <section class="intro panel">
       <img src="thaas-intro.jpg" alt="Friends playing cards on a woven mat by the beach, a dhoni boat on the lagoon behind them" loading="lazy">
       <div class="intro-text">
@@ -135,8 +123,8 @@
         <li><strong>🙈 BABBUSH</strong> (2–6 players): everyone gets <strong>4 cards face down</strong> in a row; the rest is the middle pile. A random player chooses how many of their own cards everyone may look at (0–2), and each player secretly looks at that many. On your turn take the top card of the middle pile (only you see it) <strong>or the last thrown card</strong>. Tap one of your face-down cards: it is thrown (without looking) and the new card goes into <strong>the same place</strong>. A card from the middle pile can also just be thrown. Powers when you take them: <strong>J</strong> look at any one face-down card, <strong>Q</strong> switch any two cards, <strong>K</strong> lock a card face up (another K unlocks it). Whenever a card is thrown, anyone who has <strong>the same number</strong> can tap that card twice to throw it too, and more than one if they have them. A wrong card goes back with 2 penalty cards. Values: A = 1, 2–10 face value but <strong>8 = 0</strong>, J/Q/K = 10. Think yours is lowest? Call <strong>BABBUSH</strong>: everyone else has one more turn, then all cards are counted. If anyone has less than the caller, the caller scores 50; otherwise the caller scores 0. Everyone else scores their count. Lowest total wins.</li>
         <li><strong>🔟 DHIHA</strong> (holhuashis only · 4 players in 2 teams): pick your team in the holhuashi; teammates sit opposite. Everyone gets 13 cards and a random player starts. Follow the suit that was led. The first player who can't follow sets the <strong>Hukum</strong> (trump) with the card they play, for the rest of the round. A deck goes to the team of whoever played the highest Hukum, or else the highest card of the led suit (A is high), and they lead next. Decks with a 10 lie face up. The round goes on until <strong>all four 10s</strong> have been taken: a team with <strong>3 or 4 tens wins</strong>. At 2 tens each, play goes on until a team has <strong>7 decks</strong>. Points: 1 a round, 2 for all four 10s, 3 if the other team won no deck at all. First team to the target (or the most after the set rounds) wins the game.</li>
         <li><strong>🛖 Aammu Jagaha</strong> (the public place): there are three, one for each game: <strong>DIGU</strong> (4 tables, 4 seats each), <strong>CALL</strong> and <strong>BONDI</strong> (4 tables, 6 seats each). You only see the people in the one you're in. Switch any time with the tabs at the top; if you're sitting at a table, switching stands you up. Nobody owns the tables. Tap any table and you get a free chair there straight away; once 2 or more are seated anyone at the table can press <strong>▶ Play</strong>. A full table starts by itself. Games here are 4 rounds. Your chair stays yours until you press Stand up.</li>
-        <li><strong>📣 CALL</strong> (2–6 players, 5 cards each): on your turn, <strong>throw first</strong>: one card, or several cards of the same number together (for example, three Qs). <strong>Then take</strong> a card: the last card the previous player threw, or one from the middle pile. Card values: A = 1, 2–10 = face value, J/Q/K = 10. At the start of your turn, instead of throwing, if your count is <strong>7 or less</strong>, you can press <strong>CALL</strong> to end the round. If you have the lowest count, you score 0 and everyone else scores their count. If anyone has <em>less</em> than you, the CALL is caught: <strong>you score 50</strong> and everyone else scores their count. <strong>Lowest total wins.</strong></li>
-        <li><strong>♠ BONDI</strong> (2–6 players): the whole deck is dealt out: there is <strong>no pile to take cards from</strong>. Whoever has <strong>K♠</strong> starts by playing any card. Everyone in turn must play a card of the <strong>same suit</strong>. If everyone follows, those cards go <strong>out of play</strong> straight away and the highest card leads next. If you <strong>don't have that suit</strong>, play any card (a <em>cut</em>): the trick stops and all its cards go to whoever played the <strong>highest card of the led suit</strong>, who then leads. A is high. The goal is to <strong>get rid of all your cards first</strong>: the first player out wins the round and scores <strong>0</strong>; the next out scores <strong>10</strong>, then 20, 30… and the last player holding cards loses. Points count against you, so the <strong>lowest total wins</strong> the game.</li>
+        <li><strong>📣 CALL</strong> (2–6 players, 5 cards each): on your turn, <strong>throw first</strong>: one card, or several cards of the same number together (for example, three Qs). <strong>Then take</strong> a card: the last card the previous player threw, or one from the middle pile. Card values: A = 1, 2–10 = face value, J/Q/K = 10. At the start of your turn, instead of throwing, if your count is <strong>7 or less</strong>, you can press <strong>CALL</strong> to end the round. If you have the lowest count, you score 0 and everyone else scores their count. If anyone has <em>less</em> than you, you score <strong>50</strong>, they score 0, and everyone else scores their count. <strong>Lowest total wins.</strong></li>
+        <li><strong>♠ BONDI</strong> (2–6 players): the whole deck is dealt out and nothing goes in the middle. Whoever has <strong>K♠</strong> starts by playing any card. Everyone in turn must play a card of the <strong>same suit</strong>. If everyone follows, those cards are set aside and the highest card leads next. If you <strong>don't have that suit</strong>, play any card (a <em>cut</em>): the trick stops and all its cards go to whoever played the <strong>highest card of the led suit</strong>, who then leads. A is high. The goal is to <strong>get rid of all your cards first</strong>: the first player out wins the round and scores <strong>0</strong>; the next out scores <strong>10</strong>, then 20, 30… and the last player holding cards loses. Points count against you, so the <strong>lowest total wins</strong> the game.</li>
         <li><strong>🌴 Holhuashis</strong> (signed-in players): your own named spot by the beach that stays open for good. Holhuashis are <strong>invite-only</strong>: the owner shares an invite code (like ABCDE-7K2Q) or link, and once you've been invited you can come back any time. Play DIGU, CALL or BONDI, 2–6 players, as many games as you like. Holhuashi points grow with the number of players and how often you play.</li>
         <li>Everyone gets 10 cards (5 in CALL). The rest go face-down in the middle, and the thrown pile starts empty.</li>
         <li>On your turn, take the last card the previous player threw <em>or</em> the top card of the middle pile, then throw one card away. Drag cards with your mouse or finger, or tap them.</li>
@@ -362,9 +350,7 @@
       <label>Password <input id="authPassword" type="password" minlength="6" autocomplete="current-password" required></label>
       <label class="remember"><input type="checkbox" id="authRemember" checked> <span data-i18n="auth.remember">Remember me on this device</span></label>
       <p id="authError" class="error"></p>
-      <p id="authInfo" class="muted small-note"></p>
       <button id="authSubmit" class="primary"></button>
-      <button type="button" id="authForgot" class="link">Forgot password?</button>
       <button type="button" id="authSwitch" class="link"></button>
     </form>
   </div>
@@ -478,7 +464,6 @@
         <input id="adminSearch" placeholder="Search name or player ID">
         <button type="button" id="adminRefresh" class="ghost small" title="Reload">↻</button>
         <button type="button" id="adminCleanGuests" class="ghost small" title="Remove guests who have left">🧹 Guests</button>
-        <button type="button" id="adminUpdateAlert" class="ghost small" title="Send an update notification to every phone">📣 Update alert</button>
       </div>
       <details class="admin-prem">
         <summary>💎 Premium settings</summary>
@@ -490,7 +475,6 @@
       </details>
       <div id="adminFilters" class="admin-filters">
         <button type="button" data-f="all" class="on">All</button>
-        <button type="button" data-f="online">🟢 Online</button>
         <button type="button" data-f="registered">Registered</button>
         <button type="button" data-f="guests">Guests</button>
         <button type="button" data-f="blocked">Blocked</button>
@@ -505,7 +489,6 @@
   <button id="tourneyBtn" class="tourney-btn" hidden title="Tournament schedule">🏆</button>
   <div id="bottomBar" class="bottom-bar" hidden>
     <span id="bottomBack"></span>
-    <button id="musicBtn" class="corner-btn music-btn" title="Music">🔊</button>
     <button id="pauseBtn" class="corner-btn pause-btn" hidden title="Pause">⏸</button>
     <button id="endGameBtn" class="corner-btn end-btn" hidden title="End the game">⏹</button>
     <div id="premTools" class="prem-tools" hidden>
@@ -526,6 +509,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261024c"></script>
+  <script type="module" src="game.js?v=20261020c"></script>
 </body>
 </html>
