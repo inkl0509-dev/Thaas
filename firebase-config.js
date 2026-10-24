@@ -13,3 +13,4 @@ export const firebaseConfig = {
 // Example: "https://thaas.vercel.app/"
 export const siteUrl = "https://thaas-red.vercel.app/";
 export const notifyUrl = siteUrl.replace(/\/?$/, "/") + "api/notify";
+export const vapidKey = "BI8HbGAeMdpsncRoWZQjFFhjVAwLr5zt9IGFI5dG1k_cirFF_h6JDgSUlIOkNP3n8ZznHzDH1j15rdS4srhlqOQ";
