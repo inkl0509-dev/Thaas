@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024f";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024h";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261024f";
-import * as CFG from "./firebase-config.js?v=20261024f";
-import * as C from "./cards.js?v=20261024f";
-import * as P from "./profile.js?v=20261024f";
-import { DV } from "./i18n.js?v=20261024f";
+} from "./store.js?v=20261024h";
+import * as CFG from "./firebase-config.js?v=20261024h";
+import * as C from "./cards.js?v=20261024h";
+import * as P from "./profile.js?v=20261024h";
+import { DV } from "./i18n.js?v=20261024h";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -1613,7 +1613,7 @@ async function maybeBotMove() {
 let botKnown = null;
 async function knownHands(bot, cards) {
   const out = { [bot]: cards };
-  const pk = (u, c) => [...c, ...(isBondi() ? (room.pickups?.[u] || []).filter((x) => !c.includes(x)) : [])];
+  const pk = (u, c) => [...c, ...(isBondi() ? pickList(u).filter((x) => !c.includes(x)) : [])];
   out[bot] = pk(bot, cards);
   for (const u of room.playerIds) {
     if (u === bot) continue;
@@ -2327,8 +2327,9 @@ function enterRoom(code) {
   }, (e) => toast(errMsg(e)));
   unsubHand = onSnapshot(handRef(), (snap) => {
     handLoaded = !snap.metadata?.hasPendingWrites && !snap.metadata?.fromCache;
-    serverHand = snap.exists() ? snap.data().cards : [];
-    const cards = pendingHand() || serverHand;
+    serverHand = snap.exists() ? snap.data().cards : []; handSeen = true;
+    let cards = pendingHand() || serverHand;
+    if (isBondi()) { const pk = pickList(uid); cards = [...cards, ...pk.filter((c) => !cards.includes(c))]; }
     // keep my own arrangement: existing cards stay in place, new ones go on the end
     const added = cards.filter((c) => !hand.includes(c));
     hand = [...hand.filter((c) => cards.includes(c)), ...added];
@@ -2355,7 +2356,7 @@ function leaveRoom() {
   $("tourneyBtn").hidden = true;
   stopPresence();
   hideTableOverlays();
-  pendingMoves = []; serverRoom = null; serverHand = [];
+  pendingMoves = []; serverRoom = null; serverHand = []; handSeen = false;
   $("loungeChat").hidden = true; chatKey = null;
   setTimeout(() => { if (!room) renderMyLounges(true); }, 300); // back home: show my holhuashis straight away
   unsubRoom?.(); unsubHand?.();
@@ -3011,8 +3012,26 @@ function trickLeader() {
 }
 // true while cards I've been given haven't reached my hand yet, or my hand hasn't caught up with
 // the table (the two arrive separately) — I can't play until it's all in step
-const pendingPickup = () => isBondi() && ((room.pickups?.[uid] || []).some((c) => !hand.includes(c))
-  || (room.status === "playing" && room.counts && hand.length !== room.counts[uid]));
+// (never for more than a moment: after 2 s I can play anyway, and my next card fixes the count)
+const pendingPickup = () => {
+  if (!isBondi() || !room) return false;
+  mergePickupLocal();
+  const off = room.status === "playing" && room.counts && hand.length !== room.counts[uid];
+  if (!off) { pendingPickup.since = 0; return false; }
+  if (!pendingPickup.since) pendingPickup.since = Date.now();
+  return Date.now() - pendingPickup.since < 2000;
+};
+const toList = (v) => (!v ? [] : Array.isArray(v) ? v.filter((x) => x != null) : typeof v === "object" ? Object.keys(v).sort((a, b) => a - b).map((k) => v[k]).filter((x) => x != null) : []);
+const listMap = (m) => Object.fromEntries(Object.entries(m || {}).map(([k, v]) => [k, toList(v)]));
+// picked-up cards as a list (the live database can hand back a list as {0: …, 1: …})
+const pickList = (u) => { const v = room?.pickups?.[u]; return !v ? [] : Array.isArray(v) ? v.filter(Boolean) : Object.keys(v).sort((a, b) => a - b).map((k) => v[k]).filter((x) => typeof x === "string"); };
+// cards the table says I picked up are in my hand on screen straight away, whatever the save is doing
+function mergePickupLocal() {
+  const add = pickList(uid).filter((c) => !hand.includes(c));
+  if (!add.length) return false;
+  hand = C.sortBondi([...hand, ...add]);
+  return true;
+}
 
 async function dealBondi() {
   const ids = room.playerIds, n = ids.length;
@@ -3044,7 +3063,7 @@ function bondiCtx(r, who) {
     if (counts[u] > 0 && !played.includes(u) && u !== who) later.push(u);
   }
   const left = Math.max(0, (r.trickSize || n) - played.length - 1); // how many play after me this trick
-  return { me: who, voids: r.voids || {}, others: r.playerIds.filter((u) => u !== who && counts[u] > 0), later: later.slice(0, left),
+  return { me: who, voids: listMap(r.voids), others: r.playerIds.filter((u) => u !== who && counts[u] > 0), later: later.slice(0, left),
     level: isBot(who) && r.botLevel === "easy" ? "easy" : "hard" };
 }
 
@@ -3089,8 +3108,12 @@ function bondiThrow(card, timedOut) {
   if (!claimAction()) return;
   const res = C.bondiPlay(bondiState(room), uid, card);
   const b = moveBatch();
-  b.update(handRef(), { cards: hand.filter((c) => c !== card) });
-  b.update(roomRef(), bondiUpdate(room, res, uid, card, timedOut));
+  const left = hand.filter((c) => c !== card);
+  const upd = bondiUpdate(room, res, uid, card, timedOut);
+  if (room.pickups?.[uid]) upd[`pickups.${uid}`] = deleteField();
+  if (upd.counts) upd.counts = { ...upd.counts, [uid]: left.length };
+  b.update(handRef(), { cards: left });
+  b.update(roomRef(), upd);
   previewThrow([card]);
   selected = null;
   lastDrawn = null;
@@ -3100,20 +3123,14 @@ function bondiThrow(card, timedOut) {
 // Cards I've been given: move them into my hand.
 function applyPickup() {
   const mine = room?.pickups?.[uid];
-  if (!isBondi() || !mine || applyPickup.busy) return;
-  applyPickup.busy = true;
-  const add = mine.filter((c) => !hand.includes(c));
-  // wait until my hand is up to date (it arrives separately from the table)
-  // (but never longer than a moment: after 1.2 s the cards go straight into my hand anyway)
-  const key = mine.join(",");
-  if (applyPickup.key !== key) { applyPickup.key = key; applyPickup.since = Date.now(); }
-  if (room.status === "playing" && room.counts && hand.length + add.length !== room.counts[uid] && Date.now() - applyPickup.since < 1200) {
-    applyPickup.busy = false; setTimeout(applyPickup, 300); return;
-  }
+  if (!isBondi() || !mine || !pickList(uid).length) return;
+  if (mergePickupLocal()) { try { render(); } catch {} }
+  if (!handSeen || (applyPickup.busy && Date.now() - applyPickup.busy < 5000)) return; // never save a half-loaded hand
+  applyPickup.busy = Date.now();
   const b = writeBatch(db);
-  if (add.length) { hand = [...hand, ...add]; b.update(handRef(), { cards: hand }); try { render(); } catch {} }
-  b.update(roomRef(), { [`pickups.${uid}`]: deleteField() });
-  b.commit().catch((e) => toast(errMsg(e))).finally(() => { applyPickup.busy = false; });
+  b.update(handRef(), { cards: hand });
+  b.update(roomRef(), { [`pickups.${uid}`]: deleteField(), ...(room.status === "playing" ? { [`counts.${uid}`]: hand.length } : {}) });
+  b.commit().catch((e) => console.warn("pickup", e)).finally(() => { applyPickup.busy = 0; });
 }
 
 // BONDI safety net: if my hand and the table disagree for a few seconds (a save got lost on a bad
@@ -3121,14 +3138,16 @@ function applyPickup() {
 // off, correct it, so the game never gets stuck on "your turn" with nothing working.
 let bondiStuckSince = 0;
 setInterval(async () => {
-  if (!room || !isBondi() || room.status !== "playing" || !room.playerIds?.includes(uid) || !pendingPickup()) { bondiStuckSince = 0; return; }
+  const off = room && isBondi() && room.status === "playing" && room.playerIds?.includes(uid) && handSeen
+    && (room.pickups?.[uid] || (room.counts && hand.length !== room.counts[uid]));
+  if (!off) { bondiStuckSince = 0; return; }
   if (!bondiStuckSince) { bondiStuckSince = Date.now(); return; }
-  if (Date.now() - bondiStuckSince < 4000 || applyPickup.busy || pendingMoves.length) return;
+  if (Date.now() - bondiStuckSince < 3000 || pendingMoves.length || (applyPickup.busy && Date.now() - applyPickup.busy < 5000)) return;
   bondiStuckSince = Date.now();
-  applyPickup.busy = true;
+  applyPickup.busy = Date.now();
   try {
     const fresh = (await getDoc(handRef())).data()?.cards || [];
-    const pick = (room.pickups?.[uid] || []).filter((c) => !fresh.includes(c));
+    const pick = pickList(uid).filter((c) => !fresh.includes(c));
     const cards = [...fresh, ...pick];
     const b = writeBatch(db);
     if (pick.length) b.update(handRef(), { cards });
@@ -3139,15 +3158,15 @@ setInterval(async () => {
     await b.commit();
     setHandCards(cards);
     render();
-  } catch (e) { console.warn("BONDI fix-up", e); } finally { applyPickup.busy = false; }
+  } catch (e) { console.warn("BONDI fix-up", e); } finally { applyPickup.busy = 0; }
 }, 1000);
 
 async function botBondi(bot, cards) {
-  const got = room.pickups?.[bot] || [];
+  const got = pickList(bot);
   const held = [...cards, ...got.filter((c) => !cards.includes(c))];
   if (!held.length) return;
   const card = botLevel() === "hard" && botKnown
-    ? C.bondiHardCard(held, bondiState(room), bot, { known: botKnown, voids: room.voids || {}, humans: room.playerIds.filter((u) => !isBot(u)), budgetMs: 250 })
+    ? C.bondiHardCard(held, bondiState(room), bot, { known: botKnown, voids: listMap(room.voids), humans: room.playerIds.filter((u) => !isBot(u)), budgetMs: 250 })
     : C.bondiBotCard(held, room.trick || [], bondiCtx(room, bot));
   const res = C.bondiPlay(bondiState(room), bot, card);
   const upd = bondiUpdate(room, res, bot, card);
@@ -3289,9 +3308,9 @@ async function botDhiha(bot, cards) {
   const level = botLevel();
   const card = level === "easy" ? C.dhihaAutoCard(cards, room.trick || [], room.hukum)
     : level === "hard" ? C.dhihaHardCard(cards, room.trick || [], room.hukum, { me: bot, teams: room.teams, playerIds: room.playerIds,
-      seen, voids: room.dvoids || {}, decksA: room.decks?.A || [], decksB: room.decks?.B || [], budgetMs: 250, known: botKnown || {} })
+      seen, voids: listMap(room.dvoids), decksA: room.decks?.A || [], decksB: room.decks?.B || [], budgetMs: 250, known: botKnown || {} })
     : C.dhihaBotCard(cards, room.trick || [], room.hukum, { me: bot, teams: room.teams, playerIds: room.playerIds,
-      seen, voids: room.dvoids || {} });
+      seen, voids: listMap(room.dvoids) });
   if (!card) return;
   await botCommit(dhihaMoveUpdate(bot, card, false), bot, cards.filter((c) => c !== card));
 }
@@ -3578,6 +3597,7 @@ function undoPreview() {
 // Speed: my screen shows my move straight away (I can take and then throw without waiting); the
 // checked saves go to the server one after another in the background. If the server refuses one,
 // my screen goes back to the real table.
+let handSeen = false; // my hand has arrived from the server at least once at this table
 let serverRoom = null, serverHand = [], pendingMoves = [], moveChain = Promise.resolve();
 const isSentinel = (v) => v && typeof v === "object" && ("_methodName" in v || "__union" in v || "__inc" in v || "__del" in v || "__remove" in v || "__ts" in v);
 function applyLocal(obj, data) {
@@ -4255,7 +4275,7 @@ async function showResults() {
     const sc = C.bondiScores(order);
     lastRows = room.players.map((p) => {
       const held = hands[p.uid] || [];
-      const left = [...held, ...(room.pickups?.[p.uid] || []).filter((c) => !held.includes(c))];
+      const left = [...held, ...pickList(p.uid).filter((c) => !held.includes(c))];
       const place = order.indexOf(p.uid) + 1;
       return { ...p, pts: sc[p.uid] ?? order.length * C.BONDI_STEP, bondi: true, place: place || order.length + 1,
         last: !place || place === order.length, sets: left.length ? [C.sortBondi(left)] : [], leftover: [] };
@@ -6133,7 +6153,7 @@ function moveAdvice() {
   }
   if (g === "dhiha") {
     const seen = [...(room.decks?.A || []), ...(room.decks?.B || [])].flatMap((d) => d.split(","));
-    const c = C.dhihaBotCard(hand, room.trick || [], room.hukum, { me: uid, teams: room.teams, playerIds: room.playerIds, seen, voids: room.dvoids || {} });
+    const c = C.dhihaBotCard(hand, room.trick || [], room.hukum, { me: uid, teams: room.teams, playerIds: room.playerIds, seen, voids: listMap(room.dvoids) });
     const t = room.trick || [];
     if (!t.length) return `Lead ${nm(c)}.`;
     const w = C.dhihaTrickWinner(t, room.hukum);
@@ -6289,7 +6309,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261024f";
+const APP_VERSION = "20261024h";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6968,7 +6988,7 @@ function sweepTrick(t) {
     bump.classList.remove("got-cards"); void bump.offsetWidth; bump.classList.add("got-cards");
     const tag = document.createElement("span");
     tag.className = "got-tag" + (t.to ? "" : " aside");
-    tag.textContent = `+${t.cards.length}`;
+    tag.textContent = `+${(t.cards || []).length}`;
     const br = bump.getBoundingClientRect();
     Object.assign(tag.style, { left: br.left + br.width / 2 + "px", top: br.top + "px" });
     document.body.append(tag);
