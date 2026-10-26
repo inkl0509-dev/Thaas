@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261024k";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261026a";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261024k";
-import * as CFG from "./firebase-config.js?v=20261024k";
-import * as C from "./cards.js?v=20261024k";
-import * as P from "./profile.js?v=20261024k";
-import { DV } from "./i18n.js?v=20261024k";
+} from "./store.js?v=20261026a";
+import * as CFG from "./firebase-config.js?v=20261026a";
+import * as C from "./cards.js?v=20261026a";
+import * as P from "./profile.js?v=20261026a";
+import { DV } from "./i18n.js?v=20261026a";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -6295,7 +6295,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261024k";
+const APP_VERSION = "20261026a";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7404,8 +7404,9 @@ $("adminUpdateAlert").onclick = async () => {
       body: JSON.stringify({ roomId: "-", kind: "update", text, version: APP_VERSION, ...(picked.length ? { to: picked } : {}) }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "Sending failed");
-    toast(picked.length && !j.sent ? "📣 None of the selected players has the Android app with notifications on"
-      : `📣 Update alert sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}`);
+    const by = j.by ? Object.entries(j.by).filter(([, n]) => n).map(([k, n]) => `${n} ${{ android: "Android", ios: "iPhone", web: "browser", unknown: "older Android" }[k] || k}`).join(", ") : "";
+    toast(!j.sent && !j.failed ? "📣 None of these players has turned on notifications yet"
+      : `📣 Sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}${by ? ` (${by})` : ""}${j.failed ? ` · ${j.failed} failed${j.error ? ": " + j.error : ""}` : ""}`, 9000);
     if (picked.length) { adminPick.clear(); syncPickLabel(); renderAdmin(); }
   } catch (e) { toast(errMsg(e)); }
 };
@@ -7470,7 +7471,11 @@ const PUSH_PARAM = (() => {
 })();
 let pushToken = null, pushReady = false;
 
+// Push alerts only for requests (someone joined my holhuashi / sat at my table), never for moves in a
+// game that's already being played: the players are looking at the screen anyway.
+const PUSH_KINDS = new Set(["join", "sit"]);
 async function sendNotify(kind, code = roomId) {
+  if (!PUSH_KINDS.has(kind)) return;
   if (!NOTIFY_URL || !code || !auth.currentUser || (room?.practice && code === roomId)) return;
   try {
     const token = await auth.currentUser.getIdToken();
@@ -7540,7 +7545,10 @@ setTimeout(() => { syncWebPushBar(); if (WEB_PUSH_OK && Notification.permission 
 function savePushToken() {
   if (!pushToken || !uid) return;
   // kept in its own private place: only this player (and the server) can read it
-  setDoc(doc(db, "pushTokens", uid), { tokens: arrayUnion(pushToken) }, { merge: true }).catch(() => {});
+  // also note which kind of phone it is, so the admin can see who an alert reached
+  const kind = IS_APP ? "android" : IS_IOS ? "ios" : "web";
+  setDoc(doc(db, "pushTokens", uid), { tokens: arrayUnion(pushToken), [kind]: arrayUnion(pushToken) }, { merge: true })
+    .catch((e) => console.warn("push token not saved", e));
 }
 
 async function setupPush() {
