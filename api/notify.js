@@ -30,6 +30,8 @@ const tableLabel = (id, r) => {
 
 // Who gets told what. Only players at this table can ever be targets.
 function plan(kind, roomId, r, caller) {
+  // live-game alerts (turn / start / round / ended) are switched off: only requests are pushed
+  if (!["join", "sit"].includes(kind)) return null;
   const name = (r.players || []).find((p) => p.uid === caller)?.name || "Someone";
   const others = (r.playerIds || []).filter((u) => u !== caller);
   const where = tableLabel(roomId, r);
@@ -136,22 +138,32 @@ async function sendUpdate(app, caller, body, res) {
   // only the chosen players, or everyone
   const pick = Array.isArray(body.to) ? body.to.filter((u) => typeof u === "string" && u && !u.includes("/")).slice(0, 500) : null;
   const all = pick ? (pick.length ? await db.getAll(...pick.map((u) => db.doc(`pushTokens/${u}`))) : []) : (await db.collection("pushTokens").get()).docs;
-  const tokens = [];
-  all.forEach((u) => u.exists && (u.get("tokens") || []).forEach((t) => tokens.push(t)));
-  if (!tokens.length) return res.json({ sent: 0 });
+  const tokens = [], kindOf = {};
+  all.forEach((u) => {
+    if (!u.exists) return;
+    for (const k of ["android", "ios", "web"]) (u.get(k) || []).forEach((t) => { kindOf[t] = k; });
+    (u.get("tokens") || []).forEach((t) => tokens.push(t));
+  });
+  if (!tokens.length) return res.json({ sent: 0, failed: 0, by: {} });
   const text = String(body.text || "").slice(0, 140) || "New features and fixes are ready. Open THAAS to update.";
-  let sent = 0, failed = 0;
+  let sent = 0, failed = 0, error = "";
+  const by = { android: 0, ios: 0, web: 0, unknown: 0 };
   for (let i = 0; i < tokens.length; i += 500) {
+    const chunk = tokens.slice(i, i + 500);
     const r = await app.messaging().sendEachForMulticast({
-      tokens: tokens.slice(i, i + 500),
+      tokens: chunk,
       notification: { title: "🔄 THAAS update available", body: text },
       data: { kind: "update", version: String(body.version || "") },
-      webpush: { headers: { Urgency: "high", TTL: "86400" } },
+      webpush: { headers: { Urgency: "high", TTL: "86400" }, notification: { title: "🔄 THAAS update available", body: text, icon: "/icon-192.png", tag: "thaas-update" } },
       android: { priority: "high", notification: { channelId: "turns", tag: "thaas-update", color: "#E8B64C", sound: "default" } },
     });
     sent += r.successCount; failed += r.failureCount;
+    r.responses.forEach((x, k) => {
+      if (x.success) by[kindOf[chunk[k]] || "unknown"]++;
+      else if (!error) error = x.error?.code || x.error?.message || "error";
+    });
   }
-  return res.json({ sent, failed });
+  return res.json({ sent, failed, by, error });
 }
 
 module.exports.plan = plan; // for tests
