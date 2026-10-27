@@ -4,19 +4,23 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027i";
-import { startAmbience, stopAmbience, unlockAmbience, setThunderHandler, setSwellHandler } from "./ambience.js?v=20261027i";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027k";
+// scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
+let AMB = null;
+import(`./ambience.js?v=20261027k`).then((m) => { AMB = m; m.setThunderHandler(thunderFlash); m.setSwellHandler(swellNow); syncMusic(); })
+  .catch((e) => console.warn("scene sounds unavailable", e));
+const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027i";
-import * as CFG from "./firebase-config.js?v=20261027i";
-import * as C from "./cards.js?v=20261027i";
-import * as P from "./profile.js?v=20261027i";
-import { DV } from "./i18n.js?v=20261027i";
+} from "./store.js?v=20261027k";
+import * as CFG from "./firebase-config.js?v=20261027k";
+import * as C from "./cards.js?v=20261027k";
+import * as P from "./profile.js?v=20261027k";
+import { DV } from "./i18n.js?v=20261027k";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -4725,7 +4729,7 @@ function setScene(kind) {
 // right under the card table, leaves the sand wet and slides back. Foam, little crests coming in,
 // sparkles on the water. (Kept light: about 30 frames a second, paused when the app is hidden.)
 let shoreRun = 0, shoreSwell = null;
-setSwellHandler((up, down) => { shoreSwell = { at: performance.now(), up: up * 1000, down: down * 1000 }; });
+function swellNow(up, down) { shoreSwell = { at: performance.now(), up: up * 1000, down: down * 1000 }; }
 function startShore(cv) {
   const run = ++shoreRun;
   const ctx2 = cv.getContext("2d");
@@ -4851,11 +4855,11 @@ function slipOffTable(el) {
   }, 580);
   setTimeout(() => showBanner("Oops! The card fell on the sand · back on the table", "🏖️"), 900);
 }
-setThunderHandler(() => {
+function thunderFlash() {
   const f = document.querySelector("#sceneFx .flash");
   if (!f) return;
   f.classList.remove("on"); void f.offsetWidth; f.classList.add("on");
-});
+}
 
 // Profile pictures live in each player's profile; rooms only carry a version number,
 // so the (small) picture is downloaded once per player and cached.
@@ -5108,11 +5112,11 @@ async function forgotPassword() {
   } finally { $("authForgot").disabled = false; }
 }
 
+let signingOut = false;
 async function logOut() {
   if (roomId) return toast("Leave the room first");
-  await signOut(auth);
-  profile = {};
-  await signInAnonymously(auth); // back to playing as a guest
+  signingOut = true;
+  try { await signOut(auth); profile = {}; await signInAnonymously(auth); } finally { signingOut = false; } // back to playing as a guest
   toast("Signed out. Playing as guest.");
 }
 
@@ -6565,7 +6569,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027i";
+const APP_VERSION = "20261027k";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7920,7 +7924,14 @@ $("name").value = load("digu-name") || "";
 let authChecked = false;
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
-    if (!authChecked) { authChecked = true; signInAnonymously(auth).catch((e) => toast("Sign-in failed: " + errMsg(e))); }
+    // first visit, or my saved login stopped working (e.g. a guest account that was tidied away, so
+    // Google answers "400 Bad Request" when renewing it): carry on as a new guest straight away
+    const lost = authChecked && !signingOut && !!uid;
+    if (!authChecked || lost) {
+      authChecked = true;
+      if (lost) { uid = null; profile = {}; if (roomId) { try { leaveRoom(); } catch {} } toast("Your guest session ended · you're playing as a new guest"); }
+      signInAnonymously(auth).catch((e) => toast("Sign-in failed: " + errMsg(e)));
+    }
     return;
   }
   authChecked = true;
