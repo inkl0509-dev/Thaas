@@ -117,14 +117,82 @@ function drip(delay) {
   g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(rnd(0.03, 0.08), t + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
   s.connect(f); f.connect(g); g.connect(out); s.start(t, Math.random() * 3); s.stop(t + 0.05);
 }
-function rumble() {
+function rumble(vol = 1) {
   try { onThunder?.(); } catch {}
   const t = ctx.currentTime + rnd(0.3, 1.2), s = ctx.createBufferSource(), g = ctx.createGain(), f = filt("lowpass", rnd(120, 220));
   s.buffer = brownBuf;
   const len = rnd(3.5, 6);
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(rnd(0.5, 0.8), t + rnd(0.15, 0.5));
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(rnd(0.5, 0.8) * vol, t + rnd(0.15, 0.5));
   g.gain.exponentialRampToValueAtTime(0.25, t + len * 0.4); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
   s.connect(f); f.connect(g); g.connect(out); s.start(t, Math.random()); s.stop(t + len + 0.1);
+}
+
+// ---------- rainy night, inside the house: rain heard through the window ----------
+function indoor() {
+  const steady = gain(0.0); // rain outside, softened by the walls and glass
+  loop(noiseBuf).connect(filt("highpass", 500)).connect(filt("lowpass", 1700)).connect(steady).connect(out);
+  steady.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 2);
+  const roof = gain(0.06);
+  loop(brownBuf).connect(filt("lowpass", 300)).connect(roof).connect(out);
+  const taps = () => { // drops tapping on the window
+    if (cur !== "window") return;
+    if (Math.random() < 0.7) tap();
+    later(taps, rnd(120, 420));
+  };
+  taps();
+  const thunder = () => {
+    if (cur !== "window") return;
+    rumble(0.45);
+    later(thunder, rnd(20000, 40000));
+  };
+  later(thunder, rnd(7000, 14000));
+  const cricket = () => { // a cricket somewhere outside, now and then
+    if (cur !== "window") return;
+    if (Math.random() < 0.5) for (let i = 0; i < 3; i++) chirp(i * 0.12);
+    later(cricket, rnd(4000, 9000));
+  };
+  later(cricket, 3000);
+}
+function tap() {
+  const t = ctx.currentTime, s = ctx.createBufferSource(), g = ctx.createGain(), f = filt("bandpass", rnd(1800, 3200), 6);
+  s.buffer = noiseBuf;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(rnd(0.04, 0.1), t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  s.connect(f); f.connect(g); g.connect(out); s.start(t, Math.random() * 3); s.stop(t + 0.06);
+}
+function chirp(delay) {
+  const t = ctx.currentTime + delay, o = ctx.createOscillator(), g = ctx.createGain(), am = ctx.createOscillator(), ag = ctx.createGain();
+  o.type = "sine"; o.frequency.value = rnd(4200, 4800);
+  am.frequency.value = 45; ag.gain.value = 0.5; am.connect(ag); ag.connect(g.gain);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.012, t + 0.02); g.gain.linearRampToValueAtTime(0.0001, t + 0.09);
+  o.connect(g); g.connect(out); o.start(t); am.start(t); o.stop(t + 0.1); am.stop(t + 0.1);
+}
+
+// ---------- under the sea ----------
+function pool() {
+  const deep = gain(0.0); // the muffled hush of being underwater
+  loop(brownBuf).connect(filt("lowpass", 260)).connect(deep).connect(out);
+  deep.gain.linearRampToValueAtTime(0.32, ctx.currentTime + 2);
+  const sway = () => { // the water moving slowly
+    if (cur !== "pool") return;
+    const t = ctx.currentTime, v = rnd(0.22, 0.4);
+    deep.gain.cancelScheduledValues(t); deep.gain.setValueAtTime(deep.gain.value, t); deep.gain.linearRampToValueAtTime(v, t + rnd(2, 4));
+    later(sway, rnd(2500, 4500));
+  };
+  later(sway, 2200);
+  const bubbles = () => {
+    if (cur !== "pool") return;
+    const n = Math.random() < 0.3 ? 3 + Math.floor(Math.random() * 5) : 1;
+    for (let i = 0; i < n; i++) blub(i * rnd(0.06, 0.14));
+    later(bubbles, rnd(600, 2400));
+  };
+  later(bubbles, 800);
+}
+function blub(delay) { // one bubble: a quick rising "bloop"
+  const t = ctx.currentTime + delay, o = ctx.createOscillator(), g = ctx.createGain(), f0 = rnd(260, 520);
+  o.type = "sine";
+  o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * rnd(2, 3.2), t + 0.07);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(rnd(0.03, 0.07), t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.1);
 }
 
 // ---------- start / stop ----------
@@ -138,7 +206,7 @@ export function startAmbience(kind) {
   out.gain.cancelScheduledValues(ctx.currentTime);
   out.gain.setValueAtTime(0, ctx.currentTime);
   out.gain.linearRampToValueAtTime(kind === "rain" ? 0.9 : 0.8, ctx.currentTime + 2); // fade in
-  if (kind === "beach") beach(); else if (kind === "rain") rain();
+  if (kind === "beach") beach(); else if (kind === "rain") rain(); else if (kind === "pool") pool(); else if (kind === "window") indoor();
 }
 export function stopAmbience(now = false) {
   const old = live;
