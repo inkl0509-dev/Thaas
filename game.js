@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027b";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027d";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027b";
-import * as CFG from "./firebase-config.js?v=20261027b";
-import * as C from "./cards.js?v=20261027b";
-import * as P from "./profile.js?v=20261027b";
-import { DV } from "./i18n.js?v=20261027b";
+} from "./store.js?v=20261027d";
+import * as CFG from "./firebase-config.js?v=20261027d";
+import * as C from "./cards.js?v=20261027d";
+import * as P from "./profile.js?v=20261027d";
+import { DV } from "./i18n.js?v=20261027d";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3861,7 +3861,47 @@ function takeFirstHint() {
   nudge("✋", "Take a card first", "from the middle pile or the last thrown card", true);
 }
 
+// ↩ A thrown card waits 1 second before it really goes, so an accidental tap can be taken back.
+const UNDO_MS = 1000;
+let pendingThrow = null;
+function throwProblem(ids) { // anything that would stop this throw (then it's handled straight away, with its message)
+  if (shuffling() || needsDrawFirst() || !canThrow() || !ids.length || !ids.every((c) => hand.includes(c))) return true;
+  if (isBondi()) return !C.bondiLegal(hand, room.trick || []).includes(ids[0]);
+  if (isDhiha()) return !C.dhihaLegal(hand, room.trick || []).includes(ids[0]);
+  if (isCall()) return !C.canThrowTogether(ids);
+  return ids.length !== 1 || (takenNow(uid) && ids.includes(takenNow(uid)));
+}
+function cancelPendingThrow(silent) {
+  if (!pendingThrow) return;
+  clearTimeout(pendingThrow.timer); clearInterval(pendingThrow.tick);
+  pendingThrow.ui.remove();
+  document.querySelectorAll("#hand .card.throw-pending").forEach((e) => e.classList.remove("throw-pending"));
+  pendingThrow = null;
+  if (!silent) { toast("↩ Taken back"); try { render(); } catch {} }
+}
 function throwCard(cardIds, timedOut = false) {
+  const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
+  if (timedOut) { cancelPendingThrow(true); return doThrowCard(ids, true); }
+  if (pendingThrow) return; // one throw at a time
+  if (throwProblem(ids)) return doThrowCard(ids, false);
+  const key = `${roomId}|${room.round}|${room.moveId || 0}`;
+  const ui = Object.assign(document.createElement("button"), { type: "button", className: "undo-throw" });
+  ui.innerHTML = '<span>↩ Take back</span><i></i>';
+  ui.onclick = (e) => { e.stopPropagation(); cancelPendingThrow(); };
+  document.body.append(ui);
+  const mark = () => ids.forEach((id) => document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`)?.classList.add("throw-pending"));
+  mark();
+  pendingThrow = {
+    ids, ui,
+    tick: setInterval(mark, 100), // the hand can redraw meanwhile
+    timer: setTimeout(() => {
+      cancelPendingThrow(true);
+      // still the same moment of the game: throw it for real
+      if (room && `${roomId}|${room.round}|${room.moveId || 0}` === key) doThrowCard(ids, false);
+    }, UNDO_MS),
+  };
+}
+function doThrowCard(cardIds, timedOut = false) {
   if (shuffling() && !timedOut) return toast("🎩 Wait: the new middle pile is being shuffled");
   if (needsDrawFirst()) return takeFirstHint();
   const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
@@ -6333,7 +6373,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027b";
+const APP_VERSION = "20261027d";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6957,18 +6997,13 @@ function funMoment(emoji, text, floaters, kind) {
 const NOTO = (hex) => `https://fonts.gstatic.com/s/e/notoemoji/latest/${hex}/512.webp`;
 try { new Image().src = NOTO("1f923"); } catch {}
 function shameEmoji(u, ms = 4200) {
-  const seat = u === uid ? (document.querySelector(".seat-tag.s-me") || $("hand")) : seatEl(u);
-  if (!seat) return;
-  document.querySelectorAll(`.shame-emoji[data-uid="${CSS.escape(u)}"]`).forEach((e) => e.remove());
-  const r = seat.getBoundingClientRect();
+  // up in the top corner of the screen, with the name of whoever has to pick the deck up
+  document.querySelectorAll(".shame-emoji").forEach((e) => e.remove());
   const el = Object.assign(document.createElement("div"), { className: "shame-emoji" });
   el.dataset.uid = u;
   const img = Object.assign(new Image(), { alt: "🤣", src: NOTO("1f923") });
   img.onerror = () => img.replaceWith(Object.assign(document.createElement("span"), { className: "se-text", textContent: "🤣" }));
-  el.append(img, Object.assign(document.createElement("small"), { textContent: u === uid ? "haha!" : "haha!" }));
-  // beside the name, on the side nearer the middle of the screen
-  const left = r.left + r.width / 2 < innerWidth / 2 ? r.right + 4 : r.left - 58;
-  Object.assign(el.style, { left: Math.max(4, Math.min(innerWidth - 60, left)) + "px", top: Math.max(4, Math.min(innerHeight - 70, r.top + r.height / 2 - 30)) + "px" });
+  el.append(img, Object.assign(document.createElement("small"), { textContent: u === uid ? "haha, you!" : `haha ${nameOf(u)}!` }));
   document.body.append(el);
   setTimeout(() => el.classList.add("bye"), ms - 400);
   setTimeout(() => el.remove(), ms);
