@@ -162,6 +162,9 @@ export const TABLES = [
   { id: "charcoal", name: "Charcoal",      rank: 4, c: ["#323843", "#23272e", "#15181d"] },
   { id: "teal",     name: "Deep ocean",    rank: 5, c: ["#127080", "#0b4f5a", "#06343c"] },
   { id: "night",    name: "Midnight gold", rank: 6, c: ["#2b2b66", "#1a1a40", "#0d0d26"] },
+  // 🏖️ Scenes: the whole screen becomes a place, with its own sounds. Unlocked by rank (or 💎 Premium).
+  { id: "beachside", name: "Beach (waves & birds)", rank: 1, scene: "beach", icon: "🏖️", c: ["#f7efd9", "#efe2bf", "#e2cf9c"] },
+  { id: "rainy",     name: "Rainy day",             rank: 2, scene: "rain",  icon: "🌧️", c: ["#3a4a5c", "#26323f", "#141b24"] },
   // 💎 Premium tables
   { id: "sandbank", name: "Sandbank",      rank: 0, premium: true, c: ["#3fc6c9", "#1a9aa6", "#0b6e7c"] },
   { id: "sunset",   name: "Island sunset", rank: 0, premium: true, c: ["#c8553d", "#8f2d56", "#4a1942"] },
@@ -211,7 +214,7 @@ export const DEFAULT_PREFS = { table: "green", deck: "red", font: "classic", col
 export function allowedPrefs(prefs, rank, registered, premium = false) {
   const pick = (list, id, key) => {
     const o = list.find((x) => x.id === id);
-    return o && registered && (o.premium ? premium : o.rank <= rank) ? o.id : DEFAULT_PREFS[key];
+    return o && registered && (o.premium ? premium : o.rank <= rank || (o.scene && premium)) ? o.id : DEFAULT_PREFS[key];
   };
   return {
     table: pick(TABLES, prefs?.table, "table"),
