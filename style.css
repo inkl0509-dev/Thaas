@@ -2343,3 +2343,26 @@ html, body { overflow-x: hidden; }
 @keyframes thinkPop { from { transform: scale(0) translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes thinkDot { 0%, 100% { opacity: .2; transform: scale(.7); } 40% { opacity: 1; transform: scale(1); } }
 @keyframes thinkBob { 0%, 100% { transform: translateY(0) rotate(-6deg); } 50% { transform: translateY(-4px) rotate(6deg); } }
+
+/* BABBUSH: 3-second window to throw an alike card */
+.bb-match-timer { position: fixed; left: 10px; top: 108px; z-index: 70; display: flex; align-items: center; gap: 6px; padding: 4px 12px 4px 4px;
+  border-radius: 999px; background: rgba(20, 16, 4, .82); border: 1px solid #ffcf5a; color: #ffe7a3; font-weight: 700; font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4), 0 0 14px rgba(255, 207, 90, .35); pointer-events: none; animation: mtIn .25s ease-out; }
+.bb-match-timer[hidden] { display: none; }
+.bb-match-timer svg { width: 32px; height: 32px; transform: rotate(-90deg); flex: none; }
+.bb-match-timer b { position: absolute; left: 4px; width: 32px; text-align: center; font-size: 15px; color: #fff; }
+.bb-match-timer .mt-bg { fill: none; stroke: rgba(255,255,255,.15); stroke-width: 3.5; }
+.bb-match-timer .mt-fg { fill: none; stroke: #ffcf5a; stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 94.25; transition: stroke-dashoffset .1s linear; }
+@keyframes mtIn { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ⭐ DIGU calls next to a player's name */
+.digu-star { margin-left: 4px; font-size: .85em; color: #ffd54a; text-shadow: 0 0 6px rgba(255, 200, 40, .8); white-space: nowrap;
+  display: inline-block; animation: starPulse 2.4s ease-in-out infinite; }
+@keyframes starPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2) rotate(8deg); } }
+/* 🤣 BONDI: laughed at for picking up the deck */
+.shame-emoji { position: fixed; z-index: 75; width: 54px; text-align: center; pointer-events: none; animation: shameIn .4s cubic-bezier(.3,1.6,.5,1) both; }
+.shame-emoji img { width: 54px; height: 54px; display: block; filter: drop-shadow(0 4px 6px rgba(0,0,0,.5)); }
+.shame-emoji .se-text { font-size: 44px; line-height: 54px; display: block; animation: thinkBob .5s ease-in-out infinite; }
+.shame-emoji small { display: inline-block; margin-top: -4px; padding: 1px 7px; border-radius: 999px; background: #ff6b6b; color: #fff; font-weight: 800; font-size: 11px; }
+.shame-emoji.bye { transition: opacity .4s, transform .4s; opacity: 0; transform: scale(.6) translateY(-10px); }
+@keyframes shameIn { from { transform: scale(0) rotate(-30deg); opacity: 0; } to { transform: none; opacity: 1; } }
