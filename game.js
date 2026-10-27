@@ -4,18 +4,19 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027d";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027i";
+import { startAmbience, stopAmbience, unlockAmbience, setThunderHandler, setSwellHandler } from "./ambience.js?v=20261027i";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027d";
-import * as CFG from "./firebase-config.js?v=20261027d";
-import * as C from "./cards.js?v=20261027d";
-import * as P from "./profile.js?v=20261027d";
-import { DV } from "./i18n.js?v=20261027d";
+} from "./store.js?v=20261027i";
+import * as CFG from "./firebase-config.js?v=20261027i";
+import * as C from "./cards.js?v=20261027i";
+import * as P from "./profile.js?v=20261027i";
+import { DV } from "./i18n.js?v=20261027i";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3871,13 +3872,20 @@ function throwProblem(ids) { // anything that would stop this throw (then it's h
   if (isCall()) return !C.canThrowTogether(ids);
   return ids.length !== 1 || (takenNow(uid) && ids.includes(takenNow(uid)));
 }
-function cancelPendingThrow(silent) {
+function cancelPendingThrow(silent, keepCard) {
   if (!pendingThrow) return;
-  clearTimeout(pendingThrow.timer); clearInterval(pendingThrow.tick);
+  clearTimeout(pendingThrow.timer); clearInterval(pendingThrow.tick); pendingThrow.run = false;
   pendingThrow.ui.remove();
-  document.querySelectorAll("#hand .card.throw-pending").forEach((e) => e.classList.remove("throw-pending"));
+  const els = [...document.querySelectorAll("#hand .card.throw-pending")];
   pendingThrow = null;
-  if (!silent) { toast("↩ Taken back"); try { render(); } catch {} }
+  if (keepCard) { setTimeout(() => els.forEach((e) => e.classList.remove("throw-pending")), 80); return; }
+  // taken back: the card glides home into the hand
+  els.forEach((e) => {
+    e.style.transition = "transform .28s cubic-bezier(.3,1.3,.5,1)";
+    e.classList.remove("throw-pending");
+    setTimeout(() => { e.style.transition = ""; }, 320);
+  });
+  if (!silent) { toast("↩ Taken back"); setTimeout(() => { try { render(); } catch {} }, 300); }
 }
 function throwCard(cardIds, timedOut = false) {
   const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
@@ -3889,17 +3897,37 @@ function throwCard(cardIds, timedOut = false) {
   ui.innerHTML = '<span>↩ Take back</span><i></i>';
   ui.onclick = (e) => { e.stopPropagation(); cancelPendingThrow(); };
   document.body.append(ui);
-  const mark = () => ids.forEach((id) => document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`)?.classList.add("throw-pending"));
-  mark();
+  // while the second runs, the card drifts slowly from my hand towards the middle; if it isn't taken
+  // back it carries on to the pile at normal speed
+  const pile = $("discardPile").getBoundingClientRect();
+  const goal = { x: pile.left + pile.width / 2, y: pile.top + pile.height / 2 };
+  const from = {};
+  ids.forEach((id) => { const r = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect(); if (r) from[id] = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const t0 = performance.now();
+  const drift = () => {
+    if (!pendingThrow || !pendingThrow.run) return;
+    const f = Math.min(1, (performance.now() - t0) / UNDO_MS), m = 0.5 * (1 - Math.cos(f * Math.PI)) * 0.55; // slow, then a bit faster
+    ids.forEach((id, k) => {
+      const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`), a = from[id];
+      if (!el || !a) return;
+      el.classList.add("throw-pending");
+      el.style.setProperty("--tpx", ((goal.x - a.x) * m + k * 6) + "px");
+      el.style.setProperty("--tpy", ((goal.y - a.y) * m - 18 * Math.sin(f * Math.PI)) + "px");
+      el.style.setProperty("--tpf", f.toFixed(3));
+    });
+    requestAnimationFrame(drift);
+  };
   pendingThrow = {
-    ids, ui,
-    tick: setInterval(mark, 100), // the hand can redraw meanwhile
+    ids, ui, run: true,
+    tick: 0,
     timer: setTimeout(() => {
-      cancelPendingThrow(true);
-      // still the same moment of the game: throw it for real
-      if (room && `${roomId}|${room.round}|${room.moveId || 0}` === key) doThrowCard(ids, false);
+      const same = room && `${roomId}|${room.round}|${room.moveId || 0}` === key;
+      // throw it for real first (the flight starts from where the card has got to), then tidy up
+      if (same) { const p = pendingThrow; pendingThrow = null; doThrowCard(ids, false); pendingThrow = p; }
+      cancelPendingThrow(true, same);
     }, UNDO_MS),
   };
+  requestAnimationFrame(drift);
 }
 function doThrowCard(cardIds, timedOut = false) {
   if (shuffling() && !timedOut) return toast("🎩 Wait: the new middle pile is being shuffled");
@@ -4668,7 +4696,166 @@ function applyLook() {
   s.setProperty("--felt", t.c[1]);
   s.setProperty("--felt-dark", t.c[2]);
   s.setProperty("--back", P.byId(P.DECKS, prefs.deck).bg);
+  setScene(t.scene || null);
 }
+
+// 🏖️ / 🌧️ scenes: the screen becomes a beach (sea and waves at the top, white sand, the cards on a
+// wooden table) or a rainy day (rain falling, lightning), each with its own sounds at the table.
+let sceneNow = null;
+function setScene(kind) {
+  if (kind === sceneNow) return;
+  sceneNow = kind;
+  document.body.classList.remove("scene-beach", "scene-rain");
+  $("sceneFx")?.remove();
+  if (kind) {
+    document.body.classList.add("scene-" + kind);
+    const fx = Object.assign(document.createElement("div"), { id: "sceneFx", className: "scene-fx " + kind });
+    fx.innerHTML = kind === "beach"
+      ? `<canvas class="shore"></canvas>
+         <i class="bird b1"></i><i class="bird b2"></i><i class="bird b3"></i>
+         <span class="shell s1">🐚</span><span class="shell s2">🐚</span><span class="shell s3">⭐</span><span class="palm">🌴</span>`
+      : `<div class="rain r1"></div><div class="rain r2"></div><div class="flash"></div><div class="puddle p1"></div><div class="puddle p2"></div>`;
+    document.body.prepend(fx);
+    if (kind === "beach") startShore(fx.querySelector("canvas.shore"));
+  }
+  syncMusic();
+}
+
+// 🌊 The shoreline, drawn live: the sea at the top, and every few seconds a wave rushes up the sand,
+// right under the card table, leaves the sand wet and slides back. Foam, little crests coming in,
+// sparkles on the water. (Kept light: about 30 frames a second, paused when the app is hidden.)
+let shoreRun = 0, shoreSwell = null;
+setSwellHandler((up, down) => { shoreSwell = { at: performance.now(), up: up * 1000, down: down * 1000 }; });
+function startShore(cv) {
+  const run = ++shoreRun;
+  const ctx2 = cv.getContext("2d");
+  let W = 0, H = 0, dpr = 1, sand = null, wetY = 0, wetAt = 0, last = 0;
+  const sparkles = Array.from({ length: 40 }, () => ({ x: Math.random(), y: Math.random(), p: Math.random() * 6 }));
+  const bubbles = Array.from({ length: 70 }, () => ({ x: Math.random(), o: Math.random(), r: 0.6 + Math.random() * 1.8 }));
+  function size() {
+    dpr = Math.min(devicePixelRatio || 1, 1.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+    // the sand, drawn once: warm white with fine grains
+    sand = document.createElement("canvas"); sand.width = cv.width; sand.height = cv.height;
+    const g = sand.getContext("2d");
+    const gr = g.createLinearGradient(0, 0, 0, sand.height);
+    gr.addColorStop(0, "#efe3c4"); gr.addColorStop(0.5, "#f6eedb"); gr.addColorStop(1, "#ecdcb4");
+    g.fillStyle = gr; g.fillRect(0, 0, sand.width, sand.height);
+    for (let i = 0; i < (W * H) / 9; i++) {
+      g.fillStyle = Math.random() < 0.5 ? "rgba(150,120,70,.16)" : "rgba(255,255,255,.55)";
+      g.fillRect(Math.random() * sand.width, Math.random() * sand.height, dpr, dpr);
+    }
+  }
+  size();
+  addEventListener("resize", size);
+  const shoreLine = () => { // the waves reach the card table: the middle of the table is the shore
+    const t = $("table")?.getBoundingClientRect();
+    if (t && t.height && !$("game").hidden) return { s: t.top + t.height * 0.35, reach: t.bottom + 26 - (t.top + t.height * 0.35) };
+    return { s: H * 0.3, reach: H * 0.12 };
+  };
+  const ease = (x) => 1 - Math.pow(1 - x, 3), easeIO = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  function frame(now) {
+    if (run !== shoreRun || !cv.isConnected) return;
+    requestAnimationFrame(frame);
+    if (document.hidden || now - last < 33) return;
+    last = now;
+    // the wave: if the sound isn't driving it, keep our own rhythm
+    if (!shoreSwell || now - shoreSwell.at > shoreSwell.up + shoreSwell.down + 1800) shoreSwell = { at: now, up: 2600 + Math.random() * 700, down: 3600 + Math.random() * 1200 };
+    const e = now - shoreSwell.at;
+    const p = e < shoreSwell.up ? ease(e / shoreSwell.up) : e < shoreSwell.up + shoreSwell.down ? 1 - easeIO((e - shoreSwell.up) / shoreSwell.down) : 0;
+    const { s, reach } = shoreLine();
+    const back = H * 0.07;
+    const edge = s - back + p * (back + reach); // where the water reaches right now
+    if (edge > wetY || now - wetAt > 9000) { wetY = Math.max(edge, s - back); wetAt = now; }
+    const t = now / 1000;
+    const rip = (x) => 7 * Math.sin(x * 0.011 + t * 1.2) + 4 * Math.sin(x * 0.031 - t * 0.8) + 2.5 * Math.sin(x * 0.075 + t * 2.1);
+    const c = ctx2;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.drawImage(sand, 0, 0, W, H);
+    // wet sand where the last wave reached, drying slowly
+    const dry = Math.min(1, (now - wetAt) / 6000);
+    c.fillStyle = `rgba(150,118,70,${0.32 * (1 - dry * 0.7)})`;
+    c.beginPath(); c.moveTo(0, 0);
+    for (let x = 0; x <= W + 8; x += 8) c.lineTo(x, wetY + rip(x) * 0.6 + 6);
+    c.lineTo(W, 0); c.closePath(); c.fill();
+    // the water
+    const wg = c.createLinearGradient(0, 0, 0, edge + 10);
+    const cl = (v) => Math.min(0.97, Math.max(0.02, v));
+    const k1 = cl(((s - back - 40) / (edge + 10)) * 0.6), k2 = Math.max(k1 + 0.01, cl((s - back) / (edge + 10)));
+    wg.addColorStop(0, "#075f86"); wg.addColorStop(k1, "#0e8fb5");
+    wg.addColorStop(Math.min(0.99, k2), "rgba(40,190,205,.92)");
+    wg.addColorStop(1, "rgba(120,225,215,.35)");
+    c.fillStyle = wg;
+    c.beginPath(); c.moveTo(0, 0);
+    for (let x = 0; x <= W + 8; x += 8) c.lineTo(x, edge + rip(x));
+    c.lineTo(W, 0); c.closePath(); c.fill();
+    // waves coming in: soft white crests moving down to the shore
+    for (let k = 0; k < 3; k++) {
+      const ph = ((t * 0.16 + k / 3) % 1), y = (s - back) * (0.25 + ph * 0.75);
+      c.strokeStyle = `rgba(255,255,255,${0.35 * Math.sin(ph * Math.PI)})`; c.lineWidth = 2.2;
+      c.beginPath();
+      for (let x = 0; x <= W + 8; x += 8) { const yy = y + Math.sin(x * 0.02 + k * 2 + t) * 3; x ? c.lineTo(x, yy) : c.moveTo(x, yy); }
+      c.stroke();
+    }
+    // sparkles of sun on the water
+    for (const sp of sparkles) {
+      const a = Math.max(0, Math.sin(t * 2.4 + sp.p * 6));
+      if (a < 0.6) continue;
+      c.fillStyle = `rgba(255,255,255,${(a - 0.6) * 2})`;
+      c.fillRect(sp.x * W, sp.y * Math.max(10, s - back - 10), 2, 2);
+    }
+    // the foam edge, thick while rushing in, thin while sliding back
+    const rushing = e < shoreSwell.up;
+    c.strokeStyle = `rgba(255,255,255,${rushing ? 0.95 : 0.7})`;
+    c.lineWidth = rushing ? 6 : 3; c.lineJoin = "round";
+    c.beginPath();
+    for (let x = 0; x <= W + 8; x += 8) { const y = edge + rip(x); x ? c.lineTo(x, y) : c.moveTo(x, y); }
+    c.stroke();
+    c.fillStyle = "rgba(255,255,255,.8)";
+    for (const b of bubbles) {
+      const x = b.x * W, y = edge + rip(x) - 4 - b.o * (rushing ? 16 : 26);
+      c.beginPath(); c.arc(x, y, b.r, 0, 6.3); c.fill();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// 🏖️ On the beach, now and then a card misses the table: it drops onto the sand with a little puff,
+// then someone puts it back on the table.
+function slipOffTable(el) {
+  const tb = $("table")?.getBoundingClientRect(), r = el.getBoundingClientRect();
+  if (!tb || !r.width) return;
+  const left = Math.random() < 0.5;
+  const dx = left ? tb.left - r.left - r.width * 0.9 : tb.right - r.left - r.width * 0.1;
+  const dy = tb.bottom - r.top - r.height * 0.3 + 10;
+  const rot = (left ? -1 : 1) * (40 + Math.random() * 40);
+  el.animate([
+    { transform: "none", offset: 0 },
+    { transform: `translate(${dx * 0.6}px, ${dy * 0.3}px) rotate(${rot * 0.5}deg)`, offset: 0.12 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.26 },
+    { transform: `translate(${dx}px, ${dy - 6}px) rotate(${rot}deg) scale(.9)`, offset: 0.3 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.34 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.66 },
+    { transform: `translate(${dx * 0.4}px, ${dy * 0.4 - 30}px) rotate(${rot * 0.3}deg) scale(1.05)`, offset: 0.84 },
+    { transform: "none", offset: 1 },
+  ], { duration: 2200, easing: "ease-in-out" });
+  setTimeout(() => { // a little puff of sand where it lands
+    const pr = el.getBoundingClientRect();
+    for (let i = 0; i < 9; i++) {
+      const d = Object.assign(document.createElement("i"), { className: "sand-puff" });
+      Object.assign(d.style, { left: pr.left + pr.width / 2 + "px", top: pr.bottom - 6 + "px" });
+      d.style.setProperty("--dx", (Math.random() - 0.5) * 70 + "px"); d.style.setProperty("--dy", -10 - Math.random() * 30 + "px");
+      document.body.append(d); setTimeout(() => d.remove(), 800);
+    }
+  }, 580);
+  setTimeout(() => showBanner("Oops! The card fell on the sand · back on the table", "🏖️"), 900);
+}
+setThunderHandler(() => {
+  const f = document.querySelector("#sceneFx .flash");
+  if (!f) return;
+  f.classList.remove("on"); void f.offsetWidth; f.classList.add("on");
+});
 
 // Profile pictures live in each player's profile; rooms only carry a version number,
 // so the (small) picture is downloaded once per player and cached.
@@ -5455,7 +5642,7 @@ function renderStylePicker(boxId, list, current, key, styleFor, label = "") {
       box.append(b);
       continue;
     }
-    const ok = isRegistered() && o.rank <= rank;
+    const ok = isRegistered() && (o.rank <= rank || (o.scene && isPremium()));
     const b = document.createElement("button");
     b.type = "button";
     b.className = "style-pick" + (o.id === current ? " on" : "") + (ok ? "" : " locked");
@@ -5463,12 +5650,13 @@ function renderStylePicker(boxId, list, current, key, styleFor, label = "") {
     if (key === "color" && o.css === "rainbow") {
       b.innerHTML = '<span class="rainbow-text"></span>';
       b.firstChild.textContent = label;
-    } else b.textContent = label;
+    } else b.textContent = o.icon ? o.icon : label;
+    if (o.scene) b.classList.add("scene-pick", "sp-" + o.scene);
     b.title = ok ? o.name : `${o.name} · unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name}`;
     if (!ok) b.dataset.lock = P.RANKS[o.rank].icon;
     b.onclick = () => ok
       ? savePrefs({ prefs: { [key]: o.id } })
-      : toast(`🔒 ${o.name} unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name} rank (${P.RANKS[o.rank].at} career points)`);
+      : toast(`🔒 ${o.name} unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name} rank (${P.RANKS[o.rank].at} career points)${o.scene ? " · or with 💎 Premium" : ""}`);
     box.append(b);
   }
 }
@@ -5838,7 +6026,11 @@ function turnColour(frac) {
 // cards on their way to the pile: hidden there until the flying copy lands
 const arriving = new Set();
 function landed(id) {
-  arriving.delete(id);
+  const was = arriving.delete(id);
+  if (was && sceneNow === "beach" && Math.random() < 0.12) {
+    const el = document.querySelector(`#discardPile .card[data-id="${CSS.escape(id)}"]`);
+    if (el) setTimeout(() => slipOffTable(el), 60);
+  }
   document.querySelectorAll(`#discardPile .card[data-id="${CSS.escape(id)}"].arriving`).forEach((el) => {
     el.classList.remove("arriving"); el.classList.add("just-landed");
   });
@@ -6373,7 +6565,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027d";
+const APP_VERSION = "20261027i";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6410,11 +6602,12 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 function syncMusic() {
   const at = !!room && room.playerIds?.includes(uid) && room.status !== "lobby" && !$("game").hidden && !document.hidden;
   if (at && !isMuted()) startMusic(); else stopMusic();
+  if (at && !isMuted() && sceneNow) startAmbience(sceneNow); else stopAmbience();
   const b = $("musicBtn");
   if (b) { b.textContent = isMuted() ? "🔇" : "🔊"; b.title = isMuted() ? "Music off · tap to turn on" : "Music on · tap to mute"; }
 }
 setMuted(load("thaas-music") === "off");
-addEventListener("pointerdown", () => { unlockMusic(); syncMusic(); }, { passive: true });
+addEventListener("pointerdown", () => { unlockMusic(); unlockAmbience(); syncMusic(); }, { passive: true });
 document.addEventListener("visibilitychange", syncMusic);
 function render() {
   if (!room) return;
@@ -6971,24 +7164,8 @@ function celebrateWinner(r) {
 
 // A quick fun moment for everyone: a big bouncing emoji, a line of text, and little emojis floating up.
 function funMoment(emoji, text, floaters, kind) {
-  const fx = document.createElement("div");
-  fx.className = "fun-fx " + kind;
-  fx.innerHTML = `<div class="fun-box"><span class="fun-emoji"></span><b></b></div>`;
-  fx.querySelector(".fun-emoji").textContent = emoji;
-  fx.querySelector("b").textContent = text;
-  for (let i = 0; i < 18; i++) {
-    const f = document.createElement("i");
-    f.className = "fun-float";
-    f.textContent = floaters[i % floaters.length];
-    f.style.setProperty("--x", `${8 + Math.random() * 84}vw`);
-    f.style.setProperty("--d", `${Math.random() * 0.7}s`);
-    f.style.setProperty("--s", `${22 + Math.random() * 22}px`);
-    f.style.setProperty("--r", `${(Math.random() - 0.5) * 60}deg`);
-    fx.append(f);
-  }
-  document.body.append(fx);
+  showBanner(text, emoji);
   try { navigator.vibrate?.(kind === "laugh" ? [60, 40, 60, 40, 60] : [40, 30, 40]); } catch {}
-  setTimeout(() => fx.remove(), 2600);
 }
 
 // BONDI: someone cut, someone ran out of cards.
@@ -6996,6 +7173,25 @@ function funMoment(emoji, text, floaters, kind) {
 // Noto emoji; a plain one if it can't load). Placed on top of the page so redraws don't remove it.
 const NOTO = (hex) => `https://fonts.gstatic.com/s/e/notoemoji/latest/${hex}/512.webp`;
 try { new Image().src = NOTO("1f923"); } catch {}
+// 😳 beside a player's own name: they picked up big cards (A, K, Q, J)
+try { new Image().src = NOTO("1f633"); } catch {}
+function shyEmoji(u, names, ms = 4000) {
+  const seat = u === uid ? (document.querySelector(".seat-tag.s-me") || $("hand")) : seatEl(u);
+  if (!seat) return;
+  document.querySelectorAll(`.shy-emoji[data-uid="${CSS.escape(u)}"]`).forEach((e) => e.remove());
+  const r = seat.getBoundingClientRect();
+  const el = Object.assign(document.createElement("div"), { className: "shy-emoji" });
+  el.dataset.uid = u;
+  const img = Object.assign(new Image(), { alt: "😳", src: NOTO("1f633") });
+  img.onerror = () => img.replaceWith(Object.assign(document.createElement("span"), { className: "se-text", textContent: "😳" }));
+  el.append(img, Object.assign(document.createElement("small"), { textContent: `got ${names}` }));
+  // just beside the name, on the side towards the middle of the screen
+  const left = r.left + r.width / 2 < innerWidth / 2 ? r.right + 2 : r.left - 62;
+  Object.assign(el.style, { left: Math.max(4, Math.min(innerWidth - 66, left)) + "px", top: Math.max(4, Math.min(innerHeight - 76, r.top + r.height / 2 - 34)) + "px" });
+  document.body.append(el);
+  setTimeout(() => el.classList.add("bye"), ms - 400);
+  setTimeout(() => el.remove(), ms);
+}
 function shameEmoji(u, ms = 4200) {
   // up in the top corner of the screen, with the name of whoever has to pick the deck up
   document.querySelectorAll(".shame-emoji").forEach((e) => e.remove());
@@ -7016,7 +7212,7 @@ function bondiMoments(prev) {
     const big = t.cards.map((c) => C.parse(c).r).filter((r) => r === 1 || r >= 11).sort((a, b) => (a === 1 ? 14 : a) < (b === 1 ? 14 : b) ? 1 : -1);
     if (big.length) {
       const names = [...new Set(big.map((r) => C.label(r)))].join(", ");
-      setTimeout(() => funMoment("😂", t.to === uid ? `Ohhh! You got ${names}!` : `Ohhh! ${nameOf(t.to)} got ${names}!`, ["😂", "🤣", "😆", "😜"], "laugh"), 900);
+      setTimeout(() => shyEmoji(t.to, names), 1000); // 😳 the one who got them, embarrassed
     }
     showBubble(t.cut, "Cut! ✋", true);
     setTimeout(() => shameEmoji(t.to), 700); // 🤣 the whole table laughs at whoever has to pick the deck up
@@ -7084,12 +7280,17 @@ function sweepTrick(t) {
 }
 
 // A banner that drops in across the top (e.g. "Hassan: 1 card to DIGU!").
-function showBanner(text) {
+// news of the table: a small note in the top-left corner (several stack up), never over the middle
+function showBanner(text, emoji) {
+  const box = $("fxCorner") || document.body.appendChild(Object.assign(document.createElement("div"), { id: "fxCorner", className: "fx-corner" }));
   const b = document.createElement("div");
   b.className = "fx-banner";
-  b.textContent = text;
-  document.body.append(b);
-  setTimeout(() => b.remove(), 3200);
+  if (emoji) b.append(Object.assign(document.createElement("span"), { className: "fxb-emoji", textContent: emoji }));
+  b.append(document.createTextNode(text));
+  box.prepend(b);
+  while (box.children.length > 3) box.lastChild.remove();
+  setTimeout(() => b.classList.add("bye"), 3000);
+  setTimeout(() => b.remove(), 3400);
 }
 
 // DIGU! / CALL!: flash, spinning rays, the word slamming in with the winner's shout style,
