@@ -82,6 +82,7 @@ module.exports = async function handler(req, res) {
   const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
   const { roomId, kind } = body;
   if (kind === "update") return sendUpdate(app, caller, body, res);
+  if (kind === "test") return sendTest(app, caller, res);
   if (!roomId || typeof roomId !== "string" || roomId.includes("/")) return res.status(400).json({ error: "bad roomId" });
 
   // 2. they must be at that table
@@ -164,6 +165,21 @@ async function sendUpdate(app, caller, body, res) {
     });
   }
   return res.json({ sent, failed, by, error });
+}
+
+// A player checks their own phone: a test notification to themselves only.
+async function sendTest(app, caller, res) {
+  const snap = await app.firestore().doc(`pushTokens/${caller}`).get();
+  const tokens = snap.exists ? snap.get("tokens") || [] : [];
+  if (!tokens.length) return res.json({ sent: 0, failed: 0, error: "no phone registered" });
+  const r = await app.messaging().sendEachForMulticast({
+    tokens,
+    notification: { title: "🔔 THAAS notifications are on", body: "You'll hear from us when someone joins your holhuashi." },
+    data: { kind: "test" },
+    webpush: { headers: { Urgency: "high", TTL: "600" }, notification: { title: "🔔 THAAS notifications are on", body: "You'll hear from us when someone joins your holhuashi.", icon: "/icon-192.png" } },
+    android: { priority: "high", notification: { channelId: "turns", color: "#E8B64C", sound: "default" } },
+  });
+  return res.json({ sent: r.successCount, failed: r.failureCount, error: r.responses.find((x) => !x.success)?.error?.code || "" });
 }
 
 module.exports.plan = plan; // for tests
