@@ -2360,9 +2360,22 @@ html, body { overflow-x: hidden; }
   display: inline-block; animation: starPulse 2.4s ease-in-out infinite; }
 @keyframes starPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2) rotate(8deg); } }
 /* 🤣 BONDI: laughed at for picking up the deck */
-.shame-emoji { position: fixed; z-index: 75; width: 54px; text-align: center; pointer-events: none; animation: shameIn .4s cubic-bezier(.3,1.6,.5,1) both; }
+.shame-emoji { position: fixed; z-index: 75; right: 8px; top: 52px; min-width: 64px; max-width: 110px; text-align: center; display: flex; flex-direction: column; align-items: center; pointer-events: none; animation: shameIn .4s cubic-bezier(.3,1.6,.5,1) both; }
 .shame-emoji img { width: 54px; height: 54px; display: block; filter: drop-shadow(0 4px 6px rgba(0,0,0,.5)); }
 .shame-emoji .se-text { font-size: 44px; line-height: 54px; display: block; animation: thinkBob .5s ease-in-out infinite; }
-.shame-emoji small { display: inline-block; margin-top: -4px; padding: 1px 7px; border-radius: 999px; background: #ff6b6b; color: #fff; font-weight: 800; font-size: 11px; }
+.shame-emoji small { display: inline-block; margin-top: -4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 7px; border-radius: 999px; background: #ff6b6b; color: #fff; font-weight: 800; font-size: 11px; }
 .shame-emoji.bye { transition: opacity .4s, transform .4s; opacity: 0; transform: scale(.6) translateY(-10px); }
 @keyframes shameIn { from { transform: scale(0) rotate(-30deg); opacity: 0; } to { transform: none; opacity: 1; } }
+/* BONDI "Out of play" pile: bump at its own (small, tilted) size, never full size */
+#deck.aside-pile.got-cards { animation: got-bump-aside .5s cubic-bezier(.2,1.6,.4,1); }
+@keyframes got-bump-aside { 0%, 100% { transform: scale(.72) rotate(-8deg); } 40% { transform: scale(.8) rotate(-8deg); } }
+
+/* ↩ 1 second to take back a card thrown by accident */
+#hand .card.throw-pending { transform: translateY(-26px) scale(1.06) !important; box-shadow: 0 0 0 3px #ffcf5a, 0 10px 22px rgba(0,0,0,.45) !important;
+  opacity: .85; transition: transform .15s, opacity .15s; }
+.undo-throw { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 150; overflow: hidden;
+  padding: 10px 22px; border-radius: 999px; border: 2px solid #ffcf5a; background: #1d1503; color: #ffe7a3; font-weight: 800; font-size: 15px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.5); animation: mtIn .15s ease-out; cursor: pointer; }
+.undo-throw span { position: relative; z-index: 1; }
+.undo-throw i { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%; background: #ffcf5a; transform-origin: left; animation: undoBar 1s linear forwards; }
+@keyframes undoBar { to { transform: scaleX(0); } }
