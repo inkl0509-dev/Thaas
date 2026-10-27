@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027m";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027r";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261027m`).then((m) => { AMB = m; m.setThunderHandler(thunderFlash); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261027r`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027m";
-import * as CFG from "./firebase-config.js?v=20261027m";
-import * as C from "./cards.js?v=20261027m";
-import * as P from "./profile.js?v=20261027m";
-import { DV } from "./i18n.js?v=20261027m";
+} from "./store.js?v=20261027r";
+import * as CFG from "./firebase-config.js?v=20261027r";
+import * as C from "./cards.js?v=20261027r";
+import * as P from "./profile.js?v=20261027r";
+import { DV } from "./i18n.js?v=20261027r";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -74,7 +74,7 @@ const isDhiha = () => gameOf(room) === "dhiha";   // team game, holhuashis only
 const DHIHA_TARGETS = [3, 5, 7];
 const teamName = (t) => (t === "A" ? "Team 1" : "Team 2");
 const lowWins = (g) => g === "call" || g === "bondi" || g === "babbush";
-const GAME_NAME = { digu: "DIGU", call: "CALL", bondi: "BONDI", dhiha: "DHIHA", babbush: "BABBUSH" };
+const GAME_NAME = { digu: "DIGU", call: "CALL", bondi: "BONDI", dhiha: "DHIHA", babbush: "BABUSH" };
 const LOBBY_SEATS = { digu: 4, call: 6, bondi: 6 }; // lobby tables: DIGU 2–4 players, CALL and BONDI 2–6
 const targetFor = (g) => (g === "dhiha" ? 5 : lowWins(g) ? CALL_DEFAULT_TARGET : DEFAULT_TARGET);
 const CALL_TARGETS = [50, 100, 200];
@@ -525,6 +525,8 @@ const inMyLobby = (p) => (p.lobby || "digu") === lobbyGame;
 const FRESH_MS = 75_000;     // a table nobody has kept alive for this long is treated as empty
 const OFFLINE_MS = 60_000;   // a player who hasn't checked in for over a minute is removed (waiting at a table)
 const OFFLINE_PLAY_MS = 150_000; // during a game: 2½ minutes, so locking the phone or answering a message doesn't throw you out
+const OFFLINE_LOUNGE_MS = 150_000; // in a holhuashi: leaving the app for up to 2 minutes never puts you out
+const offlineLimit = (r) => (isLoungeDoc(r) ? OFFLINE_LOUNGE_MS : r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS);
 const PRESENCE_MS = 60_000;  // a player not seen for this long has left the lobby
 const WALK_SPEED = 150;      // px per second
 const MAX_WALK_S = 2.2;      // long walks speed up so nobody waits more than ~2 seconds
@@ -564,11 +566,11 @@ const firstNoticed = new Map();
 function isOffline(r, id, rid) {
   if (id === uid || isBot(id) || !serverTimeKnown) return false;
   const t = tsMs(r.seen?.[id]);
-  const limit = r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS;
+  const limit = offlineLimit(r);
   if (t) return serverNow() - t > limit;
   const k = `${rid}:${id}`; // no check-in recorded yet: give them a minute from when I first noticed
   if (!firstNoticed.has(k)) firstNoticed.set(k, Date.now());
-  return Date.now() - firstNoticed.get(k) > (r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS);
+  return Date.now() - firstNoticed.get(k) > limit;
 }
 // how long since a player last checked in (they check in every 20 seconds while the game is open)
 function silentFor(id) {
@@ -1355,7 +1357,7 @@ async function kickOffline() {
       names = r.players.filter((p) => out.includes(p.uid)).map((p) => p.name).join(" & ");
       tx.update(ref, removalUpdate(r, out));
     });
-    if (names) toast(`${names} went offline for over a minute and left the table`);
+    if (names) toast(`${names} went offline for too long and left the table`);
   } catch { /* someone else removed them first */ }
 }
 setInterval(kickOffline, 10_000);
@@ -2471,14 +2473,14 @@ async function dealRound() {
   try { await batch.commit(); sendNotify(room?.gameRound > 1 ? "round" : "start"); } catch (e) { toast(errMsg(e)); }
 }
 
-// ---------- BABBUSH ----------
+// ---------- BABUSH ----------
 // 2–6 players, 4 cards each, face down in a row; the rest is the middle pile. A random player
 // chooses how many of their own cards everyone may look at (0–2), then each player secretly looks.
 // On your turn: take the top card of the middle pile (only you see it), then either swap it for one
 // of your face-down cards (that card is thrown, unseen) or throw it. J = look at any one card,
 // Q = switch any two cards, K = lock a card face up (or unlock it). Whenever a card is thrown,
 // anyone who has the same number may throw it too (wrong card: 2 penalty cards). Think your count is
-// the lowest? Call BABBUSH: everyone else has one more turn, then all cards are counted.
+// the lowest? Call BABUSH: everyone else has one more turn, then all cards are counted.
 // The whole layout lives on the table (room.bb) so J and Q can reach other players' cards.
 const BB_POWER_NAME = { J: "👁 Look", Q: "🔄 Switch", K: "🔒 Lock / unlock" };
 const bbRows = (r = room) => r?.bb?.rows || {};
@@ -2515,7 +2517,7 @@ async function dealBabbush() {
     sendNotify(room?.gameRound > 1 ? "round" : "start");
   } catch (e) { toast(errMsg(e)); }
 }
-// end of a turn: the next player, or, once BABBUSH has been called and everyone had their last turn, the count
+// end of a turn: the next player, or, once BABUSH has been called and everyone had their last turn, the count
 function bbEndTurn(upd, log, r = room) {
   const bb = r.bb || {};
   upd["bb.drawn"] = null; upd["bb.power"] = null;
@@ -2660,7 +2662,7 @@ function bbTapCard(u, i) {
   }
   if (bbMode === "Q") {
     if (bbIsLocked(c)) return toast("🔒 Locked cards can't be switched");
-    if (bbProtected(u)) return toast(`${nameOf(u)} called BABBUSH · their cards can't be touched`);
+    if (bbProtected(u)) return toast(`${nameOf(u)} called BABUSH · their cards can't be touched`);
     if (bbPicks.some((p) => p.u === u && p.i === i)) { bbPicks = bbPicks.filter((p) => !(p.u === u && p.i === i)); return render(); }
     bbPicks.push({ u, i });
     if (bbPicks.length < 2) return render();
@@ -2668,7 +2670,7 @@ function bbTapCard(u, i) {
     return bbFinishPower({ "Q": [a, z] }, `${nameOf(uid)} used Q 🔄 and switched ${a.u === uid ? "their" : `${nameOf(a.u)}'s`} card with ${z.u === uid ? "their own" : `${nameOf(z.u)}'s`}`);
   }
   if (bbMode === "K") {
-    if (bbProtected(u)) return toast(`${nameOf(u)} called BABBUSH · their cards can't be touched`);
+    if (bbProtected(u)) return toast(`${nameOf(u)} called BABUSH · their cards can't be touched`);
     bbMode = null;
     return bbFinishPower({ K: { u, i } }, `${nameOf(uid)} used K 🔒 and ${bbIsLocked(c) ? "unlocked" : "locked"} ${u === uid ? "their" : `${nameOf(u)}'s`} ${cardName(c)}`);
   }
@@ -2704,7 +2706,7 @@ function bbCall() {
   if (!claimAction()) return;
   const others = activeIds(room).length - 1;
   const b = moveBatch();
-  b.update(roomRef(), { "bb.caller": uid, "bb.finalLeft": others, ...nextTurn(`📣 ${nameOf(uid)} called BABBUSH! Everyone else has one more turn`) });
+  b.update(roomRef(), { "bb.caller": uid, "bb.finalLeft": others, ...nextTurn(`📣 ${nameOf(uid)} called BABUSH! Everyone else has one more turn`) });
   commit(b, "turn");
 }
 // ⚡ the top thrown card has the same number as one of mine: throw it too (wrong: 2 penalty cards)
@@ -2799,14 +2801,14 @@ async function bbHost() {
   while (shuffling() || bbMatchLeft()) await sleep(200); // let everyone throw alike cards first
   await sleep(300 + Math.random() * 500);
   if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}-${room.bb?.stage}` !== key) return;
-  try { bbBotTurn(bot); } catch (e) { console.warn("Babbush computer", e); botKey = null; }
+  try { bbBotTurn(bot); } catch (e) { console.warn("Babush computer", e); botKey = null; }
 }
 function bbBotTurn(bot) {
   const bb = room.bb, lvl = botLevel(), row = bbRow(bot);
   const b = moveBatch();
   if (room.phase === "draw") {
     const total = C.bbCount(row), n = room.playerIds.length;
-    // When to call BABBUSH: not before everyone has had about 3 turns, and only when the count is
+    // When to call BABUSH: not before everyone has had about 3 turns, and only when the count is
     // really low. Hard looks at everyone's real count and calls only when it's lower than all of them.
     // Medium guesses the others (cards it can't see count about 6 each). Easy waits for 3 or less.
     const others = room.playerIds.filter((u) => u !== bot);
@@ -2817,7 +2819,7 @@ function bbBotTurn(bot) {
       : lvl === "medium" ? total <= 6 && others.every((u) => guess(u) >= total + 4)
       : total <= 3);
     if (callNow) {
-      b.update(roomRef(), { "bb.caller": bot, "bb.finalLeft": activeIds(room).length - 1, ...nextTurn(`📣 ${botName(bot)} called BABBUSH! Everyone else has one more turn`) });
+      b.update(roomRef(), { "bb.caller": bot, "bb.finalLeft": activeIds(room).length - 1, ...nextTurn(`📣 ${botName(bot)} called BABUSH! Everyone else has one more turn`) });
       return b.commit().catch(() => {});
     }
     const top = room.discard?.[room.discard.length - 1];
@@ -2939,7 +2941,7 @@ function bbPopupLog() { // what just happened, as a pop-up in the middle of the 
   if (k === bbLogSeen) return;
   bbLogSeen = k;
   const t = room.log || "";
-  // only the big moments pop up (BABBUSH, J / Q / K): throws and matches are for the players to watch
+  // only the big moments pop up (BABUSH, J / Q / K): throws and matches are for the players to watch
   if (!t.startsWith("📣") && !/used [JQK] /.test(t)) return;
   const p = document.createElement("div");
   p.className = "bb-pop" + (t.startsWith("⚡") ? " good" : t.startsWith("📣") ? " call" : "");
@@ -2972,8 +2974,8 @@ function renderBabbush() {
   else if (bbMode === "K") msg.textContent = "🔒 Tap a card to lock it face up, or a locked card to unlock it";
   else if (drawn && room.bb.drawn?.from === "thrown") msg.textContent = "Tap one of your cards: the thrown card goes into that place";
   else if (drawn) msg.textContent = "Tap one of your cards to put this card in its place, or throw it" + (C.bbPower(drawn) ? ` · or use its power: ${BB_POWER_NAME[C.bbPower(drawn)]}` : "");
-  else if (myTurn) msg.textContent = (bb.caller ? "Last turn! " : "Your turn: ") + "take a card from the middle pile or the last thrown card" + (bb.caller ? "" : ", or call BABBUSH");
-  else msg.textContent = `${nameOf(room.playerIds[room.turn])} is playing…` + (bb.caller ? ` · ${nameOf(bb.caller)} called BABBUSH` : "");
+  else if (myTurn) msg.textContent = (bb.caller ? "Last turn! " : "Your turn: ") + "take a card from the middle pile or the last thrown card" + (bb.caller ? "" : ", or call BABUSH");
+  else msg.textContent = `${nameOf(room.playerIds[room.turn])} is playing…` + (bb.caller ? ` · ${nameOf(bb.caller)} called BABUSH` : "");
   area.append(msg);
   // choosing 0–2
   if (bb.stage === "choose" && bb.chooser === uid && room.status === "playing") {
@@ -3020,8 +3022,8 @@ function renderBabbush() {
     }
   }
   if (myTurn && bb.stage === "play" && room.phase === "draw" && !bb.caller && room.status === "playing") {
-    const cb = Object.assign(document.createElement("button"), { type: "button", className: "bb-call", textContent: "📣 BABBUSH" });
-    cb.onclick = () => { if (confirm("Call BABBUSH? Everyone else gets one more turn, then all cards are counted.")) bbCall(); };
+    const cb = Object.assign(document.createElement("button"), { type: "button", className: "bb-call", textContent: "📣 BABUSH" });
+    cb.onclick = () => { if (confirm("Call BABUSH? Everyone else gets one more turn, then all cards are counted.")) bbCall(); };
     ctl.append(cb);
   }
   if (ctl.children.length) area.append(ctl);
@@ -3596,6 +3598,7 @@ function previewThrow(ids) {
   const pile = $("discardPile");
   ids.forEach((id, i) => {
     const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`);
+    if (finishGlide(id)) { el?.classList.add("sending"); return; } // it's already on its way
     if (el) {
       flyCard(el, pile, id, { delay: i * 70 });
       el.classList.add("sending");
@@ -3876,20 +3879,76 @@ function throwProblem(ids) { // anything that would stop this throw (then it's h
   if (isCall()) return !C.canThrowTogether(ids);
   return ids.length !== 1 || (takenNow(uid) && ids.includes(takenNow(uid)));
 }
-function cancelPendingThrow(silent, keepCard) {
+// ↩ The thrown card itself glides out of my hand and along a long curve towards the middle during the
+// take-back second (one card, one smooth movement, growing gently to the pile's card size). Taken
+// back: it glides home. Not taken back: the same card carries on and lands on the pile.
+const glideFor = new Map();
+function glideStart(id) {
+  const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`);
+  if (!el) return null;
+  const r = el.getBoundingClientRect(), w0 = el.offsetWidth || r.width, h0 = el.offsetHeight || r.height;
+  const rot0 = +(getComputedStyle(el).getPropertyValue("--rot").match(/-?[\d.]+/)?.[0] || 0);
+  const clone = el.cloneNode(true);
+  el.querySelectorAll("*").forEach((src, k) => { const d = clone.querySelectorAll("*")[k]; if (d) d.style.fontSize = getComputedStyle(src).fontSize; });
+  clone.classList.remove("selected", "throw-pending", "new", "blocked", "sending");
+  clone.classList.add("glide");
+  const a = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  Object.assign(clone.style, { position: "fixed", left: a.x - w0 / 2 + "px", top: a.y - h0 / 2 + "px", width: w0 + "px", height: h0 + "px",
+    margin: "0", zIndex: 160, pointerEvents: "none", transformOrigin: "50% 50%", transform: `rotate(${rot0}deg)`, transition: "none", animation: "none" });
+  document.body.append(clone);
+  el.classList.add("glide-src");
+  return { id, el, clone, w0, h0, a, rot0, x: a.x, y: a.y, sc: 1, rot: rot0 };
+}
+const glideCss = (g) => `translate(${g.x - g.a.x}px, ${g.y - g.a.y}px) rotate(${g.rot}deg) scale(${g.sc})`;
+function pileCardSize() { // how big a card is on the pile right now (trick games use smaller cards)
+  const pile = $("discardPile");
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:absolute;visibility:hidden;left:0;top:0";
+  const card = cardEl("1-S-0");
+  if (isBondi() || isDhiha()) { const slot = Object.assign(document.createElement("div"), { className: "trick-slot" }); slot.append(card); probe.append(slot); }
+  else probe.append(card);
+  pile.append(probe);
+  const w = card.offsetWidth || 80, h = card.offsetHeight || 115;
+  probe.remove();
+  return { w, h };
+}
+function glideBack(g) {
+  const el = document.querySelector(`#hand .card[data-id="${CSS.escape(g.id)}"]`) || g.el;
+  const r = el?.isConnected ? el.getBoundingClientRect() : null;
+  const to = r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : g.a;
+  const from = glideCss(g);
+  Object.assign(g, { x: to.x, y: to.y, sc: 1, rot: g.rot0 });
+  const anim = g.clone.animate([{ transform: from }, { transform: glideCss(g) }], { duration: 280, easing: "cubic-bezier(.3,1.2,.5,1)", fill: "forwards" });
+  anim.onfinish = () => { g.clone.remove(); document.querySelectorAll(`#hand .card[data-id="${CSS.escape(g.id)}"]`).forEach((e) => e.classList.remove("glide-src")); };
+}
+// the real throw went out: land the same card on the pile, smoothly
+function finishGlide(id) {
+  const g = glideFor.get(id);
+  if (!g) return false;
+  glideFor.delete(id);
+  arriving.add(id);
+  setTimeout(() => landed(id), 1500); // safety: never stay hidden
+  const go = () => {
+    const t = document.querySelector(`#discardPile .card[data-id="${CSS.escape(id)}"]`);
+    if (t) t.classList.add("arriving");
+    const b = (t || $("discardPile")).getBoundingClientRect(), w = t?.offsetWidth || g.w0 * g.sc;
+    const rot = +(((t?.style.getPropertyValue("--t") || "").match(/rotate\((-?[\d.]+)deg/) || [])[1] || 0);
+    const from = glideCss(g);
+    Object.assign(g, { x: b.left + b.width / 2, y: b.top + b.height / 2, sc: w / g.w0, rot });
+    const anim = g.clone.animate([{ transform: from }, { transform: glideCss(g) }], { duration: 260, easing: "cubic-bezier(.3,.9,.4,1)", fill: "forwards" });
+    anim.onfinish = () => { landed(id); g.clone.remove(); };
+  };
+  setTimeout(go, 30); // the pile draws the card first, then we know exactly where it lands
+  return true;
+}
+function cancelPendingThrow(silent) {
   if (!pendingThrow) return;
-  clearTimeout(pendingThrow.timer); clearInterval(pendingThrow.tick); pendingThrow.run = false;
+  clearTimeout(pendingThrow.timer); pendingThrow.run = false;
   pendingThrow.ui.remove();
-  const els = [...document.querySelectorAll("#hand .card.throw-pending")];
+  const gl = pendingThrow.glides || [];
   pendingThrow = null;
-  if (keepCard) { setTimeout(() => els.forEach((e) => e.classList.remove("throw-pending")), 80); return; }
-  // taken back: the card glides home into the hand
-  els.forEach((e) => {
-    e.style.transition = "transform .28s cubic-bezier(.3,1.3,.5,1)";
-    e.classList.remove("throw-pending");
-    setTimeout(() => { e.style.transition = ""; }, 320);
-  });
-  if (!silent) { toast("↩ Taken back"); setTimeout(() => { try { render(); } catch {} }, 300); }
+  gl.forEach((g) => { glideFor.delete(g.id); glideBack(g); }); // taken back: home into the hand
+  if (!silent) { toast("↩ Taken back"); setTimeout(() => { try { render(); } catch {} }, 320); }
 }
 function throwCard(cardIds, timedOut = false) {
   const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
@@ -3901,40 +3960,44 @@ function throwCard(cardIds, timedOut = false) {
   ui.innerHTML = '<span>↩ Take back</span><i></i>';
   ui.onclick = (e) => { e.stopPropagation(); cancelPendingThrow(); };
   document.body.append(ui);
-  // while the second runs, the card drifts slowly from my hand towards the middle; if it isn't taken
-  // back it carries on to the pile at normal speed
   const pile = $("discardPile").getBoundingClientRect();
   const goal = { x: pile.left + pile.width / 2, y: pile.top + pile.height / 2 };
-  const from = {};
-  ids.forEach((id) => { const r = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect(); if (r) from[id] = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const size = pileCardSize();
+  const glides = ids.map((id) => glideStart(id)).filter(Boolean);
   const t0 = performance.now();
   const drift = () => {
     if (!pendingThrow || !pendingThrow.run) return;
-    // a long, steady curve out to the side and round towards the middle: always moving, never "stuck"
-    const f = Math.min(1, (performance.now() - t0) / UNDO_MS), m = 0.86 * (0.35 * f + 0.65 * f * f * (3 - 2 * f) * 0.9 + 0.065 * f);
-    ids.forEach((id, k) => {
-      const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`), a = from[id];
-      if (!el || !a) return;
-      const dx = goal.x - a.x, dy = goal.y - a.y, len = Math.hypot(dx, dy) || 1;
-      const side = a.x < innerWidth / 2 ? -1 : 1; // swing out on the card's own side
-      const cx = a.x + dx * 0.35 + side * len * 0.55, cy = a.y + dy * 0.55;   // the bend of the curve
-      const x = (1 - m) * (1 - m) * a.x + 2 * (1 - m) * m * cx + m * m * goal.x;
-      const y = (1 - m) * (1 - m) * a.y + 2 * (1 - m) * m * cy + m * m * goal.y;
-      el.classList.add("throw-pending");
-      el.style.setProperty("--tpx", (x - a.x + k * 6) + "px");
-      el.style.setProperty("--tpy", (y - a.y) + "px");
-      el.style.setProperty("--tpf", f.toFixed(3));
+    // a long, steady curve out to the side and round towards the middle: always moving
+    const f = Math.min(1, (performance.now() - t0) / UNDO_MS);
+    const u = 0.85 * (0.55 * f + 0.45 * f * f); // keeps moving the whole time, a touch faster at the end
+    glides.forEach((g, k) => {
+      const dx = goal.x - g.a.x, dy = goal.y - g.a.y, len = Math.hypot(dx, dy) || 1;
+      const side = g.a.x < innerWidth / 2 ? -1 : 1;
+      const cx = g.a.x + dx * 0.35 + side * len * 0.4, cy = g.a.y + dy * 0.55;
+      g.x = (1 - u) * (1 - u) * g.a.x + 2 * (1 - u) * u * cx + u * u * goal.x + k * 6;
+      const half = (g.w0 * Math.max(1, g.sc)) / 2 + 8; // never off the edge of the screen
+      g.x = Math.max(half, Math.min(innerWidth - half, g.x));
+      g.y = (1 - u) * (1 - u) * g.a.y + 2 * (1 - u) * u * cy + u * u * goal.y;
+      g.sc = 1 + (size.w / g.w0 - 1) * u;
+      g.rot = g.rot0 * (1 - u);
+      g.clone.style.transform = glideCss(g);
+      // the hand can redraw meanwhile: keep the real card hidden
+      document.querySelectorAll(`#hand .card[data-id="${CSS.escape(g.id)}"]`).forEach((e) => e.classList.add("glide-src"));
     });
     requestAnimationFrame(drift);
   };
   pendingThrow = {
-    ids, ui, run: true,
-    tick: 0,
+    ids, ui, run: true, glides,
     timer: setTimeout(() => {
+      const p = pendingThrow;
+      clearTimeout(p.timer); p.run = false; p.ui.remove(); pendingThrow = null;
       const same = room && `${roomId}|${room.round}|${room.moveId || 0}` === key;
-      // throw it for real first (the flight starts from where the card has got to), then tidy up
-      if (same) { const p = pendingThrow; pendingThrow = null; doThrowCard(ids, false); pendingThrow = p; }
-      cancelPendingThrow(true, same);
+      if (same) {
+        p.glides.forEach((g) => glideFor.set(g.id, g));
+        doThrowCard(ids, false); // the pile picks up the gliding card (see previewThrow)
+      }
+      // anything that didn't go (the table moved on, or the throw was refused): back into the hand
+      p.glides.forEach((g) => { if (glideFor.get(g.id) === g) { glideFor.delete(g.id); glideBack(g); } });
     }, UNDO_MS),
   };
   requestAnimationFrame(drift);
@@ -4435,7 +4498,7 @@ function renderResults() {
     head.className = "result-head";
     const name = document.createElement("strong");
     name.textContent = row.name + (row.uid === uid ? " (you)" : "") + (row.digu ? " · DIGU" : "") + (row.bondi && row.place === 1 ? " · 🏆" : "")
-      + (row.how === "won" || row.how === "caught" ? (row.bb ? " · BABBUSH" : " · CALL") : "");
+      + (row.how === "won" || row.how === "caught" ? (row.bb ? " · BABUSH" : " · CALL") : "");
     const pts = document.createElement("span");
     pts.className = "round-pts";
     pts.textContent = (row.pts > 0 ? "+" : "") + row.pts;
@@ -4487,8 +4550,8 @@ function renderResults() {
       ? `🏆 ${room.winner === uid ? "You" : nameOf(room.winner)} went out first and ${room.winner === uid ? "win" : "wins"} the round!`
     : low
       ? (lastRows.caught
-        ? `${nameOf(room.winner)} called ${isBabbush() ? "BABBUSH" : "CALL"}, but ${lastRows.catchers.map(nameOf).join(" & ")} had less!`
-        : `${nameOf(room.winner)} called ${isBabbush() ? "BABBUSH" : "CALL"} and won the round!`)
+        ? `${nameOf(room.winner)} called ${isBabbush() ? "BABUSH" : "CALL"}, but ${lastRows.catchers.map(nameOf).join(" & ")} had less!`
+        : `${nameOf(room.winner)} called ${isBabbush() ? "BABUSH" : "CALL"} and won the round!`)
       : `${nameOf(room.winner)} called DIGU!`;
   const boardNote = isLoungeDoc(room) && hasBots(room) ? " · 🤖 played with the computer: no points"
     : over && isLoungeDoc(room) && !room.practice
@@ -4715,7 +4778,8 @@ let sceneNow = null;
 function setScene(kind) {
   if (kind === sceneNow) return;
   sceneNow = kind;
-  document.body.classList.remove("scene-beach", "scene-rain");
+  document.body.classList.remove("scene-beach", "scene-rain", "scene-pool", "scene-window");
+  rainRun++; document.querySelectorAll("canvas.rainfront, canvas.tablerain").forEach((c) => c.remove());
   $("sceneFx")?.remove();
   if (kind) {
     document.body.classList.add("scene-" + kind);
@@ -4724,17 +4788,313 @@ function setScene(kind) {
       ? `<canvas class="shore"></canvas>
          <i class="bird b1"></i><i class="bird b2"></i><i class="bird b3"></i>
          <span class="shell s1">🐚</span><span class="shell s2">🐚</span><span class="shell s3">⭐</span><span class="palm">🌴</span>`
-      : `<div class="rain r1"></div><div class="rain r2"></div><div class="flash"></div><div class="puddle p1"></div><div class="puddle p2"></div>`;
+      : kind === "window"
+      ? `<canvas class="indoor"></canvas>`
+      : kind === "pool"
+      ? `<div class="rays"></div><div class="caustics c1"></div><div class="caustics c2"></div>
+         ${Array.from({ length: 14 }, (_, i) => `<i class="bubble" style="--x:${(i * 37) % 100}%;--d:${(i * 0.7) % 6}s;--s:${4 + (i * 3) % 9}px;--t:${5 + (i % 5)}s"></i>`).join("")}
+         <span class="fish f1">🐠</span><span class="fish f2">🐟</span><span class="fish f3">🐡</span>
+         <span class="weed w1">🌿</span><span class="weed w2">🌱</span><span class="weed w3">🪸</span><span class="weed w4">🌿</span><span class="star">⭐</span><span class="shell2">🐚</span>`
+      : `<canvas class="rainback"></canvas><div class="flash"></div>`;
     document.body.prepend(fx);
     if (kind === "beach") startShore(fx.querySelector("canvas.shore"));
+    if (kind === "rain") startRain(fx.querySelector("canvas.rainback"));
+    if (kind === "window") startIndoor(fx.querySelector("canvas.indoor"));
   }
   syncMusic();
+}
+
+// 🌧️ Rain, drawn live in three layers: far away (clouds, faint rain, puddles with rings on the
+// ground), on the table (drops splashing on the wet wood), and close up (long bright streaks and
+// raindrops running down the glass in front of you). Lightning: a real bolt and a flash.
+// 🏠 A rainy night, inside a house: a big window behind the table looks out on a small island street
+// (a street light glowing in the rain, little houses with lit windows, palm trees, the sea). Rain
+// runs down the glass; now and then lightning lights up everything outside. Inside: warm lamplight.
+var indoorRun = 0, indoorBolt = () => {};
+function startIndoor(cv) {
+  const run = ++indoorRun;
+  const c = cv.getContext("2d");
+  let W = 0, H = 0, dpr = 1, last = 0, scene = null, win = null, flashAt = -1e9, lastFlash = performance.now();
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const drops = [], streaks = [];
+  function size() {
+    dpr = Math.min(devicePixelRatio || 1, 1.5); W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+    // the window fills the wall above the card table (so the street light is never hidden)
+    const tb = !$("game").hidden ? $("table")?.getBoundingClientRect() : null;
+    const top = Math.max(22, H * 0.03), bottom = tb && tb.top > top + 90 ? tb.top - 22 : top + Math.min(H * 0.34, 300);
+    const ww = Math.min(W * 0.92, 600), wh = Math.max(90, bottom - top);
+    win = { x: (W - ww) / 2, y: top, w: ww, h: wh, k: tb ? Math.round(tb.top) : -1 };
+    drawOutside();
+    drops.length = 0; streaks.length = 0;
+    for (let i = 0; i < 38; i++) drops.push({ x: Math.random(), y: Math.random(), r: rnd(1.2, 4.2), v: 0, still: rnd(0, 6000) });
+    for (let i = 0; i < 120; i++) streaks.push({ x: Math.random(), y: Math.random(), l: rnd(6, 16), s: rnd(0.012, 0.022) });
+  }
+  // the view outside, drawn once: night sky, sea, the island street, houses, palms, the street light
+  function drawOutside() {
+    scene = document.createElement("canvas"); scene.width = win.w * dpr; scene.height = win.h * dpr;
+    const g = scene.getContext("2d"); g.scale(dpr, dpr);
+    const w = win.w, h = win.h;
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#070b14"); sky.addColorStop(0.55, "#121c2c"); sky.addColorStop(1, "#1a2433");
+    g.fillStyle = sky; g.fillRect(0, 0, w, h);
+    const moon = g.createRadialGradient(w * 0.78, h * 0.18, 0, w * 0.78, h * 0.18, h * 0.35); // moon behind the clouds
+    moon.addColorStop(0, "rgba(160,180,210,.35)"); moon.addColorStop(1, "rgba(160,180,210,0)");
+    g.fillStyle = moon; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#0c1420"; g.fillRect(0, h * 0.5, w, h * 0.12); // the sea
+    g.strokeStyle = "rgba(140,170,210,.18)"; g.lineWidth = 1;
+    for (let i = 0; i < 5; i++) { g.beginPath(); const y = h * (0.52 + i * 0.022); g.moveTo(w * rnd(0, 0.3), y); g.lineTo(w * rnd(0.5, 1), y); g.stroke(); }
+    g.fillStyle = "#0a0f15"; // the island: the ground and the street
+    g.beginPath(); g.moveTo(0, h * 0.62); g.quadraticCurveTo(w * 0.5, h * 0.57, w, h * 0.63); g.lineTo(w, h); g.lineTo(0, h); g.fill();
+    g.fillStyle = "#161b22"; g.fillRect(0, h * 0.8, w, h * 0.2);
+    const house = (x, bw, bh, lit) => {
+      const y = h * 0.66;
+      g.fillStyle = "#11161d"; g.fillRect(x, y - bh, bw, bh);
+      g.beginPath(); g.moveTo(x - 4, y - bh); g.lineTo(x + bw / 2, y - bh - bh * 0.45); g.lineTo(x + bw + 4, y - bh); g.fill();
+      for (const [lx, ly] of lit) {
+        g.fillStyle = "#ffcf7a"; g.fillRect(x + lx * bw, y - bh + ly * bh, bw * 0.18, bh * 0.22);
+        const gl = g.createRadialGradient(x + lx * bw + 4, y - bh + ly * bh + 4, 0, x + lx * bw + 4, y - bh + ly * bh + 4, 22);
+        gl.addColorStop(0, "rgba(255,200,110,.25)"); gl.addColorStop(1, "rgba(255,200,110,0)");
+        g.fillStyle = gl; g.fillRect(x + lx * bw - 20, y - bh + ly * bh - 20, 50, 50);
+      }
+    };
+    house(w * 0.06, w * 0.16, h * 0.16, [[0.2, 0.35]]);
+    house(w * 0.6, w * 0.2, h * 0.2, [[0.15, 0.3], [0.62, 0.3]]);
+    house(w * 0.85, w * 0.13, h * 0.13, []);
+    const palm = (x, s) => {
+      g.strokeStyle = "#090d12"; g.lineWidth = 3 * s;
+      g.beginPath(); g.moveTo(x, h * 0.68); g.quadraticCurveTo(x + 10 * s, h * 0.5, x + 4 * s, h * 0.34); g.stroke();
+      g.fillStyle = "#090d12";
+      for (let k = 0; k < 6; k++) {
+        const a = -Math.PI / 2 + (k - 2.5) * 0.55, tx = x + 4 * s + Math.cos(a) * 34 * s, ty = h * 0.34 + Math.sin(a) * 18 * s + 10 * s;
+        g.beginPath(); g.moveTo(x + 4 * s, h * 0.34); g.quadraticCurveTo((x + 4 * s + tx) / 2, ty - 14 * s, tx, ty); g.lineTo(tx - 3, ty + 3); g.closePath(); g.fill();
+      }
+    };
+    palm(w * 0.33, 1); palm(w * 0.5, 0.75);
+    // the street light: a post, its lamp, and a glow spreading in the wet air and on the road
+    const lx = w * 0.43, ly = h * 0.42;
+    g.strokeStyle = "#0b0f14"; g.lineWidth = 3; g.beginPath(); g.moveTo(lx, h * 0.84); g.lineTo(lx, ly); g.lineTo(lx + 14, ly); g.stroke();
+    const glow = g.createRadialGradient(lx + 14, ly + 4, 0, lx + 14, ly + 4, h * 0.42);
+    glow.addColorStop(0, "rgba(255,214,140,.55)"); glow.addColorStop(0.25, "rgba(255,190,100,.18)"); glow.addColorStop(1, "rgba(255,190,100,0)");
+    g.fillStyle = glow; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#fff1cf"; g.beginPath(); g.ellipse(lx + 14, ly + 4, 5, 3, 0, 0, 6.3); g.fill();
+    const cone = g.createLinearGradient(0, ly, 0, h * 0.86); // light falling to the road
+    cone.addColorStop(0, "rgba(255,210,140,.22)"); cone.addColorStop(1, "rgba(255,210,140,.04)");
+    g.fillStyle = cone; g.beginPath(); g.moveTo(lx + 9, ly + 6); g.lineTo(lx + 19, ly + 6); g.lineTo(lx + 60, h * 0.86); g.lineTo(lx - 32, h * 0.86); g.fill();
+    const refl = g.createLinearGradient(0, h * 0.84, 0, h); // its reflection in the puddles
+    refl.addColorStop(0, "rgba(255,200,120,.35)"); refl.addColorStop(1, "rgba(255,200,120,0)");
+    g.fillStyle = refl; g.fillRect(lx + 4, h * 0.84, 20, h * 0.16);
+    scene._lamp = { x: lx + 14, y: ly + 4 };
+  }
+  size(); addEventListener("resize", size);
+  indoorBolt = () => { flashAt = performance.now(); lastFlash = flashAt; thunderFlash(); };
+  function frame(now) {
+    if (run !== indoorRun || !cv.isConnected) return;
+    requestAnimationFrame(frame);
+    if (document.hidden || now - last < 33) return;
+    const dt = Math.min(60, now - last) / 33; last = now;
+    if (now - lastFlash > 30000 && Math.random() < 0.004) indoorBolt(); // lightning even with the sound off
+    if (now - (frame.chk || 0) > 1000) { // the table moved (a new screen, a new game): fit the window again
+      frame.chk = now;
+      const tb = !$("game").hidden ? $("table")?.getBoundingClientRect() : null;
+      if ((tb ? Math.round(tb.top) : -1) !== win.k) size();
+    }
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // the room: a warm, dim wall and lamplight from the side
+    const wall = c.createLinearGradient(0, 0, 0, H);
+    wall.addColorStop(0, "#2b1f17"); wall.addColorStop(1, "#160f0b");
+    c.fillStyle = wall; c.fillRect(0, 0, W, H);
+    c.fillStyle = "rgba(255,255,255,.025)";
+    for (let x = 0; x < W; x += 22) c.fillRect(x, 0, 1, H); // wallpaper stripes
+    const lamp = c.createRadialGradient(W * 0.08, H * 0.62, 0, W * 0.08, H * 0.62, Math.max(W, H) * 0.7);
+    lamp.addColorStop(0, `rgba(255,170,80,${0.26 + Math.sin(now / 900) * 0.01})`); lamp.addColorStop(1, "rgba(255,170,80,0)");
+    c.fillStyle = lamp; c.fillRect(0, 0, W, H);
+    const { x: wx, y: wy, w: ww, h: wh } = win;
+    // outside
+    c.save(); c.beginPath(); c.rect(wx, wy, ww, wh); c.clip();
+    c.drawImage(scene, wx, wy, ww, wh);
+    const fa = now - flashAt; // lightning lights up the sky
+    if (fa < 900) { const a = fa < 80 ? 0.7 : fa < 160 ? 0.1 : fa < 260 ? 0.5 : Math.max(0, 0.4 - (fa - 260) / 1600); c.fillStyle = `rgba(200,215,255,${a})`; c.fillRect(wx, wy, ww, wh); }
+    c.strokeStyle = "rgba(170,190,220,.35)"; c.lineWidth = 1; // rain falling outside (brighter in the lamp's light)
+    const lp = scene._lamp;
+    for (const r of streaks) {
+      r.y += r.s * dt; r.x += r.s * dt * 0.18; if (r.y > 1) { r.y = -0.05; r.x = Math.random(); }
+      const x = wx + r.x * ww, y = wy + r.y * wh, near = Math.hypot(x - wx - lp.x, y - wy - lp.y) < wh * 0.3;
+      c.strokeStyle = near ? "rgba(255,225,170,.7)" : "rgba(160,180,210,.28)";
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x - r.l * 0.18, y - r.l); c.stroke();
+    }
+    // drops on the glass
+    for (const d of drops) {
+      d.still -= 33 * dt;
+      if (d.still < 0) { d.v = Math.min(2.5, d.v + 0.06 * dt); d.y += (d.v * dt) / wh * 2; }
+      if (d.y > 1.02) Object.assign(d, { x: Math.random(), y: rnd(-0.05, 0.5), r: rnd(1.2, 4.2), v: 0, still: rnd(1500, 8000) });
+      const x = wx + d.x * ww, y = wy + d.y * wh;
+      if (d.v > 0.3) { const tg = c.createLinearGradient(x, y, x, y - 22); tg.addColorStop(0, "rgba(200,215,235,.25)"); tg.addColorStop(1, "rgba(200,215,235,0)"); c.strokeStyle = tg; c.lineWidth = d.r * 0.6; c.beginPath(); c.moveTo(x, y); c.lineTo(x, y - 22); c.stroke(); }
+      const rg = c.createRadialGradient(x - d.r * 0.3, y - d.r * 0.3, 0, x, y, d.r);
+      rg.addColorStop(0, "rgba(255,240,210,.7)"); rg.addColorStop(0.5, "rgba(150,170,200,.15)"); rg.addColorStop(1, "rgba(255,255,255,.3)");
+      c.fillStyle = rg; c.beginPath(); c.arc(x, y, d.r, 0, 6.3); c.fill();
+    }
+    const fog = c.createLinearGradient(0, wy + wh * 0.6, 0, wy + wh); // misted glass at the bottom
+    fog.addColorStop(0, "rgba(180,190,205,0)"); fog.addColorStop(1, "rgba(180,190,205,.12)");
+    c.fillStyle = fog; c.fillRect(wx, wy, ww, wh);
+    c.restore();
+    // the window frame (wood) with its cross bars and the sill
+    c.strokeStyle = "#5a3b22"; c.lineWidth = 10; c.strokeRect(wx, wy, ww, wh);
+    c.strokeStyle = "#6b4528"; c.lineWidth = 6;
+    c.beginPath(); c.moveTo(wx + ww / 2, wy); c.lineTo(wx + ww / 2, wy + wh); c.moveTo(wx, wy + wh * 0.45); c.lineTo(wx + ww, wy + wh * 0.45); c.stroke();
+    c.strokeStyle = "rgba(255,190,120,.25)"; c.lineWidth = 1; c.strokeRect(wx + 5, wy + 5, ww - 10, wh - 10);
+    c.fillStyle = "#4a2f1a"; c.fillRect(wx - 16, wy + wh + 3, ww + 32, 10);
+    c.fillStyle = "rgba(0,0,0,.35)"; c.fillRect(wx - 16, wy + wh + 13, ww + 32, 6);
+    // a little light from the street falling into the room under the window
+    const spill = c.createLinearGradient(0, wy + wh, 0, wy + wh + H * 0.25);
+    spill.addColorStop(0, "rgba(255,210,150,.07)"); spill.addColorStop(1, "rgba(255,210,150,0)");
+    c.fillStyle = spill; c.fillRect(wx, wy + wh + 13, ww, H * 0.25);
+  }
+  requestAnimationFrame(frame);
+}
+
+var rainRun = 0, lastBolt = 0, rainBolt = () => {};
+function startRain(back) {
+  const run = ++rainRun;
+  // the close-up layer sits in front of the cards (it never catches taps)
+  document.querySelectorAll("canvas.rainfront").forEach((c) => c.remove());
+  const front = Object.assign(document.createElement("canvas"), { className: "rainfront" });
+  document.body.append(front);
+  let W = 0, H = 0, dpr = 1, last = 0, wind = 0.22, windTo = 0.22, bolt = null;
+  const bx = back.getContext("2d"), fx = front.getContext("2d");
+  let tableCv = null, tx = null;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  function size() {
+    dpr = Math.min(devicePixelRatio || 1, 1.5); W = innerWidth; H = innerHeight;
+    for (const c of [back, front]) { c.width = W * dpr; c.height = H * dpr; c.style.width = W + "px"; c.style.height = H + "px"; }
+  }
+  size(); addEventListener("resize", size);
+  const n = Math.round(Math.min(420, (innerWidth * innerHeight) / 1500));
+  const drop = (z) => ({ x: rnd(-0.2, 1.1), y: rnd(-0.2, 1), z, len: 10 + z * 30, sp: 0.9 + z * 1.8, a: 0.18 + z * 0.4 });
+  const far = Array.from({ length: n }, () => drop(rnd(0, 0.45)));
+  const near = Array.from({ length: Math.round(n / 5) }, () => drop(rnd(0.6, 1)));
+  const splashes = [], rings = [];
+  const glass = Array.from({ length: 22 }, () => ({ x: Math.random(), y: Math.random(), r: rnd(1.5, 5.5), v: 0, still: rnd(0, 6000) }));
+  const clouds = Array.from({ length: 5 }, (_, i) => ({ x: i / 5, y: rnd(-0.04, 0.06), w: rnd(0.4, 0.7), h: rnd(0.08, 0.14), sp: rnd(0.004, 0.01) }));
+  window.__bolt = () => rainBolt();
+  rainBolt = () => { // also called by the thunder sound
+    const x0 = rnd(0.15, 0.85) * W, pts = [[x0, 0]];
+    let x = x0, y = 0;
+    while (y < H * rnd(0.35, 0.55)) { y += rnd(14, 34); x += rnd(-22, 22); pts.push([x, y]); }
+    bolt = { pts, at: performance.now() }; lastBolt = performance.now();
+    thunderFlash();
+  };
+  function tableLayer() { // drops landing on the table, drawn under the cards
+    const tb = $("table");
+    if (!tb || $("game").hidden) return null;
+    if (!tableCv || !tableCv.isConnected || tableCv.parentElement !== tb) {
+      tableCv = Object.assign(document.createElement("canvas"), { className: "tablerain" });
+      tb.prepend(tableCv); tx = tableCv.getContext("2d");
+    }
+    const w = tb.clientWidth, h = tb.clientHeight;
+    if (tableCv.width !== Math.round(w * dpr) || tableCv.height !== Math.round(h * dpr)) {
+      tableCv.width = Math.round(w * dpr); tableCv.height = Math.round(h * dpr); tableCv.style.width = w + "px"; tableCv.style.height = h + "px";
+    }
+    return { w, h };
+  }
+  const tSplash = [];
+  function frame(now) {
+    if (run !== rainRun || !back.isConnected) { front.remove(); tableCv?.remove(); return; }
+    requestAnimationFrame(frame);
+    if (document.hidden || now - last < 33) return;
+    const dt = Math.min(60, now - last) / 16.7; last = now;
+    if (Math.random() < 0.005) windTo = rnd(0.12, 0.38);
+    wind += (windTo - wind) * 0.01;
+    if (now - lastBolt > 26000 && Math.random() < 0.004) rainBolt(); // lightning even with the sound off
+    // ---- far layer
+    bx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bx.clearRect(0, 0, W, H);
+    for (const c of clouds) { // dark clouds drifting along the top
+      c.x += c.sp * dt * 0.016; if (c.x > 1.3) c.x = -0.7;
+      const g = bx.createRadialGradient(c.x * W, c.y * H, 0, c.x * W, c.y * H, c.w * W);
+      g.addColorStop(0, "rgba(20,26,34,.85)"); g.addColorStop(1, "rgba(20,26,34,0)");
+      bx.fillStyle = g; bx.beginPath(); bx.ellipse(c.x * W, c.y * H, c.w * W, c.h * H * 2.4, 0, 0, 6.3); bx.fill();
+    }
+    bx.lineCap = "round";
+    for (const d of far) {
+      d.y += d.sp * dt * 0.012; d.x += d.sp * dt * 0.012 * wind;
+      if (d.y > 1.05) {
+        if (d.y * H > H * 0.55 && Math.random() < 0.5) rings.push({ x: d.x * W, y: H * rnd(0.6, 0.98), r: 1, a: 0.5 });
+        Object.assign(d, drop(d.z), { y: rnd(-0.15, 0) });
+      }
+      bx.strokeStyle = `rgba(190,210,235,${d.a})`; bx.lineWidth = 0.6 + d.z * 1.2;
+      bx.beginPath(); bx.moveTo(d.x * W, d.y * H); bx.lineTo(d.x * W - wind * d.len, d.y * H - d.len); bx.stroke();
+    }
+    for (let i = rings.length - 1; i >= 0; i--) { // rings spreading on the puddles
+      const r = rings[i]; r.r += 0.7 * dt; r.a -= 0.018 * dt;
+      if (r.a <= 0) { rings.splice(i, 1); continue; }
+      bx.strokeStyle = `rgba(200,220,240,${r.a})`; bx.lineWidth = 1;
+      bx.beginPath(); bx.ellipse(r.x, r.y, r.r * 2.2, r.r * 0.7, 0, 0, 6.3); bx.stroke();
+    }
+    if (rings.length > 60) rings.splice(0, rings.length - 60);
+    // ---- on the table: splashes and little crowns of water
+    const tl = tableLayer();
+    if (tl && tx) {
+      tx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      tx.clearRect(0, 0, tl.w, tl.h);
+      for (let k = 0; k < 2; k++) if (Math.random() < 0.55) tSplash.push({ x: Math.random() * tl.w, y: Math.random() * tl.h, t: 0 });
+      for (let i = tSplash.length - 1; i >= 0; i--) {
+        const sp = tSplash[i]; sp.t += dt;
+        if (sp.t > 14) { tSplash.splice(i, 1); continue; }
+        const a = 1 - sp.t / 14;
+        tx.strokeStyle = `rgba(220,235,255,${0.5 * a})`; tx.lineWidth = 1;
+        tx.beginPath(); tx.ellipse(sp.x, sp.y, 1 + sp.t * 1.1, 0.5 + sp.t * 0.45, 0, 0, 6.3); tx.stroke();
+        if (sp.t < 6) { // the crown: droplets jumping up
+          tx.fillStyle = `rgba(230,240,255,${0.7 * a})`;
+          for (let j = 0; j < 4; j++) { const ang = (j / 4) * 6.28 + sp.x; tx.fillRect(sp.x + Math.cos(ang) * sp.t * 1.4, sp.y - sp.t * (2.4 - sp.t * 0.35) + Math.sin(ang) * 1.2, 1.4, 1.4); }
+        }
+      }
+    }
+    // ---- close-up layer: bright streaks and raindrops on the glass
+    fx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fx.clearRect(0, 0, W, H);
+    fx.lineCap = "round";
+    for (const d of near) {
+      d.y += d.sp * dt * 0.014; d.x += d.sp * dt * 0.014 * wind;
+      if (d.y > 1.1) Object.assign(d, drop(d.z), { y: rnd(-0.2, 0) });
+      const gx = d.x * W, gy = d.y * H;
+      const g = fx.createLinearGradient(gx, gy, gx - wind * d.len * 1.6, gy - d.len * 1.6);
+      g.addColorStop(0, `rgba(230,240,255,${d.a * 0.55})`); g.addColorStop(1, "rgba(230,240,255,0)");
+      fx.strokeStyle = g; fx.lineWidth = 1.2 + d.z;
+      fx.beginPath(); fx.moveTo(gx, gy); fx.lineTo(gx - wind * d.len * 1.6, gy - d.len * 1.6); fx.stroke();
+    }
+    for (const g of glass) { // drops on the glass: sit still a while, then run down leaving a trail
+      g.still -= 33;
+      if (g.still < 0) { g.v = Math.min(3, g.v + 0.08 * dt); g.y += (g.v * dt) / H * 1.4; }
+      if (g.y > 1.05) Object.assign(g, { x: Math.random(), y: rnd(-0.05, 0.6), r: rnd(1.5, 5.5), v: 0, still: rnd(1500, 7000) });
+      const x = g.x * W, y = g.y * H;
+      if (g.v > 0.3) { // a short wet trail behind a running drop, fading out
+        const tl = Math.min(34, 9 * g.v + g.r * 2), tg = fx.createLinearGradient(x, y, x, y - tl);
+        tg.addColorStop(0, "rgba(200,220,240,.22)"); tg.addColorStop(1, "rgba(200,220,240,0)");
+        fx.strokeStyle = tg; fx.lineWidth = g.r * 0.6; fx.beginPath(); fx.moveTo(x, y - g.r * 0.6); fx.lineTo(x + Math.sin(y * 0.05) * 1.5, y - tl); fx.stroke();
+      }
+      const rg = fx.createRadialGradient(x - g.r * 0.3, y - g.r * 0.35, 0, x, y, g.r);
+      rg.addColorStop(0, "rgba(255,255,255,.75)"); rg.addColorStop(0.35, "rgba(190,210,230,.18)"); rg.addColorStop(0.85, "rgba(40,55,70,.25)"); rg.addColorStop(1, "rgba(255,255,255,.35)");
+      fx.fillStyle = rg; fx.beginPath(); fx.arc(x, y, g.r, 0, 6.3); fx.fill();
+    }
+    if (bolt) { // the lightning bolt, for a moment
+      const age = now - bolt.at;
+      if (age > 260) bolt = null;
+      else {
+        const a = age < 60 || (age > 120 && age < 170) ? 1 : 0.35;
+        fx.strokeStyle = `rgba(235,245,255,${a})`; fx.lineWidth = 2.5; fx.shadowColor = "#cfe3ff"; fx.shadowBlur = 18;
+        fx.beginPath(); bolt.pts.forEach(([x, y], i) => (i ? fx.lineTo(x, y) : fx.moveTo(x, y))); fx.stroke();
+        fx.shadowBlur = 0;
+      }
+    }
+  }
+  requestAnimationFrame(frame);
 }
 
 // 🌊 The shoreline, drawn live: the sea at the top, and every few seconds a wave rushes up the sand,
 // right under the card table, leaves the sand wet and slides back. Foam, little crests coming in,
 // sparkles on the water. (Kept light: about 30 frames a second, paused when the app is hidden.)
-let shoreRun = 0, shoreSwell = null;
+var shoreRun = 0, shoreSwell = null;
 function swellNow(up, down) { shoreSwell = { at: performance.now(), up: up * 1000, down: down * 1000 }; }
 function startShore(cv) {
   const run = ++shoreRun;
@@ -4831,25 +5191,42 @@ function startShore(cv) {
   requestAnimationFrame(frame);
 }
 
+// cards that fell on the sand: grains of sand and a wet patch on them until the next deal
+const sandyCards = new Set();
+let sandyKey = null;
+function markSandy() {
+  const k = room ? `${roomId}|${room.round}|${room.reshuffles || 0}` : null;
+  if (k !== sandyKey) { sandyKey = k; sandyCards.clear(); } // a new deck: all clean again
+  document.querySelectorAll(".card.sandy").forEach((e) => { if (!sandyCards.has(e.dataset.id)) e.classList.remove("sandy"); });
+  if (!sandyCards.size) return;
+  for (const id of sandyCards) document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`).forEach((e) => e.classList.add("sandy"));
+}
 // 🏖️ On the beach, now and then a card misses the table: it drops onto the sand with a little puff,
 // then someone puts it back on the table.
 function slipOffTable(el) {
   const tb = $("table")?.getBoundingClientRect(), r = el.getBoundingClientRect();
   if (!tb || !r.width) return;
   const left = Math.random() < 0.5;
-  const dx = left ? tb.left - r.left - r.width * 0.9 : tb.right - r.left - r.width * 0.1;
-  const dy = tb.bottom - r.top - r.height * 0.3 + 10;
+  // lands on the sand just beside / below the table, always on the screen
+  let dx = left ? tb.left - r.left - r.width * 0.75 : tb.right - r.left - r.width * 0.25;
+  dx = Math.max(8 - r.left, Math.min(innerWidth - r.right - 8, dx));
+  const dy = Math.min(innerHeight - r.bottom - 120, tb.bottom - r.top - r.height * 0.3 + 14);
   const rot = (left ? -1 : 1) * (40 + Math.random() * 40);
+  // the ground is further down than the table top, so the card looks smaller lying on the sand
+  const g = 0.62;
   el.animate([
     { transform: "none", offset: 0 },
-    { transform: `translate(${dx * 0.6}px, ${dy * 0.3}px) rotate(${rot * 0.5}deg)`, offset: 0.12 },
-    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.26 },
-    { transform: `translate(${dx}px, ${dy - 6}px) rotate(${rot}deg) scale(.9)`, offset: 0.3 },
-    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.34 },
-    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(.9)`, offset: 0.66 },
-    { transform: `translate(${dx * 0.4}px, ${dy * 0.4 - 30}px) rotate(${rot * 0.3}deg) scale(1.05)`, offset: 0.84 },
+    { transform: `translate(${dx * 0.6}px, ${dy * 0.3}px) rotate(${rot * 0.5}deg) scale(.9)`, offset: 0.12 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${g})`, offset: 0.26 },
+    { transform: `translate(${dx}px, ${dy - 5}px) rotate(${rot}deg) scale(${g})`, offset: 0.3 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${g})`, offset: 0.34 },
+    { transform: `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${g})`, offset: 0.66 },
+    { transform: `translate(${dx * 0.4}px, ${dy * 0.4 - 30}px) rotate(${rot * 0.3}deg) scale(1.02)`, offset: 0.84 },
     { transform: "none", offset: 1 },
   ], { duration: 2200, easing: "ease-in-out" });
+  // from now on that card has sand on it and a wet patch (until a new deck is dealt)
+  const id = el.dataset.id;
+  if (id) setTimeout(() => { sandyCards.add(id); markSandy(); }, 1500);
   setTimeout(() => { // a little puff of sand where it lands
     const pr = el.getBoundingClientRect();
     for (let i = 0; i < 9; i++) {
@@ -4861,6 +5238,7 @@ function slipOffTable(el) {
   }, 580);
   setTimeout(() => showBanner("Oops! The card fell on the sand · back on the table", "🏖️"), 900);
 }
+function thunderFromSound() { if (sceneNow === "rain") rainBolt(); else if (sceneNow === "window") indoorBolt(); }
 function thunderFlash() {
   const f = document.querySelector("#sceneFx .flash");
   if (!f) return;
@@ -5833,7 +6211,7 @@ function renderHeap() {
     if (digu) front.append(cardEl(digu));
     const back = document.createElement("div");
     back.className = "flip-back";
-    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABBUSH!" : "DIGU!"));
+    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABUSH!" : "DIGU!"));
     inner.append(front, back);
     f.append(inner);
     pile.append(f);
@@ -5978,7 +6356,7 @@ function renderSeats() {
       // their cards, face down and standing upright, fanned out next to their name (towards the
       // middle of the table, so they're never cut off by the edge of the screen)
       const nCards = mine ? 0 : cardsHeld(p.uid);
-      if (!mine && isBabbush()) { // BABBUSH: their cards lie face down in a row (tappable for J / Q / K)
+      if (!mine && isBabbush()) { // BABUSH: their cards lie face down in a row (tappable for J / Q / K)
         const orow = document.createElement("div");
         orow.className = "bb-orow";
         orow.dataset.uid = p.uid;
@@ -6133,7 +6511,7 @@ const seatOrHand = (u) => (u === uid ? $("hand") : seatEl(u));
 // one taken from the thrown pile (face up), cards thrown, cards played to the table.
 const animated = new Set();
 function once(key) { if (animated.has(key)) return false; animated.add(key); if (animated.size > 300) animated.clear(); return true; }
-// BABBUSH: show every card move flying (pile → player, player's place → thrown pile, …)
+// BABUSH: show every card move flying (pile → player, player's place → thrown pile, …)
 function bbMoves(prev) {
   const seen = (prev.bb?.ev || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
   const evs = (room.bb?.ev || []).filter((e) => e.r === room.round && e.n > seen).sort((a, b) => a.n - b.n);
@@ -6600,7 +6978,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027m";
+const APP_VERSION = "20261027r";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6647,6 +7025,7 @@ document.addEventListener("visibilitychange", syncMusic);
 function render() {
   if (!room) return;
   queueMicrotask(syncMusic);
+  queueMicrotask(markSandy);
   if ($("game").hidden) hideTableOverlays();
   renderTurnGlow();
   renderOfflineAsk();
@@ -6739,7 +7118,7 @@ function render() {
     else if (myTurn) status = `No ${C.SUIT_SYMBOL[lead]}? Cut with any card · ${nameOf(trickLeader())} picks up the pile`;
     else status = `${nameOf(room.playerIds[room.turn])} is playing…` + (lead ? ` (${C.SUIT_SYMBOL[lead]} was led)` : "");
   } else if (playing && isBabbush()) {
-    status = ""; // the Babbush area says what to do
+    status = ""; // the Babush area says what to do
   } else if (playing) {
     if (myTurn && isCall()) status = room.phase === "throw"
       ? (canCall() ? "Your turn: CALL now, or throw a card first" : "Your turn: throw a card first (or several of the same number)")
@@ -7111,7 +7490,7 @@ function renderTargetSetup() {
   $("gameDigu").disabled = $("gameCall").disabled = $("gameBondi").disabled = $("gameDhiha").disabled = !host;
   $("gameNote").textContent = g === "call" ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Caught (someone has less)? The caller scores 50 and everyone else their count. Lowest total wins."
     : g === "babbush"
-    ? "BABBUSH: 4 cards each, face down. Look at 0–2 of yours, then each turn take a card (middle pile or the last thrown card) and put it in the place of one of yours. J looks, Q switches, K locks. Same number as the thrown card? Tap yours twice to throw it too. 8 = 0. Call BABBUSH when you think yours is lowest. Lowest total wins."
+    ? "BABUSH: 4 cards each, face down. Look at 0–2 of yours, then each turn take a card (middle pile or the last thrown card) and put it in the place of one of yours. J looks, Q switches, K locks. Same number as the thrown card? Tap yours twice to throw it too. 8 = 0. Call BABUSH when you think yours is lowest. Lowest total wins."
     : g === "call"
     ? "CALL: draw, throw one card or several of the same number, and CALL at 7 or less. Lowest total wins."
     : g === "dhiha"
@@ -7347,7 +7726,7 @@ function playShout(r) {
   fx.className = "shout-fx " + (call ? "is-call" : "is-digu");
   const rays = document.createElement("div");
   rays.className = "fx-rays";
-  const callWord = gameOf(r) === "babbush" ? "BABBUSH" : "CALL";
+  const callWord = gameOf(r) === "babbush" ? "BABUSH" : "CALL";
   const word = shoutEl(r.diguStyle, call ? callWord + "!" : "DIGU!");
   word.classList.add("fx-word");
   const who = document.createElement("div");
