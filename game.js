@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261026b";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027b";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261026b";
-import * as CFG from "./firebase-config.js?v=20261026b";
-import * as C from "./cards.js?v=20261026b";
-import * as P from "./profile.js?v=20261026b";
-import { DV } from "./i18n.js?v=20261026b";
+} from "./store.js?v=20261027b";
+import * as CFG from "./firebase-config.js?v=20261027b";
+import * as C from "./cards.js?v=20261027b";
+import * as P from "./profile.js?v=20261027b";
+import { DV } from "./i18n.js?v=20261027b";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -1265,7 +1265,7 @@ function removalUpdate(r, out) {
   if (r.status === "playing" || r.status === "ended") {
     if (ids.length < 2) { // not enough players left: stop the game
       Object.assign(upd, {
-        status: "lobby", gameOver: false, champions: null, gameRound: 0, almost: {},
+        status: "lobby", gameOver: false, champions: null, gameRound: 0, almost: {}, digus: null,
         scores: Object.fromEntries(ids.map((id) => [id, 0])),
         log: `${names} went offline · not enough players, game stopped`,
       });
@@ -2292,8 +2292,8 @@ function enterRoom(code) {
       }
     }
 
-    cardMoves(prev);
-    if (isBondi() && sameRound && room.status !== "lobby") bondiMoments(prev);
+    try { cardMoves(prev); } catch (e) { console.warn("cardMoves", e); }
+    if (isBondi() && sameRound && room.status !== "lobby") { try { bondiMoments(prev); } catch (e) { console.warn("bondiMoments", e); } }
     if (isDhiha() && sameRound && room.status !== "lobby") dhihaMoments(prev);
     // CALL: someone threw a set (2+ cards of the same number) → claps for everyone
     if (isCall() && sameRound && room.thrownNow?.length > 1 && JSON.stringify(room.thrownNow) !== JSON.stringify(prev.thrownNow)) {
@@ -2582,8 +2582,12 @@ function bbCountdown(from, done) {
   };
   step();
 }
+function bbMatchWait() {
+  if (isMyTurn() && bbMatchLeft()) { toast(`⚡ One moment: everyone can throw an alike ${C.label(room.bb.matchRank)} first`); return true; }
+  return false;
+}
 function bbDraw() {
-  if (!canDraw()) return;
+  if (bbMatchWait() || !canDraw()) return;
   if (!claimAction()) return;
   const t = bbTake(room.deck || [], room.discard || [], 1);
   if (!t.got.length) return toast("No cards left in the middle pile");
@@ -2594,7 +2598,7 @@ function bbDraw() {
 }
 // take the last thrown card instead (everyone sees it); it must go into one of my places
 function bbTakeThrown() {
-  if (!canDraw()) return;
+  if (bbMatchWait() || !canDraw()) return;
   const top = room.discard?.[room.discard.length - 1];
   if (!top) return toast("Nothing has been thrown yet · take from the middle pile");
   if (!claimAction()) return;
@@ -2737,6 +2741,34 @@ function bbAuto() { // my time ran out
 }
 // ----- the host runs the computer players and moves the game from one stage to the next -----
 let bbBotSnapKey = null;
+// ⚡ after every throw, everyone gets 3 seconds to throw an alike card before the next player takes one
+const BB_MATCH_MS = 3000;
+let bbMatchKey = null, bbMatchAt = 0;
+function bbMatchLeft() {
+  const bb = room?.bb;
+  if (!bb || !isBabbush() || bb.stage !== "play" || bb.matchRank == null || room.status !== "playing" || room.phase !== "draw") return 0;
+  const k = `${roomId}|${room.round}|${(room.discard || []).length}|${(room.discard || []).at(-1)}`;
+  if (k !== bbMatchKey) { bbMatchKey = k; bbMatchAt = Date.now(); }
+  return Math.max(0, BB_MATCH_MS - (Date.now() - bbMatchAt));
+}
+function bbMatchTimer() {
+  let el = $("bbMatchTimer");
+  const left = room && !$("game").hidden ? bbMatchLeft() : 0;
+  if (!left) {
+    if (el && !el.hidden) { el.hidden = true; try { render(); } catch {} } // my turn's piles light up now
+    return;
+  }
+  if (!el) {
+    el = Object.assign(document.createElement("div"), { id: "bbMatchTimer", className: "bb-match-timer" });
+    el.innerHTML = '<svg viewBox="0 0 36 36"><circle class="mt-bg" cx="18" cy="18" r="15"/><circle class="mt-fg" cx="18" cy="18" r="15"/></svg><b></b><span></span>';
+    document.body.append(el);
+  }
+  el.hidden = false;
+  el.querySelector("b").textContent = Math.ceil(left / 1000);
+  el.querySelector("span").textContent = `Throw alike ${C.label(room.bb.matchRank)}!`;
+  el.querySelector(".mt-fg").style.strokeDashoffset = String(94.25 * (1 - left / BB_MATCH_MS));
+}
+setInterval(bbMatchTimer, 100);
 async function bbHost() {
   const bb = room.bb; if (!bb) return;
   const key = `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}-${bb.stage}`;
@@ -2759,7 +2791,8 @@ async function bbHost() {
   if (!isBot(bot) || botKey === key) return;
   botKey = key;
   await sleep(1100 + Math.random() * 1000);
-  while (shuffling()) await sleep(250);
+  while (shuffling() || bbMatchLeft()) await sleep(200); // let everyone throw alike cards first
+  await sleep(300 + Math.random() * 500);
   if (!room || `${roomId}-${room.round}-${room.moveId || 0}-${room.phase}-${room.bb?.stage}` !== key) return;
   try { bbBotTurn(bot); } catch (e) { console.warn("Babbush computer", e); botKey = null; }
 }
@@ -2848,7 +2881,7 @@ function bbBotSnaps() {
     const b = moveBatch();
     b.update(roomRef(), bbEv({ [`bb.rows.${o.u}`]: row, discard: [...room.discard, c], moveId: (room.moveId || 0) + 1, log: `⚡ ${botName(o.u)} threw a matching ${cardName(c)}!` }, { k: "match", u: o.u, i, c }));
     b.commit().catch(() => {});
-  }, 900 + Math.random() * 1400);
+  }, 1000 + Math.random() * 1500);
 }
 // 😬 a wrong match: everyone sees the card bounce off the pile and 2 penalty cards fly to that player
 let bbPenaltySeen = null;
@@ -3447,7 +3480,7 @@ function endGameNow() {
   if (!(ownsLounge(room) || (room.host === uid && !room.playerIds.includes(room.owner)))) return;
   if (!confirm("End this game now? It stops here and nobody gets points for it.")) return;
   updateDoc(roomRef(), {
-    status: "lobby", paused: null, eliminated: [], scores: Object.fromEntries(room.playerIds.map((p) => [p, 0])),
+    status: "lobby", paused: null, eliminated: [], digus: null, scores: Object.fromEntries(room.playerIds.map((p) => [p, 0])),
     gameOver: false, champions: null, gameRound: 0, almost: {}, trick: [], lastTrick: null, host: uid,
     log: `⏹ ${myName()} ended the game`,
   }).then(() => { $("results").hidden = true; }).catch((e) => toast(errMsg(e)));
@@ -3471,7 +3504,7 @@ function renderPause() {
 // DIGU turn: take a card ("draw"), then throw one ("discard").
 // CALL turn: throw first ("throw"), then take a card ("draw") — the previous player's last thrown
 // card (room.pickable) or the top of the middle pile.
-const canDraw = () => (isBabbush() ? isMyTurn() && room.bb?.stage === "play" && room.phase === "draw" && !shuffling()
+const canDraw = () => (isBabbush() ? isMyTurn() && room.bb?.stage === "play" && room.phase === "draw" && !shuffling() && !bbMatchLeft()
   : !isBondi() && isMyTurn() && room.phase === "draw" && (isCall() || hand.length <= C.HAND_SIZE));
 // DIGU: holding 11 cards in the "take" step (e.g. my turn was skipped right after I took one): just throw
 const holdingExtra = () => gameOf(room) === "digu" && room.phase === "draw" && hand.length > C.HAND_SIZE;
@@ -3630,6 +3663,8 @@ function moveBatch() {
       if (room) room = withPending(serverRoom || room);
       // a computer player's move (run on my phone): animate it now, like anyone else's
       try { if (before && room) cardMoves(before); } catch {}
+      // the table's big moments (cut! / out first!) for moves made on this phone too
+      try { if (before && room && before.round === room.round && room.status !== "lobby") { if (isBondi()) bondiMoments(before); else if (isDhiha()) dhihaMoments(before); } } catch (e) { console.warn("moments", e); }
       if (entry.hand) setHandCards(entry.hand);
       try { render(); } catch {}
       // 2) save it, after any of my earlier moves
@@ -4206,6 +4241,7 @@ async function saveScores() {
           const gone = r.playerIds.filter((u) => totals[u] >= target && !(r.eliminated || []).includes(u));
           if (gone.length) { upd.eliminated = arrayUnion(...gone); gone.forEach((u) => (upd[`outRound.${u}`] = r.round)); upd.log = `${gone.map((u) => r.players.find((p) => p.uid === u)?.name || "?").join(" & ")} reached ${target} and ${gone.length > 1 ? "are" : "is"} out`; }
         }
+        if (gameOf(r) === "digu" && r.winner && r.playerIds.includes(r.winner)) upd[`digus.${r.winner}`] = increment(1); // ⭐ DIGU calls this game
         const fun = noPoints(r); // played with the computer: no holhuashi points
         if (isLoungeDoc(r) && !fun) { upd["stats.rounds"] = increment(1); upd["stats.lastPlayed"] = serverTimestamp(); }
         if (gameFinished(r, totals)) {
@@ -5640,7 +5676,7 @@ function renderSeats() {
   if (!show && back.parentElement === $("bottomBack")) $("game").querySelector(".top").prepend(back);
   box.hidden = !show;
   if (!show) { box._key = null; return; }
-  const key = JSON.stringify([room.players.map((p) => [p.uid, p.name, p.avatar, p.photoV, p.prem]), room.scores, room.counts, room.ccount, room.out, room.eliminated,
+  const key = JSON.stringify([room.players.map((p) => [p.uid, p.name, p.avatar, p.photoV, p.prem]), room.scores, room.digus, room.counts, room.ccount, room.out, room.eliminated,
     room.teams, room.status, innerWidth, innerHeight, isDhiha() && room.teams, room.players.map((p) => cardsHeld(p.uid))]);
   if (box._key !== key) {
     box._key = key;
@@ -5712,6 +5748,8 @@ function renderSeats() {
       const info = document.createElement("span");
       info.className = "st-info";
       const nm = Object.assign(document.createElement("b"), { textContent: mine ? "You" : p.name });
+      const dn = gameOf(room) === "digu" ? room.digus?.[p.uid] || 0 : 0;
+      if (dn) nm.append(Object.assign(document.createElement("span"), { className: "digu-star", textContent: dn > 1 ? `⭐${dn}` : "⭐", title: `Called DIGU ${dn} time${dn > 1 ? "s" : ""} this game` }));
       const sub = document.createElement("small");
       const bits = [`${room.scores?.[p.uid] ?? 0} pts`];
       if (outOf(room).includes(p.uid)) bits.push("❌ out");
@@ -6295,7 +6333,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261026b";
+const APP_VERSION = "20261027b";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -6914,6 +6952,27 @@ function funMoment(emoji, text, floaters, kind) {
 }
 
 // BONDI: someone cut, someone ran out of cards.
+// 🤣 a big animated laughing face next to a player's name for a few seconds (Google's free animated
+// Noto emoji; a plain one if it can't load). Placed on top of the page so redraws don't remove it.
+const NOTO = (hex) => `https://fonts.gstatic.com/s/e/notoemoji/latest/${hex}/512.webp`;
+try { new Image().src = NOTO("1f923"); } catch {}
+function shameEmoji(u, ms = 4200) {
+  const seat = u === uid ? (document.querySelector(".seat-tag.s-me") || $("hand")) : seatEl(u);
+  if (!seat) return;
+  document.querySelectorAll(`.shame-emoji[data-uid="${CSS.escape(u)}"]`).forEach((e) => e.remove());
+  const r = seat.getBoundingClientRect();
+  const el = Object.assign(document.createElement("div"), { className: "shame-emoji" });
+  el.dataset.uid = u;
+  const img = Object.assign(new Image(), { alt: "🤣", src: NOTO("1f923") });
+  img.onerror = () => img.replaceWith(Object.assign(document.createElement("span"), { className: "se-text", textContent: "🤣" }));
+  el.append(img, Object.assign(document.createElement("small"), { textContent: u === uid ? "haha!" : "haha!" }));
+  // beside the name, on the side nearer the middle of the screen
+  const left = r.left + r.width / 2 < innerWidth / 2 ? r.right + 4 : r.left - 58;
+  Object.assign(el.style, { left: Math.max(4, Math.min(innerWidth - 60, left)) + "px", top: Math.max(4, Math.min(innerHeight - 70, r.top + r.height / 2 - 30)) + "px" });
+  document.body.append(el);
+  setTimeout(() => el.classList.add("bye"), ms - 400);
+  setTimeout(() => el.remove(), ms);
+}
 function bondiMoments(prev) {
   const t = room.lastTrick;
   if (t?.id && t.id !== prev.lastTrick?.id) setTimeout(() => sweepTrick(t), isBondi() ? 250 : 650); // BONDI: straight to the picker / out of play
@@ -6925,6 +6984,7 @@ function bondiMoments(prev) {
       setTimeout(() => funMoment("😂", t.to === uid ? `Ohhh! You got ${names}!` : `Ohhh! ${nameOf(t.to)} got ${names}!`, ["😂", "🤣", "😆", "😜"], "laugh"), 900);
     }
     showBubble(t.cut, "Cut! ✋", true);
+    setTimeout(() => shameEmoji(t.to), 700); // 🤣 the whole table laughs at whoever has to pick the deck up
     showBanner(t.to === uid ? `✋ ${nameOf(t.cut)} cut! You pick up ${t.cards.length} cards`
       : t.cut === uid ? `✋ You cut! ${nameOf(t.to)} picks up ${t.cards.length} cards`
       : `✋ ${nameOf(t.cut)} cut! ${nameOf(t.to)} picks up ${t.cards.length} cards`);
