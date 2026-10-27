@@ -4,18 +4,18 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261026a";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261026b";
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261026a";
-import * as CFG from "./firebase-config.js?v=20261026a";
-import * as C from "./cards.js?v=20261026a";
-import * as P from "./profile.js?v=20261026a";
-import { DV } from "./i18n.js?v=20261026a";
+} from "./store.js?v=20261026b";
+import * as CFG from "./firebase-config.js?v=20261026b";
+import * as C from "./cards.js?v=20261026b";
+import * as P from "./profile.js?v=20261026b";
+import { DV } from "./i18n.js?v=20261026b";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -6295,7 +6295,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261026a";
+const APP_VERSION = "20261026b";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7508,6 +7508,7 @@ if (!IS_APP && "serviceWorker" in navigator) {
   const q = new URLSearchParams(location.search).get("push");
   if (q && q !== "0" && q !== "1") setTimeout(() => openFromPush(q), 2500);
 }
+let webPushErr = "", webPushToken = "";
 async function enableWebPush(ask) {
   if (!WEB_PUSH_OK || webPushBusy || !uid) return false;
   webPushBusy = true;
@@ -7515,40 +7516,73 @@ async function enableWebPush(ask) {
     let perm = Notification.permission;
     if (perm === "default" && ask) perm = await Notification.requestPermission();
     if (perm !== "granted") return false;
-    const reg = swReg || await navigator.serviceWorker.ready;
-    const { getMessaging, getToken } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js");
+    const reg = swReg || await navigator.serviceWorker.register("sw.js");
+    await navigator.serviceWorker.ready;
+    const { getMessaging, getToken, isSupported } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js");
+    if (isSupported && !(await isSupported())) throw new Error("this browser can't receive notifications");
     const t = await getToken(getMessaging(app), { vapidKey: CFG.vapidKey, serviceWorkerRegistration: reg });
-    if (!t) return false;
-    pushToken = t; savePushToken();
+    if (!t) throw new Error("no notification address was given");
+    pushToken = webPushToken = t; webPushErr = "";
+    await savePushToken();
     return true;
-  } catch (e) { console.warn("web push", e); if (ask) toast("Couldn't turn on notifications: " + (e.message || e)); return false; }
-  finally { webPushBusy = false; syncWebPushBar(); }
+  } catch (e) {
+    console.warn("web push", e);
+    webPushErr = e?.code || e?.message || String(e);
+    if (ask) toast("Couldn't turn on notifications: " + webPushErr);
+    return false;
+  } finally { webPushBusy = false; syncWebPushBar(); }
+}
+// what the 🔔 bar says: always tells the player why notifications aren't working yet
+function webPushState() {
+  if (IS_APP || !uid) return null;
+  if (IS_IOS && !IS_STANDALONE) return { text: "🔔 Want notifications on iPhone? Tap Share ⬆️ → Add to Home Screen, then open THAAS from that icon." };
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window))
+    return IS_IOS ? { text: "🔔 Notifications need iOS 16.4 or newer (Settings → General → Software Update)." } : null;
+  if (!WEB_PUSH_OK) return IS_IOS ? { text: "🔔 Notifications aren't switched on for THAAS yet (the admin needs to add the web push key)." } : null;
+  if (Notification.permission === "denied") return { text: IS_IOS ? "🔕 Notifications are blocked. Turn them on in iPhone Settings → Notifications → THAAS." : "🔕 Notifications are blocked for this site in your browser settings." };
+  if (Notification.permission === "default") return { text: "🔔 Get a notification when someone joins your holhuashi or sits at your table, and when THAAS updates.", btn: "Turn on" };
+  if (webPushErr) return { text: "⚠ Notifications couldn't start: " + webPushErr, btn: "Try again" };
+  if (!webPushToken) return null; // getting ready
+  return null; // all good
 }
 function syncWebPushBar() {
   const bar = $("webPushBar");
   if (!bar) return;
   let dismissed = false;
-  try { dismissed = localStorage.getItem("thaas-webpush-x") === "1"; } catch {}
-  if (IS_APP || dismissed || !uid) { bar.hidden = true; return; }
-  if (IS_IOS && !IS_STANDALONE) { // Safari tab: notifications only exist in the home-screen app
-    $("webPushText").textContent = "🔔 Want notifications on iPhone? Tap Share ⬆️ → Add to Home Screen, then open THAAS from there.";
-    $("webPushBtn").hidden = true; bar.hidden = false; return;
-  }
-  if (!WEB_PUSH_OK || Notification.permission !== "default") { bar.hidden = true; return; }
-  $("webPushBtn").hidden = false; bar.hidden = false;
+  try { dismissed = sessionStorage.getItem("thaas-webpush-x") === "1"; } catch {}
+  const st = dismissed ? null : webPushState();
+  if (!st) { bar.hidden = true; return; }
+  $("webPushText").textContent = st.text;
+  $("webPushBtn").hidden = !st.btn;
+  if (st.btn) $("webPushBtn").textContent = st.btn;
+  bar.hidden = false;
 }
-$("webPushBtn").onclick = () => enableWebPush(true).then((ok) => ok && toast("🔔 Notifications are on"));
-$("webPushX").onclick = () => { try { localStorage.setItem("thaas-webpush-x", "1"); } catch {} $("webPushBar").hidden = true; };
-setInterval(syncWebPushBar, 5000);
-setTimeout(() => { syncWebPushBar(); if (WEB_PUSH_OK && Notification.permission === "granted") enableWebPush(false); }, 4000);
+async function testPush() {
+  try {
+    const r = await fetch(NOTIFY_URL, { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
+      body: JSON.stringify({ roomId: "-", kind: "test" }) });
+    const j = await r.json().catch(() => ({}));
+    toast(j.sent ? "🔔 Notifications are on · a test is on its way" : `⚠ Test notification failed: ${j.error || r.status}`);
+  } catch (e) { toast("⚠ Test notification failed: " + (e.message || e)); }
+}
+$("webPushBtn").onclick = () => enableWebPush(true).then((ok) => ok && testPush());
+$("webPushX").onclick = () => { try { sessionStorage.setItem("thaas-webpush-x", "1"); } catch {} $("webPushBar").hidden = true; };
+// keep trying quietly until this phone is registered (sign-in can finish after the page loads)
+setInterval(() => {
+  syncWebPushBar();
+  if (WEB_PUSH_OK && uid && !webPushToken && !webPushErr && Notification.permission === "granted") enableWebPush(false);
+}, 4000);
+let pushSavedFor = "";
 
 function savePushToken() {
   if (!pushToken || !uid) return;
   // kept in its own private place: only this player (and the server) can read it
   // also note which kind of phone it is, so the admin can see who an alert reached
   const kind = IS_APP ? "android" : IS_IOS ? "ios" : "web";
-  setDoc(doc(db, "pushTokens", uid), { tokens: arrayUnion(pushToken), [kind]: arrayUnion(pushToken) }, { merge: true })
-    .catch((e) => console.warn("push token not saved", e));
+  pushSavedFor = uid;
+  return setDoc(doc(db, "pushTokens", uid), { tokens: arrayUnion(pushToken), [kind]: arrayUnion(pushToken) }, { merge: true })
+    .catch((e) => { console.warn("push token not saved", e); webPushErr = "couldn't save: " + (e.code || e.message); });
 }
 
 async function setupPush() {
