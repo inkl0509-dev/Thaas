@@ -2596,3 +2596,15 @@ body.scene-window #game.in-play #table {
 }
 body.scene-window #game.in-play #table .pile small { color: #ffe3c2; }
 .scene-tile.sp-window, .style-pick.sp-window { background: linear-gradient(180deg, #121c2c 0 55%, #2b1f17 55%) !important; }
+/* 💬 chat always readable, whatever table scene or colour is on */
+#loungeChat, #loungeChat summary, #loungeChat .chat-msg span, #loungeChat p, .lounge-chat .chat-msg span { color: #f4f8fa !important; text-shadow: none !important; }
+#loungeChat .chat-msg b, .lounge-chat .chat-msg b { color: #ffd76a !important; }
+#loungeChat .chat-msg small, .lounge-chat .chat-msg small, #loungeChat .muted { color: rgba(230,240,245,.65) !important; }
+#loungeChat .chat-msg, .lounge-chat .chat-msg { background: rgba(255,255,255,.1); }
+#loungeChat .chat-msg.mine, .lounge-chat .chat-msg.mine { background: rgba(232,182,76,.22); }
+#loungeChat .chat-form input, .lounge-chat .chat-form input { color: #10202a !important; background: #fff !important; caret-color: #10202a; }
+#loungeChat .chat-form input::placeholder, .lounge-chat .chat-form input::placeholder { color: #6b7a84; }
+
+.offline-set { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; margin-top: 6px; font-size: 13px; }
+.offline-set select { padding: 5px 8px; border-radius: 8px; font: inherit; }
+.offline-note { font-size: 12px; opacity: .8; margin: 4px 0 0; }
