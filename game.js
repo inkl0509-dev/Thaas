@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027r";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027t";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261027r`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261027t`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027r";
-import * as CFG from "./firebase-config.js?v=20261027r";
-import * as C from "./cards.js?v=20261027r";
-import * as P from "./profile.js?v=20261027r";
-import { DV } from "./i18n.js?v=20261027r";
+} from "./store.js?v=20261027t";
+import * as CFG from "./firebase-config.js?v=20261027t";
+import * as C from "./cards.js?v=20261027t";
+import * as P from "./profile.js?v=20261027t";
+import { DV } from "./i18n.js?v=20261027t";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -526,7 +526,8 @@ const FRESH_MS = 75_000;     // a table nobody has kept alive for this long is t
 const OFFLINE_MS = 60_000;   // a player who hasn't checked in for over a minute is removed (waiting at a table)
 const OFFLINE_PLAY_MS = 150_000; // during a game: 2½ minutes, so locking the phone or answering a message doesn't throw you out
 const OFFLINE_LOUNGE_MS = 150_000; // in a holhuashi: leaving the app for up to 2 minutes never puts you out
-const offlineLimit = (r) => (isLoungeDoc(r) ? OFFLINE_LOUNGE_MS : r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS);
+// a holhuashi's owner can choose how long (room.offlineMins); otherwise 2½ minutes
+const offlineLimit = (r) => (isLoungeDoc(r) ? (Number(r.offlineMins) > 0 ? Math.min(30, Number(r.offlineMins)) * 60_000 : OFFLINE_LOUNGE_MS) : r.status === "playing" || r.status === "ended" ? OFFLINE_PLAY_MS : OFFLINE_MS);
 const PRESENCE_MS = 60_000;  // a player not seen for this long has left the lobby
 const WALK_SPEED = 150;      // px per second
 const MAX_WALK_S = 2.2;      // long walks speed up so nobody waits more than ~2 seconds
@@ -6978,7 +6979,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027r";
+const APP_VERSION = "20261027t";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7449,6 +7450,10 @@ function renderTargetSetup() {
   }
   $("loungeManage").hidden = !isOwner;
   if (isOwner && document.activeElement !== $("loungeNameEdit")) $("loungeNameEdit").value = room.name || "";
+  const om = String(Number(room.offlineMins) > 0 ? room.offlineMins : 2.5);
+  if (isOwner && document.activeElement !== $("loungeOfflineMins")) $("loungeOfflineMins").value = om;
+  $("loungeOfflineNote").hidden = isOwner;
+  $("loungeOfflineNote").textContent = `⏱️ Players offline for more than ${om === "2.5" ? "2½" : om} minute${om === "1" ? "" : "s"} are removed from the table`;
   if (isOwner) {
     $("loungeNote").innerHTML = `Invite code <b></b> <button type="button" class="ghost small copy-code">Copy invite</button> <button type="button" class="ghost small new-code" title="The old invite code stops working">New code</button>`;
     $("loungeNote").querySelector("b").textContent = myInvite.code === roomId ? `${roomId}-${myInvite.key}` : "…";
@@ -8119,6 +8124,13 @@ $("adminUpdateAlert").onclick = async () => {
       : `📣 Sent to ${j.sent} phone${j.sent === 1 ? "" : "s"}${by ? ` (${by})` : ""}${j.failed ? ` · ${j.failed} failed${j.error ? ": " + j.error : ""}` : ""}`, 9000);
     if (picked.length) { adminPick.clear(); syncPickLabel(); renderAdmin(); }
   } catch (e) { toast(errMsg(e)); }
+};
+$("loungeOfflineMins").onchange = () => {
+  if (!room || !ownsLounge(room)) return;
+  const v = Number($("loungeOfflineMins").value);
+  if (!(v > 0)) return;
+  updateDoc(roomRef(), { offlineMins: v, log: `${nameOf(uid)} set the offline time to ${v === 2.5 ? "2½" : v} minute${v === 1 ? "" : "s"}` })
+    .then(() => toast(`⏱️ Offline players are now removed after ${v === 2.5 ? "2½" : v} minute${v === 1 ? "" : "s"}`)).catch((e) => toast(errMsg(e)));
 };
 $("signOutBtn").onclick = () => logOut().catch((e) => toast(errMsg(e)));
 $("targetCustom").addEventListener("submit", (e) => {
