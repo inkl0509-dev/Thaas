@@ -915,13 +915,16 @@ div.seat.empty { border-color: rgba(255,255,255,.15); }
 @keyframes almost-pulse { 50% { box-shadow: 0 0 0 6px rgba(232,182,76,.0), 0 0 16px rgba(232,182,76,.5); } }
 
 /* ======================= big moments ======================= */
+.fx-corner { position: fixed; left: 8px; top: 50px; z-index: 130; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;
+  max-width: min(62vw, 300px); pointer-events: none; }
 .fx-banner {
-  position: fixed; left: 50%; top: 14px; z-index: 130; transform: translateX(-50%);
-  max-width: calc(100% - 32px); padding: 10px 20px; border-radius: 14px; text-align: center;
-  font-weight: 800; font-size: 17px; color: #2a1e05; background: linear-gradient(180deg, #ffe08a, #e8b64c);
-  box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 0 0 3px rgba(255,255,255,.35);
-  animation: banner-in 3.2s cubic-bezier(.2,.9,.3,1.2) forwards; pointer-events: none;
+  display: flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 12px; text-align: left;
+  font-weight: 700; font-size: 12.5px; line-height: 1.25; color: #2a1e05; background: linear-gradient(180deg, #ffe08a, #e8b64c);
+  box-shadow: 0 6px 16px rgba(0,0,0,.4); animation: fxIn .35s cubic-bezier(.2,1.4,.4,1) both; transition: opacity .4s, transform .4s;
 }
+.fx-banner.bye { opacity: 0; transform: translateX(-20px); }
+.fxb-emoji { font-size: 20px; line-height: 1; flex: none; }
+@keyframes fxIn { from { opacity: 0; transform: translateX(-30px) scale(.9); } to { opacity: 1; transform: none; } }
 @keyframes banner-in {
   0% { transform: translateX(-50%) translateY(-120%) scale(.8); opacity: 0; }
   10% { transform: translateX(-50%) translateY(0) scale(1.06); opacity: 1; }
@@ -2371,11 +2374,116 @@ html, body { overflow-x: hidden; }
 @keyframes got-bump-aside { 0%, 100% { transform: scale(.72) rotate(-8deg); } 40% { transform: scale(.8) rotate(-8deg); } }
 
 /* ↩ 1 second to take back a card thrown by accident */
-#hand .card.throw-pending { transform: translateY(-26px) scale(1.06) !important; box-shadow: 0 0 0 3px #ffcf5a, 0 10px 22px rgba(0,0,0,.45) !important;
-  opacity: .85; transition: transform .15s, opacity .15s; }
+#hand .card.throw-pending { position: relative; z-index: 60;
+  transform: translate(var(--tpx, 0px), var(--tpy, 0px)) rotate(calc(var(--rot, 0deg) * (1 - var(--tpf, 0)))) scale(calc(1 + .06 * var(--tpf, 0))) !important;
+  box-shadow: 0 0 0 3px #ffcf5a, 0 12px 24px rgba(0,0,0,.45) !important; transition: none !important; }
 .undo-throw { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 150; overflow: hidden;
   padding: 10px 22px; border-radius: 999px; border: 2px solid #ffcf5a; background: #1d1503; color: #ffe7a3; font-weight: 800; font-size: 15px;
   box-shadow: 0 8px 22px rgba(0,0,0,.5); animation: mtIn .15s ease-out; cursor: pointer; }
 .undo-throw span { position: relative; z-index: 1; }
 .undo-throw i { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%; background: #ffcf5a; transform-origin: left; animation: undoBar 1s linear forwards; }
 @keyframes undoBar { to { transform: scaleX(0); } }
+
+/* 😳 BONDI: picked up big cards */
+.shy-emoji { position: fixed; z-index: 74; width: 62px; text-align: center; pointer-events: none; display: flex; flex-direction: column; align-items: center;
+  animation: shameIn .4s cubic-bezier(.3,1.6,.5,1) both; }
+.shy-emoji img { width: 48px; height: 48px; display: block; filter: drop-shadow(0 3px 5px rgba(0,0,0,.5)); }
+.shy-emoji .se-text { font-size: 38px; line-height: 48px; display: block; }
+.shy-emoji small { margin-top: -2px; padding: 1px 6px; border-radius: 999px; background: #ff8fb1; color: #4a0820; font-weight: 800; font-size: 10px; white-space: nowrap; }
+.shy-emoji.bye { transition: opacity .4s, transform .4s; opacity: 0; transform: scale(.6); }
+
+/* ================= 🏖️ / 🌧️ table scenes ================= */
+.scene-fx { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+/* --- beach: white sand, the sea at the top with waves washing in --- */
+html:has(body.scene-beach) { background: #efe2bf; }
+html:has(body.scene-rain) { background: #1d2731; }
+body.scene-beach, body.scene-rain { background: transparent !important; }
+.scene-fx.beach {
+  background:
+    radial-gradient(rgba(160,130,70,.16) 1px, transparent 1.4px) 0 0 / 7px 7px,
+    radial-gradient(rgba(255,255,255,.7) 1px, transparent 1.5px) 3px 4px / 11px 11px,
+    linear-gradient(180deg, #f3e9cf 0%, #f8f1de 40%, #efe2bf 100%);
+}
+.scene-fx.beach .sea { position: absolute; left: 0; right: 0; top: 0; height: 17vh;
+  background: linear-gradient(180deg, #0a6f97 0%, #129fbf 45%, #3fd0d6 85%, #8be6dc 100%); }
+.scene-fx.beach .wave { position: absolute; left: -10%; width: 220%; height: 34px; bottom: -22px; fill: rgba(255,255,255,.9); }
+.scene-fx.beach .wave.w1 { animation: waveSlide 9s linear infinite, waveWash 7s ease-in-out infinite; }
+.scene-fx.beach .wave.w2 { fill: rgba(190,245,240,.75); bottom: -14px; animation: waveSlide 13s linear infinite reverse, waveWash 7s ease-in-out -3.5s infinite; }
+.scene-fx.beach .wet { position: absolute; left: 0; right: 0; top: 17vh; height: 5vh; background: linear-gradient(180deg, rgba(150,120,70,.35), transparent);
+  animation: wetPulse 7s ease-in-out infinite; }
+.scene-fx.beach .foam { position: absolute; left: 0; right: 0; top: calc(17vh - 4px); height: 12px;
+  background: radial-gradient(circle, rgba(255,255,255,.95) 2px, transparent 3px) 0 0 / 14px 8px; opacity: .8; animation: waveWash 7s ease-in-out infinite; }
+@keyframes waveSlide { to { transform: translateX(-45%); } }
+@keyframes waveWash { 0%, 100% { translate: 0 -6px; } 50% { translate: 0 14px; } }
+@keyframes wetPulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+.scene-fx.beach .bird { position: absolute; top: 6vh; left: -40px; width: 22px; height: 10px; }
+.scene-fx.beach .bird::before, .scene-fx.beach .bird::after { content: ""; position: absolute; top: 0; width: 12px; height: 8px;
+  border-top: 2.5px solid #2b3440; border-radius: 50% 50% 0 0; animation: flap .5s ease-in-out infinite alternate; }
+.scene-fx.beach .bird::before { left: 0; transform-origin: right bottom; }
+.scene-fx.beach .bird::after { right: 0; transform-origin: left bottom; animation-delay: -.25s; }
+.scene-fx.beach .b1 { animation: fly 19s linear 2s infinite; }
+.scene-fx.beach .b2 { top: 9vh; transform: scale(.75); animation: fly 24s linear 9s infinite; }
+.scene-fx.beach .b3 { top: 4vh; transform: scale(.6); animation: fly 28s linear 15s infinite reverse; }
+@keyframes fly { 0% { left: -40px; margin-top: 0; } 50% { margin-top: 18px; } 100% { left: calc(100% + 40px); margin-top: -6px; } }
+@keyframes flap { from { transform: rotate(-14deg); } to { transform: rotate(18deg); } }
+.scene-fx.beach .shell { position: absolute; font-size: 18px; opacity: .8; }
+.scene-fx.beach .s1 { left: 6%; top: 34%; } .scene-fx.beach .s2 { right: 7%; top: 58%; transform: rotate(40deg); }
+.scene-fx.beach .s3 { left: 10%; bottom: 22%; font-size: 14px; }
+.scene-fx.beach .palm { position: absolute; right: -14px; top: 15vh; font-size: 64px; opacity: .9; transform: rotate(-12deg);
+  filter: drop-shadow(-8px 10px 4px rgba(90,70,30,.25)); }
+/* the cards lie on a wooden table standing on the sand */
+body.scene-beach #game.in-play #table, body.scene-rain #game.in-play #table {
+  background:
+    repeating-linear-gradient(90deg, rgba(0,0,0,.0) 0 38px, rgba(60,30,8,.35) 38px 40px),
+    repeating-linear-gradient(180deg, rgba(255,255,255,.04) 0 3px, rgba(0,0,0,.04) 3px 6px),
+    linear-gradient(180deg, #b07a45, #8a5a2e 60%, #6d4421);
+  box-shadow: 0 3px 0 #5a3618, 0 18px 26px rgba(80,60,20,.35), inset 0 0 0 2px rgba(255,220,170,.25);
+}
+body.scene-beach #game.in-play #table .pile small, body.scene-rain #game.in-play #table .pile small { color: #ffe9c9; }
+/* text that sits straight on the white sand: dark, so it can be read */
+body.scene-beach #game { --ink: #3a2a12; color: #3a2a12; }
+body.scene-beach #game .status, body.scene-beach #game .log, body.scene-beach #game .hint, body.scene-beach #game .muted,
+body.scene-beach #game #handNote, body.scene-beach #game .hand-note, body.scene-beach #callCount, body.scene-beach #sortLockNote,
+body.scene-beach #game p, body.scene-beach #game .pile small { color: #3a2a12 !important; text-shadow: 0 1px 0 rgba(255,255,255,.6); }
+body.scene-beach #game button.ghost, body.scene-beach #game .sort-btn { color: #3a2a12; background: rgba(120,90,40,.12); }
+/* --- rain: a dark wet day, rain falling, lightning now and then --- */
+.scene-fx.rain { background: radial-gradient(ellipse at 50% 0%, #4b5d70, transparent 60%), linear-gradient(180deg, #2c3a48 0%, #1d2731 55%, #10161d 100%); }
+.scene-fx.rain .rain { position: absolute; inset: -30% -25%; transform: rotate(12deg); }
+.scene-fx.rain .rain.r1 { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='140'%3E%3Cg stroke='%23cfe3ff' stroke-width='1.4' stroke-linecap='round' opacity='.7'%3E%3Cpath d='M8 4v18M30 50v22M52 20v16M70 88v20M18 96v18M44 110v22M62 2v14M36 76v16'/%3E%3C/g%3E%3C/svg%3E") 0 0 / 80px 140px; animation: rainA .42s linear infinite; }
+.scene-fx.rain .rain.r2 { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='110' height='170'%3E%3Cg stroke='%23b8d4f5' stroke-width='1' stroke-linecap='round' opacity='.5'%3E%3Cpath d='M12 10v12M40 60v14M75 30v12M95 110v14M25 130v12M60 150v12M88 4v10'/%3E%3C/g%3E%3C/svg%3E") 0 0 / 110px 170px; animation: rainB .7s linear infinite; }
+@keyframes rainA { to { background-position: 0 140px; } }
+@keyframes rainB { to { background-position: 0 170px; } }
+.scene-fx.rain .flash { position: absolute; inset: 0; background: #e8f2ff; opacity: 0; }
+.scene-fx.rain .flash.on { animation: lightning 1.1s ease-out; }
+@keyframes lightning { 0% { opacity: 0; } 6% { opacity: .55; } 10% { opacity: .05; } 16% { opacity: .4; } 40% { opacity: 0; } }
+.scene-fx.rain .puddle { position: absolute; border-radius: 50%; border: 1.5px solid rgba(190,215,240,.35); animation: ripple 2.2s ease-out infinite; }
+.scene-fx.rain .p1 { left: 12%; bottom: 18%; width: 40px; height: 12px; }
+.scene-fx.rain .p2 { right: 15%; bottom: 30%; width: 30px; height: 9px; animation-delay: -1.1s; }
+@keyframes ripple { from { transform: scale(.3); opacity: .9; } to { transform: scale(2.2); opacity: 0; } }
+body.scene-rain #game.in-play #table { filter: saturate(.85) brightness(.85); }
+/* the scene choices in the profile */
+.style-pick.scene-pick { font-size: 22px; display: grid; place-items: center; }
+.style-pick.sp-beach { background: linear-gradient(180deg, #129fbf 0 38%, #fff 38% 44%, #f3e9cf 44%) !important; }
+.style-pick.sp-rain { background: repeating-linear-gradient(105deg, transparent 0 6px, rgba(200,225,255,.4) 6px 7px), linear-gradient(#3a4a5c, #141b24) !important; }
+
+/* the live shoreline canvas fills the beach scene */
+.scene-fx.beach canvas.shore { position: absolute; inset: 0; width: 100%; height: 100%; }
+.scene-fx.beach .bird { top: 3vh; }
+.scene-fx.beach .palm { top: auto; bottom: 18vh; right: -18px; }
+/* every middle card sits on the table: a bit more room around the piles, and a shadow on the sand */
+body.scene-beach #game.in-play #table, body.scene-rain #game.in-play #table { padding: 18px 26px 16px; border-radius: 14px; }
+body.scene-beach #game.in-play #table { box-shadow: 0 3px 0 #5a3618, 10px 26px 22px rgba(40,60,60,.38), inset 0 0 0 2px rgba(255,220,170,.25); }
+.sand-puff { position: fixed; z-index: 139; width: 5px; height: 5px; border-radius: 50%; background: #d9c38d; pointer-events: none;
+  animation: puff .75s ease-out forwards; }
+@keyframes puff { to { transform: translate(var(--dx), var(--dy)); opacity: 0; } }
+/* the table grows to hold every middle card (nothing hangs over the edge) */
+body.scene-beach #game.in-play #table, body.scene-rain #game.in-play #table { max-width: calc(100% - 12px); gap: 14px; padding: 14px 16px 12px; }
+
+/* the reasons to register, on the home screen for guests */
+.perks { list-style: none; margin: 10px 0 8px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 7px; text-align: left; }
+.perks li { display: grid; grid-template-columns: 30px 1fr; grid-template-rows: auto auto; column-gap: 6px; align-items: center;
+  padding: 7px 9px; border-radius: 12px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); }
+.perks li span { grid-row: 1 / 3; font-size: 22px; text-align: center; }
+.perks li b { font-size: 12.5px; line-height: 1.2; }
+.perks li small { font-size: 11px; line-height: 1.25; color: var(--muted); }
+.perks-cta { width: 100%; margin-top: 2px; font-size: 16px; padding: 12px; }
