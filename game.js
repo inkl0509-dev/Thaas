@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027k";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027m";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261027k`).then((m) => { AMB = m; m.setThunderHandler(thunderFlash); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261027m`).then((m) => { AMB = m; m.setThunderHandler(thunderFlash); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027k";
-import * as CFG from "./firebase-config.js?v=20261027k";
-import * as C from "./cards.js?v=20261027k";
-import * as P from "./profile.js?v=20261027k";
-import { DV } from "./i18n.js?v=20261027k";
+} from "./store.js?v=20261027m";
+import * as CFG from "./firebase-config.js?v=20261027m";
+import * as C from "./cards.js?v=20261027m";
+import * as P from "./profile.js?v=20261027m";
+import { DV } from "./i18n.js?v=20261027m";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3910,13 +3910,19 @@ function throwCard(cardIds, timedOut = false) {
   const t0 = performance.now();
   const drift = () => {
     if (!pendingThrow || !pendingThrow.run) return;
-    const f = Math.min(1, (performance.now() - t0) / UNDO_MS), m = 0.5 * (1 - Math.cos(f * Math.PI)) * 0.55; // slow, then a bit faster
+    // a long, steady curve out to the side and round towards the middle: always moving, never "stuck"
+    const f = Math.min(1, (performance.now() - t0) / UNDO_MS), m = 0.86 * (0.35 * f + 0.65 * f * f * (3 - 2 * f) * 0.9 + 0.065 * f);
     ids.forEach((id, k) => {
       const el = document.querySelector(`#hand .card[data-id="${CSS.escape(id)}"]`), a = from[id];
       if (!el || !a) return;
+      const dx = goal.x - a.x, dy = goal.y - a.y, len = Math.hypot(dx, dy) || 1;
+      const side = a.x < innerWidth / 2 ? -1 : 1; // swing out on the card's own side
+      const cx = a.x + dx * 0.35 + side * len * 0.55, cy = a.y + dy * 0.55;   // the bend of the curve
+      const x = (1 - m) * (1 - m) * a.x + 2 * (1 - m) * m * cx + m * m * goal.x;
+      const y = (1 - m) * (1 - m) * a.y + 2 * (1 - m) * m * cy + m * m * goal.y;
       el.classList.add("throw-pending");
-      el.style.setProperty("--tpx", ((goal.x - a.x) * m + k * 6) + "px");
-      el.style.setProperty("--tpy", ((goal.y - a.y) * m - 18 * Math.sin(f * Math.PI)) + "px");
+      el.style.setProperty("--tpx", (x - a.x + k * 6) + "px");
+      el.style.setProperty("--tpy", (y - a.y) + "px");
       el.style.setProperty("--tpf", f.toFixed(3));
     });
     requestAnimationFrame(drift);
@@ -4610,7 +4616,7 @@ function renderChallenges(box) {
 // ---------- accounts ----------
 const isRegistered = () => !!auth.currentUser && !auth.currentUser.isAnonymous;
 const myRank = () => (isRegistered() ? P.rankIndex(profile.careerPoints || 0) : 0);
-const myPrefs = () => P.allowedPrefs(profile.prefs, myRank(), isRegistered(), isPremium());
+const myPrefs = () => P.allowedPrefs(profile.prefs, myRank(), isRegistered(), isPremium() || amAdmin); // admins can try everything
 
 // What other players see about me in the room.
 function myEntry(name) {
@@ -5615,7 +5621,8 @@ function renderProfile() {
 
   renderAvatarPicker($("profAvatars"), hasPhoto() ? null : profile.avatar, (a) => savePrefs({ avatar: a, usePhoto: false }));
   const prefs = myPrefs();
-  renderStylePicker("profTables", P.TABLES, prefs.table, "table",
+  renderScenePicker(prefs.table);
+  renderStylePicker("profTables", P.TABLES.filter((o) => !o.scene), prefs.table, "table",
     (o) => `background: radial-gradient(circle at 40% 30%, ${o.c[0]}, ${o.c[2]})`);
   renderStylePicker("profDecks", P.DECKS, prefs.deck, "deck", (o) => `background: ${o.bg}`);
   renderStylePicker("profFonts", P.SHOUT_FONTS, prefs.font, "font",
@@ -5628,6 +5635,30 @@ function renderProfile() {
   $("profileModal").querySelectorAll(".reg-only").forEach((x) => (x.hidden = !reg));
 }
 
+// 🏖️ / 🌧️ scenes get their own big tiles with names, so they're easy to find
+function renderScenePicker(current) {
+  const box = $("profScenes");
+  if (!box) return;
+  box.innerHTML = "";
+  const rank = myRank(), free = P.TABLES.find((o) => !o.scene);
+  for (const o of [{ id: free.id, name: "Normal table", icon: "🟢", plain: true }, ...P.TABLES.filter((x) => x.scene)]) {
+    const ok = o.plain || (isRegistered() && (o.rank <= rank || isPremium() || amAdmin));
+    const on = o.plain ? !P.byId(P.TABLES, current).scene : o.id === current;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "scene-tile" + (o.scene ? " sp-" + o.scene : " plain") + (on ? " on" : "") + (ok ? "" : " locked");
+    b.innerHTML = "<span></span><b></b><small></small>";
+    b.querySelector("span").textContent = o.icon;
+    b.querySelector("b").textContent = o.name;
+    b.querySelector("small").textContent = o.plain ? "no scene" : ok ? (on ? "✓ in use" : "tap to use") : `🔒 ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name} or 💎`;
+    b.onclick = () => {
+      if (!isRegistered()) return toast("Register to use table scenes");
+      if (!ok) return toast(`🔒 ${o.name} unlocks at ${P.RANKS[o.rank].icon} ${P.RANKS[o.rank].name} rank (${P.RANKS[o.rank].at} career points) · or with 💎 Premium`);
+      savePrefs({ prefs: { table: o.id } });
+    };
+    box.append(b);
+  }
+}
 function renderStylePicker(boxId, list, current, key, styleFor, label = "") {
   const box = $(boxId);
   box.innerHTML = "";
@@ -6569,7 +6600,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027k";
+const APP_VERSION = "20261027m";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
