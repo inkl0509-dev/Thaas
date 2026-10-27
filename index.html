@@ -33,7 +33,7 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thaana:wght@700&family=Fraunces:wght@600;800&family=Bungee&family=Inter:wght@400;600&family=Bangers&family=Lobster&family=Permanent+Marker&family=Press+Start+2P&family=Monoton&family=Noto+Sans+Thaana:wght@700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20261027d">
+  <link rel="stylesheet" href="style.css?v=20261027i">
 </head>
 <body>
   <!-- LOBBY -->
@@ -73,7 +73,20 @@
           <button id="registerBtn" class="primary small" data-i18n="register">Register</button>
           <button id="signInBtn" class="ghost small" data-i18n="signin">Sign in</button>
         </div>
-        <small class="guest-why">Guests can play in Aammu Jagaha. Register to make your own holhuashi, and get an avatar, ranks, badges and table styles.</small>
+        <small class="guest-why">Guests can play in Aammu Jagaha. Register free, it takes less than a minute, and you get:</small>
+        <ul class="perks">
+          <li><span>🌴</span><b>Your own holhuashi</b><small>A private table for your friends, invite only</small></li>
+          <li><span>🏆</span><b>Ranks &amp; points</b><small>Climb from 🃏 Rookie to 👑 Legend</small></li>
+          <li><span>🎖️</span><b>Badges &amp; challenges</b><small>New daily challenges to win</small></li>
+          <li><span>🏖️</span><b>Beach &amp; rain tables</b><small>Waves, birds, rain and thunder</small></li>
+          <li><span>🃏</span><b>Your own style</b><small>Card backs, table colours, DIGU shout</small></li>
+          <li><span>🦊</span><b>Avatar or photo</b><small>So friends know it's you</small></li>
+          <li><span>🏅</span><b>Tournaments</b><small>Play leagues and win cups</small></li>
+          <li><span>💾</span><b>Never lose progress</b><small>Same account on phone and computer</small></li>
+          <li><span>🔔</span><b>Notifications</b><small>Know when friends join your table</small></li>
+          <li><span>📊</span><b>Your stats</b><small>Games, wins and holhuashi leaderboard</small></li>
+        </ul>
+        <button type="button" class="primary perks-cta" onclick="document.getElementById('registerBtn').click()">✨ Register free</button>
       </div>
       <div id="accountUser" class="account-row" hidden>
         <span id="acctAvatar" class="avatar"></span>
@@ -546,6 +559,6 @@
     <div id="tgNext" class="tg-spot next"><span class="tg-line"></span><span class="tg-name"></span></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script type="module" src="game.js?v=20261027d"></script>
+  <script type="module" src="game.js?v=20261027i"></script>
 </body>
 </html>
