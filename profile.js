@@ -165,6 +165,8 @@ export const TABLES = [
   // 🏖️ Scenes: the whole screen becomes a place, with its own sounds. Unlocked by rank (or 💎 Premium).
   { id: "beachside", name: "Beach (waves & birds)", rank: 1, scene: "beach", icon: "🏖️", c: ["#f7efd9", "#efe2bf", "#e2cf9c"] },
   { id: "rainy",     name: "Rainy day",             rank: 2, scene: "rain",  icon: "🌧️", c: ["#3a4a5c", "#26323f", "#141b24"] },
+  { id: "seabed",    name: "Under the sea",         rank: 3, scene: "pool",  icon: "🐠", c: ["#1aa6c4", "#0b6f93", "#063d5a"] },
+  { id: "rainnight", name: "Rainy night at home",   rank: 4, scene: "window", icon: "🏠", c: ["#3a2a1e", "#2a1d14", "#160f0a"] },
   // 💎 Premium tables
   { id: "sandbank", name: "Sandbank",      rank: 0, premium: true, c: ["#3fc6c9", "#1a9aa6", "#0b6e7c"] },
   { id: "sunset",   name: "Island sunset", rank: 0, premium: true, c: ["#c8553d", "#8f2d56", "#4a1942"] },
