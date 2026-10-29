@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029g";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029j";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261029g`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261029j`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261029g";
-import * as CFG from "./firebase-config.js?v=20261029g";
-import * as C from "./cards.js?v=20261029g";
-import * as P from "./profile.js?v=20261029g";
-import { DV } from "./i18n.js?v=20261029g";
+} from "./store.js?v=20261029j";
+import * as CFG from "./firebase-config.js?v=20261029j";
+import * as C from "./cards.js?v=20261029j";
+import * as P from "./profile.js?v=20261029j";
+import { DV } from "./i18n.js?v=20261029j";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3914,8 +3914,7 @@ function glideStart(id) {
   document.body.append(clone);
   el.classList.add("glide-src");
   const g = { id, el, clone, inner, face, back, down: false, w0, h0, a, rot0, x: a.x, y: a.y, sc: 1, rot: rot0 };
-  glideTurn(g, true);
-  return g;
+  return g; // (stays face up on my own screen)
 }
 // turn the moving card over (face down while it can still be taken back; face up when it lands)
 function glideTurn(g, down) {
@@ -3998,20 +3997,22 @@ function throwCard(cardIds, timedOut = false) {
   const t0 = performance.now();
   const drift = () => {
     if (!pendingThrow || !pendingThrow.run) return;
-    // a normal throw towards the middle, face down, slowly enough to take it back
-    const f = Math.min(1, (performance.now() - t0) / UNDO_MS);
-    const u = 0.85 * (0.55 * f + 0.45 * f * f); // keeps moving the whole time, a touch faster at the end
+    // a normal throw at normal speed: face up on my screen, it lands on the pile and waits there until the
+    // take-back second is over (only then do the other players see it)
+    const f = Math.min(1, (performance.now() - t0) / 420);
+    const u = 1 - Math.pow(1 - f, 3);
     glides.forEach((g, k) => {
       const dx = goal.x - g.a.x, dy = goal.y - g.a.y, len = Math.hypot(dx, dy) || 1;
       const side = g.a.x < innerWidth / 2 ? -1 : 1;
-      const cx = g.a.x + dx * 0.5 + side * len * 0.12, cy = g.a.y + dy * 0.5 - 30; // a normal throw: a gentle arc
+      const cx = g.a.x + dx * 0.5 + side * len * 0.1, cy = g.a.y + dy * 0.5 - 26; // a normal throw: a gentle arc
       g.x = (1 - u) * (1 - u) * g.a.x + 2 * (1 - u) * u * cx + u * u * goal.x + k * 6;
       const half = (g.w0 * Math.max(1, g.sc)) / 2 + 8; // never off the edge of the screen
       g.x = Math.max(half, Math.min(innerWidth - half, g.x));
       g.y = (1 - u) * (1 - u) * g.a.y + 2 * (1 - u) * u * cy + u * u * goal.y;
       g.sc = 1 + (size.w / g.w0 - 1) * u;
-      g.rot = g.rot0 * (1 - u);
+      g.rot = g.rot0 * (1 - u) + (k - (glides.length - 1) / 2) * 6 * u;
       g.clone.style.transform = glideCss(g);
+      if (f >= 1) g.clone.classList.add("waiting"); // resting on the pile, still mine to take back
       // the hand can redraw meanwhile: keep the real card hidden
       document.querySelectorAll(`#hand .card[data-id="${CSS.escape(g.id)}"]`).forEach((e) => e.classList.add("glide-src"));
     });
@@ -6614,23 +6615,35 @@ function cardMoves(prev) {
 const SHUFFLE_MS = 5200;
 let shuffleBusyUntil = 0;
 const shuffling = () => Date.now() < shuffleBusyUntil;
-// 🃏 While the new middle pile is being made, two big hands shuffle the cards over the middle (a riffle:
-// cards falling from both hands into the middle), then the new pile is put down.
+// 🪄 While the new middle pile is being made, a magic wand floats beside it, points at the cards and
+// waves, sparkles flying from its tip, while the cards shuffle themselves.
 function shuffleWaiter() {
   let el = $("shuffleWait");
   const on = !!room && room.status === "playing" && !$("game").hidden && shuffling();
-  if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); setTimeout(() => el.remove(), 450); } return; }
-  if (!el) {
-    el = Object.assign(document.createElement("div"), { id: "shuffleWait", className: "dealer" });
-    // two big hands, each holding half of the cards, riffling them together into the middle
-    const half = (side) => `<div class="dl-half ${side}">${'<i class="card back"></i>'.repeat(4)}<span class="dl-bighand">${side === "l" ? "🫱" : "🫲"}</span><span class="dl-thumb">${side === "l" ? "🫱" : "🫲"}</span></div>`;
-    const fall = Array.from({ length: 10 }, (_, k) => `<i class="card back dl-drop ${k % 2 ? "r" : "l"}" style="--k:${k}"></i>`).join("");
-    el.innerHTML = `${half("l")}${half("r")}<div class="dl-mid">${fall}</div>`;
-    document.body.append(el);
-  }
-  // he stands behind the middle pile, his hands right over it
+  if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); clearInterval(el._spark); setTimeout(() => el.remove(), 450); } return; }
   const d = $("deck").getBoundingClientRect();
-  Object.assign(el.style, { left: d.left + d.width / 2 + "px", top: d.top + d.height * 0.55 + "px" });
+  const right = innerWidth - d.right > d.left; // the side with more room
+  if (!el) {
+    el = Object.assign(document.createElement("div"), { id: "shuffleWait", className: "wand-fx" });
+    el.innerHTML = '<div class="wand"><i class="wand-tip"></i><i class="wand-glow"></i></div>';
+    document.body.append(el);
+    // sparkles from the tip of the wand, flying onto the cards
+    el._spark = setInterval(() => {
+      const tip = el.querySelector(".wand-tip")?.getBoundingClientRect(), dk = $("deck").getBoundingClientRect();
+      if (!tip) return;
+      for (let i = 0; i < 2; i++) {
+        const sp = Object.assign(document.createElement("i"), { className: "wand-spark", textContent: ["✨", "⭐", "✦", "✧"][Math.floor(Math.random() * 4)] });
+        const x0 = tip.left + tip.width / 2, y0 = tip.top + tip.height / 2;
+        Object.assign(sp.style, { left: x0 + "px", top: y0 + "px", fontSize: 10 + Math.random() * 10 + "px" });
+        sp.style.setProperty("--dx", dk.left + dk.width * Math.random() - x0 + "px");
+        sp.style.setProperty("--dy", dk.top + dk.height * Math.random() - y0 + "px");
+        document.body.append(sp);
+        setTimeout(() => sp.remove(), 900);
+      }
+    }, 120);
+  }
+  el.classList.toggle("left", !right);
+  Object.assign(el.style, { left: (right ? d.right + 18 : d.left - 18) + "px", top: d.top - 10 + "px" });
 }
 setInterval(shuffleWaiter, 150);
 // the newest move my screen had already shown before this update
@@ -6667,11 +6680,11 @@ function rebuildDeck(old, style = 0) {
     face.animate(kf(0), opt);
     back.animate(kf(180), opt).onfinish = () => { face.remove(); back.remove(); };
   }
-  // 2) the dealer shuffles them by hand over the middle (see shuffleWaiter), then puts the new pile down
-  setTimeout(() => {
+  // 2) a magic wand points at them and they shuffle themselves (see shuffleWaiter): riffle, spring, riffle
+  setTimeout(() => magicShuffle(to, w, h, style, () => {
     to.classList.remove("rebuilding", "settle"); void to.offsetWidth; to.classList.add("settle");
     sparkleAt(to);
-  }, Math.max(n * 90 + 600, SHUFFLE_MS - 500));
+  }), n * 90 + 600);
 }
 const SHUFFLE_STYLES = 5;
 function magicShuffle(deckEl, w, h, style, done) {
@@ -7032,7 +7045,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261029g";
+const APP_VERSION = "20261029j";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
