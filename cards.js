@@ -193,9 +193,21 @@ export const DIGU_BONUS = 100;
 export const NO_SET_PENALTY = -100;
 const sum = (ids) => ids.reduce((a, c) => a + points(c), 0);
 
+// 💯 "1000 DIGU": all ten cards of the DIGU in one suit, in one unbroken run (A–10, 2–J, 3–Q, … ;
+// A can also come after K). That DIGU scores 1000.
+export const THOUSAND = 1000;
+export function isThousandDigu(ids) {
+  if (!ids || ids.length !== HAND_SIZE) return false;
+  const cs = ids.map(parse);
+  if (!cs.every((c) => c.s === cs[0].s)) return false;
+  const rs = cs.map((c) => c.r).sort((a, b) => a - b);
+  if (consecutive(rs)) return true;
+  return rs[0] === 1 && consecutive([...rs.slice(1), 14]);
+}
 export function roundScore(cards, winnerSets = null) {
   if (winnerSets) {
     const setPts = sum(winnerSets.flat());
+    if (isThousandDigu(winnerSets.flat())) return { pts: THOUSAND, setPts, leftPts: 0, sets: winnerSets, leftover: [], digu: true, thousand: true };
     return { pts: DIGU_BONUS + setPts, setPts, leftPts: 0, sets: winnerSets, leftover: [], digu: true };
   }
   // the arrangement leaving the fewest leftover points also gives the highest score
@@ -740,7 +752,7 @@ export function diguBestAfter(cards, banned = null) {
   return best;
 }
 
-// ======================= BABBUSH =======================
+// ======================= BABUSH =======================
 // 2–6 players, 4 face-down cards each in a row. Card values: A = 1, 2–10 = face value except 8 = 0,
 // J/Q/K = 10. Lowest count wins. J = look at any one face-down card, Q = switch any two cards,
 // K = lock a card face up (or unlock a locked one).
