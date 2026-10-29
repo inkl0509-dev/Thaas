@@ -2679,3 +2679,51 @@ body.scene-window #game.in-play #table .pile small { color: #ffe3c2; }
 .dl-half.l .dl-bighand, .dl-half.l .dl-thumb { left: -50px; }
 .dl-half.r .dl-bighand, .dl-half.r .dl-thumb { right: -50px; }
 .dealer { width: 230px; }
+
+/* my thrown card resting on the pile during the take-back second: a soft breathing glow */
+.glide.waiting .gl-in > .card { animation: waitGlow 1s ease-in-out infinite alternate; }
+@keyframes waitGlow { from { box-shadow: 0 6px 14px rgba(0,0,0,.35); } to { box-shadow: 0 6px 14px rgba(0,0,0,.35), 0 0 14px rgba(255,255,255,.45); } }
+
+/* 🃏 real-looking hands shuffling the new middle pile */
+.hands-shuffle { position: fixed; z-index: 210; width: 0; height: 0; pointer-events: none; animation: hsIn .4s ease-out both; }
+.hands-shuffle.bye { animation: hsOut .45s ease-in forwards; }
+@keyframes hsIn { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: none; } }
+@keyframes hsOut { to { opacity: 0; transform: translateY(40px); } }
+.hs-half { position: absolute; top: -66px; width: 120px; height: 120px; }
+.hs-half.r { left: 4px; animation: hsR .9s ease-in-out infinite; }
+.hs-half.l { right: 4px; transform: scaleX(-1); animation: hsL .9s ease-in-out infinite; }
+.hs-svg { position: absolute; inset: 0; width: 120px; height: 120px; overflow: visible; filter: drop-shadow(0 6px 8px rgba(0,0,0,.35)); }
+.hs-svg.over { filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }
+.hs-stack { position: absolute; left: 8px; top: 24px; width: 48px; height: 68px; transform: rotate(-8deg); }
+.hs-stack .card, .hs-mid .card { position: absolute; left: 0; top: 0; width: 48px; height: 68px; margin: 0; border-radius: 5px; box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+.hs-stack .card:nth-child(2) { top: -1.5px; left: .5px; } .hs-stack .card:nth-child(3) { top: -3px; left: 1px; }
+.hs-stack .card:nth-child(4) { top: -4.5px; left: 1.5px; } .hs-stack .card:nth-child(5) { top: -6px; left: 2px; }
+.hs-thumb { transform-box: fill-box; transform-origin: 90% 50%; animation: hsThumb .45s ease-in-out infinite alternate; }
+@keyframes hsThumb { from { transform: rotate(0deg); } to { transform: rotate(7deg) translateY(-2px); } }
+@keyframes hsR { 0%, 100% { transform: translateX(0) rotate(0deg); } 50% { transform: translateX(-6px) rotate(-4deg); } }
+@keyframes hsL { 0%, 100% { transform: scaleX(-1) translateX(0) rotate(0deg); } 50% { transform: scaleX(-1) translateX(-6px) rotate(-4deg); } }
+/* the cards dropping alternately from each thumb into the middle */
+.hs-mid { position: absolute; left: -24px; top: -40px; width: 48px; height: 68px; }
+.hs-drop { opacity: 0; animation: hsDrop .9s ease-in infinite; animation-delay: calc(var(--k) * .075s); }
+.hs-drop.l { --sx: -40px; --r0: 10deg; } .hs-drop.r { --sx: 40px; --r0: -10deg; }
+@keyframes hsDrop { 0% { transform: translate(var(--sx), -8px) rotate(var(--r0)); opacity: 1; } 45% { transform: translate(0, 0) rotate(0deg); opacity: 1; } 100% { transform: translate(0, 0); opacity: 1; } }
+
+/* 🪄 the magic wand that shuffles the new middle pile */
+.wand-fx { position: fixed; z-index: 215; width: 0; height: 0; pointer-events: none; animation: wandIn .4s cubic-bezier(.3,1.5,.5,1) both; }
+.wand-fx.bye { animation: wandOut .4s ease-in forwards; }
+@keyframes wandIn { from { opacity: 0; transform: translateY(-20px) scale(.6); } to { opacity: 1; transform: none; } }
+@keyframes wandOut { to { opacity: 0; transform: translateY(-20px) scale(.6); } }
+.wand { position: absolute; left: 0; top: 0; width: 9px; height: 96px; border-radius: 5px;
+  background: linear-gradient(180deg, #fff 0 16%, #15161a 16% 86%, #fff 86%); box-shadow: 0 6px 12px rgba(0,0,0,.45), inset 1px 0 0 rgba(255,255,255,.25);
+  transform-origin: 50% 85%; transform: rotate(-35deg); animation: wandWave 1.1s ease-in-out infinite; }
+.wand-fx.left .wand { transform: rotate(35deg); animation-name: wandWaveL; }
+.wand-tip { position: absolute; left: 50%; top: 0; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #fffbe6; box-shadow: 0 0 10px 4px rgba(255,236,150,.9); }
+.wand-glow { position: absolute; left: 50%; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,240,170,.75), transparent 65%); animation: wandPulse .5s ease-in-out infinite alternate; }
+@keyframes wandWave { 0%, 100% { transform: rotate(-35deg); } 30% { transform: rotate(-58deg); } 60% { transform: rotate(-22deg); } }
+@keyframes wandWaveL { 0%, 100% { transform: rotate(35deg); } 30% { transform: rotate(58deg); } 60% { transform: rotate(22deg); } }
+@keyframes wandPulse { from { transform: scale(.8); opacity: .7; } to { transform: scale(1.25); opacity: 1; } }
+.wand-spark { position: fixed; z-index: 214; pointer-events: none; color: #ffe27a; text-shadow: 0 0 6px #fff3b0; font-style: normal;
+  animation: sparkFly .9s ease-out forwards; }
+@keyframes sparkFly { 0% { transform: translate(-50%, -50%) scale(.4); opacity: 1; } 70% { opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1) rotate(160deg); opacity: 0; } }
