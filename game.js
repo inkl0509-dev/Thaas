@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029c";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029g";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261029c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261029g`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261029c";
-import * as CFG from "./firebase-config.js?v=20261029c";
-import * as C from "./cards.js?v=20261029c";
-import * as P from "./profile.js?v=20261029c";
-import { DV } from "./i18n.js?v=20261029c";
+} from "./store.js?v=20261029g";
+import * as CFG from "./firebase-config.js?v=20261029g";
+import * as C from "./cards.js?v=20261029g";
+import * as P from "./profile.js?v=20261029g";
+import { DV } from "./i18n.js?v=20261029g";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3897,16 +3897,35 @@ function glideStart(id) {
   if (!el) return null;
   const r = el.getBoundingClientRect(), w0 = el.offsetWidth || r.width, h0 = el.offsetHeight || r.height;
   const rot0 = +(getComputedStyle(el).getPropertyValue("--rot").match(/-?[\d.]+/)?.[0] || 0);
-  const clone = el.cloneNode(true);
-  el.querySelectorAll("*").forEach((src, k) => { const d = clone.querySelectorAll("*")[k]; if (d) d.style.fontSize = getComputedStyle(src).fontSize; });
-  clone.classList.remove("selected", "throw-pending", "new", "blocked", "sending");
-  clone.classList.add("glide");
+  // the moving card: its face (a copy of my card) and its back; it turns face down as it leaves my hand
+  const face = el.cloneNode(true);
+  el.querySelectorAll("*").forEach((src, k) => { const d = face.querySelectorAll("*")[k]; if (d) d.style.fontSize = getComputedStyle(src).fontSize; });
+  face.classList.remove("selected", "throw-pending", "new", "blocked", "sending", "dragging");
+  const back = Object.assign(document.createElement("div"), { className: "card back" });
+  for (const c of [face, back]) Object.assign(c.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%", margin: "0", transform: "none", transition: "none", animation: "none" });
+  back.style.visibility = "hidden";
+  const inner = Object.assign(document.createElement("div"), { className: "gl-in" });
+  inner.append(face, back);
+  const clone = Object.assign(document.createElement("div"), { className: "glide" });
+  clone.append(inner);
   const a = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   Object.assign(clone.style, { position: "fixed", left: a.x - w0 / 2 + "px", top: a.y - h0 / 2 + "px", width: w0 + "px", height: h0 + "px",
-    margin: "0", zIndex: 160, pointerEvents: "none", transformOrigin: "50% 50%", transform: `rotate(${rot0}deg)`, transition: "none", animation: "none" });
+    margin: "0", zIndex: 160, pointerEvents: "none", transformOrigin: "50% 50%", transform: `rotate(${rot0}deg)` });
   document.body.append(clone);
   el.classList.add("glide-src");
-  return { id, el, clone, w0, h0, a, rot0, x: a.x, y: a.y, sc: 1, rot: rot0 };
+  const g = { id, el, clone, inner, face, back, down: false, w0, h0, a, rot0, x: a.x, y: a.y, sc: 1, rot: rot0 };
+  glideTurn(g, true);
+  return g;
+}
+// turn the moving card over (face down while it can still be taken back; face up when it lands)
+function glideTurn(g, down) {
+  if (g.down === down) return;
+  g.down = down;
+  g.inner.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: 110, easing: "ease-in" }).onfinish = () => {
+    g.face.style.visibility = down ? "hidden" : "visible";
+    g.back.style.visibility = down ? "visible" : "hidden";
+    g.inner.animate([{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], { duration: 120, easing: "ease-out" });
+  };
 }
 const glideCss = (g) => `translate(${g.x - g.a.x}px, ${g.y - g.a.y}px) rotate(${g.rot}deg) scale(${g.sc})`;
 function pileCardSize() { // how big a card is on the pile right now (trick games use smaller cards)
@@ -3927,6 +3946,7 @@ function glideBack(g) {
   const to = r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : g.a;
   const from = glideCss(g);
   Object.assign(g, { x: to.x, y: to.y, sc: 1, rot: g.rot0 });
+  glideTurn(g, false);
   const anim = g.clone.animate([{ transform: from }, { transform: glideCss(g) }], { duration: 280, easing: "cubic-bezier(.3,1.2,.5,1)", fill: "forwards" });
   anim.onfinish = () => { g.clone.remove(); document.querySelectorAll(`#hand .card[data-id="${CSS.escape(g.id)}"]`).forEach((e) => e.classList.remove("glide-src")); };
 }
@@ -3943,6 +3963,7 @@ function finishGlide(id) {
     const b = (t || $("discardPile")).getBoundingClientRect(), w = t?.offsetWidth || g.w0 * g.sc;
     const rot = +(((t?.style.getPropertyValue("--t") || "").match(/rotate\((-?[\d.]+)deg/) || [])[1] || 0);
     const from = glideCss(g);
+    glideTurn(g, false); // time's up: it turns face up as it lands
     Object.assign(g, { x: b.left + b.width / 2, y: b.top + b.height / 2, sc: w / g.w0, rot });
     const anim = g.clone.animate([{ transform: from }, { transform: glideCss(g) }], { duration: 260, easing: "cubic-bezier(.3,.9,.4,1)", fill: "forwards" });
     anim.onfinish = () => { landed(id); g.clone.remove(); };
@@ -3977,13 +3998,13 @@ function throwCard(cardIds, timedOut = false) {
   const t0 = performance.now();
   const drift = () => {
     if (!pendingThrow || !pendingThrow.run) return;
-    // a long, steady curve out to the side and round towards the middle: always moving
+    // a normal throw towards the middle, face down, slowly enough to take it back
     const f = Math.min(1, (performance.now() - t0) / UNDO_MS);
     const u = 0.85 * (0.55 * f + 0.45 * f * f); // keeps moving the whole time, a touch faster at the end
     glides.forEach((g, k) => {
       const dx = goal.x - g.a.x, dy = goal.y - g.a.y, len = Math.hypot(dx, dy) || 1;
       const side = g.a.x < innerWidth / 2 ? -1 : 1;
-      const cx = g.a.x + dx * 0.35 + side * len * 0.4, cy = g.a.y + dy * 0.55;
+      const cx = g.a.x + dx * 0.5 + side * len * 0.12, cy = g.a.y + dy * 0.5 - 30; // a normal throw: a gentle arc
       g.x = (1 - u) * (1 - u) * g.a.x + 2 * (1 - u) * u * cx + u * u * goal.x + k * 6;
       const half = (g.w0 * Math.max(1, g.sc)) / 2 + 8; // never off the edge of the screen
       g.x = Math.max(half, Math.min(innerWidth - half, g.x));
@@ -4507,7 +4528,7 @@ function renderResults() {
     const head = document.createElement("div");
     head.className = "result-head";
     const name = document.createElement("strong");
-    name.textContent = row.name + (row.uid === uid ? " (you)" : "") + (row.digu ? " · DIGU" : "") + (row.bondi && row.place === 1 ? " · 🏆" : "")
+    name.textContent = row.name + (row.uid === uid ? " (you)" : "") + (row.thousand ? " · 💯 1000 DIGU!" : row.digu ? " · DIGU" : "") + (row.bondi && row.place === 1 ? " · 🏆" : "")
       + (row.how === "won" || row.how === "caught" ? (row.bb ? " · BABUSH" : " · CALL") : "");
     const pts = document.createElement("span");
     pts.className = "round-pts";
@@ -6100,6 +6121,8 @@ function saveName() {
 }
 
 // The DIGU shout in a player's chosen font and colour.
+// the winning hand was a 💯 1000 DIGU (ten in a row, one suit)
+const thousandOf = (r) => gameOf(r) === "digu" && Array.isArray(r?.winnerSets) && C.isThousandDigu(r.winnerSets.flatMap((x) => String(x).split(",")));
 function shoutEl(style, text = "DIGU!") {
   const f = P.byId(P.SHOUT_FONTS, style?.font);
   const c = P.byId(P.SHOUT_COLORS, style?.color);
@@ -6221,7 +6244,7 @@ function renderHeap() {
     if (digu) front.append(gameOf(room) === "digu" ? Object.assign(document.createElement("div"), { className: "card back" }) : cardEl(digu)); // lies face down
     const back = document.createElement("div");
     back.className = "flip-back";
-    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABUSH!" : "DIGU!"));
+    back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABUSH!" : thousandOf(room) ? "1000 DIGU!" : "DIGU!"));
     inner.append(front, back);
     f.append(inner);
     pile.append(f);
@@ -6591,28 +6614,23 @@ function cardMoves(prev) {
 const SHUFFLE_MS = 5200;
 let shuffleBusyUntil = 0;
 const shuffling = () => Date.now() < shuffleBusyUntil;
-// ✋ While the new middle pile is being made, a big animated "wait" hand and a little speech bubble
-// sit by the middle pile (Google's free animated Noto emoji; a plain one if it can't load).
-const WAIT_EMOJI = "https://fonts.gstatic.com/s/e/notoemoji/latest/270b/512.webp", WAIT_CLOCK = "https://fonts.gstatic.com/s/e/notoemoji/latest/23f3/512.webp";
-try { new Image().src = WAIT_EMOJI; new Image().src = WAIT_CLOCK; } catch {}
+// 🃏 While the new middle pile is being made, two big hands shuffle the cards over the middle (a riffle:
+// cards falling from both hands into the middle), then the new pile is put down.
 function shuffleWaiter() {
   let el = $("shuffleWait");
   const on = !!room && room.status === "playing" && !$("game").hidden && shuffling();
-  if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); setTimeout(() => el.remove(), 400); } return; }
+  if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); setTimeout(() => el.remove(), 450); } return; }
   if (!el) {
-    el = Object.assign(document.createElement("div"), { id: "shuffleWait", className: "shuffle-wait" });
-    el.innerHTML = `<div class="sw-hand"></div><div class="sw-bubble"><span class="sw-clock"></span><b>Wait a moment</b><small>shuffling a new pile</small></div>`;
-    const pic = (src, alt, box) => {
-      const img = Object.assign(new Image(), { alt, src });
-      img.onerror = () => img.replaceWith(Object.assign(document.createElement("span"), { className: "sw-text", textContent: alt }));
-      el.querySelector(box).append(img);
-    };
-    pic(WAIT_EMOJI, "✋", ".sw-hand"); pic(WAIT_CLOCK, "⏳", ".sw-clock");
+    el = Object.assign(document.createElement("div"), { id: "shuffleWait", className: "dealer" });
+    // two big hands, each holding half of the cards, riffling them together into the middle
+    const half = (side) => `<div class="dl-half ${side}">${'<i class="card back"></i>'.repeat(4)}<span class="dl-bighand">${side === "l" ? "🫱" : "🫲"}</span><span class="dl-thumb">${side === "l" ? "🫱" : "🫲"}</span></div>`;
+    const fall = Array.from({ length: 10 }, (_, k) => `<i class="card back dl-drop ${k % 2 ? "r" : "l"}" style="--k:${k}"></i>`).join("");
+    el.innerHTML = `${half("l")}${half("r")}<div class="dl-mid">${fall}</div>`;
     document.body.append(el);
   }
-  // just above the middle of the table
-  const t = ($("table") || $("deck")).getBoundingClientRect();
-  Object.assign(el.style, { left: t.left + t.width / 2 + "px", top: Math.max(8, t.top - 6) + "px" });
+  // he stands behind the middle pile, his hands right over it
+  const d = $("deck").getBoundingClientRect();
+  Object.assign(el.style, { left: d.left + d.width / 2 + "px", top: d.top + d.height * 0.55 + "px" });
 }
 setInterval(shuffleWaiter, 150);
 // the newest move my screen had already shown before this update
@@ -6649,11 +6667,11 @@ function rebuildDeck(old, style = 0) {
     face.animate(kf(0), opt);
     back.animate(kf(180), opt).onfinish = () => { face.remove(); back.remove(); };
   }
-  // 2) a magician's shuffle in the middle: riffle, spring the cards in an arc, riffle again
-  setTimeout(() => magicShuffle(to, w, h, style, () => {
+  // 2) the dealer shuffles them by hand over the middle (see shuffleWaiter), then puts the new pile down
+  setTimeout(() => {
     to.classList.remove("rebuilding", "settle"); void to.offsetWidth; to.classList.add("settle");
     sparkleAt(to);
-  }), n * 90 + 600);
+  }, Math.max(n * 90 + 600, SHUFFLE_MS - 500));
 }
 const SHUFFLE_STYLES = 5;
 function magicShuffle(deckEl, w, h, style, done) {
@@ -7014,7 +7032,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261029c";
+const APP_VERSION = "20261029g";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7767,7 +7785,7 @@ function playShout(r) {
   const rays = document.createElement("div");
   rays.className = "fx-rays";
   const callWord = gameOf(r) === "babbush" ? "BABUSH" : "CALL";
-  const word = shoutEl(r.diguStyle, call ? callWord + "!" : "DIGU!");
+  const word = shoutEl(r.diguStyle, call ? callWord + "!" : thousandOf(r) ? "1000 DIGU!" : "DIGU!");
   word.classList.add("fx-word");
   const who = document.createElement("div");
   who.className = "fx-who";
@@ -8097,7 +8115,9 @@ document.addEventListener("pointerup", (e) => {
     else draw(d.src);
     return;
   }
-  const t = dropTarget(e, d);
+  let t = dropTarget(e, d);
+  // a card from the middle pile that has already turned over (I've seen it) can't be put back
+  if (d.src === "deck" && d.flipped && d.face && t !== "draw" && canDraw()) t = "draw";
   if (t === "throw") throwCard(isCall() && callSel.has(d.id) ? [...callSel] : [d.id]);
   else if (d.src === "hand" && d.moved && needsDrawFirst() && e.clientY < $("hand").getBoundingClientRect().top - 70) takeFirstHint();
   else if (t === "draw") {
