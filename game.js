@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261027t";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029c";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261027t`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261029c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261027t";
-import * as CFG from "./firebase-config.js?v=20261027t";
-import * as C from "./cards.js?v=20261027t";
-import * as P from "./profile.js?v=20261027t";
-import { DV } from "./i18n.js?v=20261027t";
+} from "./store.js?v=20261029c";
+import * as CFG from "./firebase-config.js?v=20261029c";
+import * as C from "./cards.js?v=20261029c";
+import * as P from "./profile.js?v=20261029c";
+import { DV } from "./i18n.js?v=20261029c";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3608,7 +3608,9 @@ function previewThrow(ids) {
   sendingIds = ids;
   setTimeout(() => sparkleAt(pile), 560 + ids.length * 70);
 }
+let drawnByDrag = false;
 function previewDraw(from, card) {
+  if (drawnByDrag) { drawnByDrag = false; setTimeout(() => sparkleAt($("hand")), 60); return; } // it's already in my hand, where I dropped it
   const src = from === "discard" ? $("discardPile") : $("deck");
   flyCard(src, $("hand"), from === "discard" ? card : null, { back: from !== "discard" });
   setTimeout(() => sparkleAt($("hand")), 520);
@@ -3648,9 +3650,15 @@ function pendingHand() {
   for (let i = pendingMoves.length - 1; i >= 0; i--) if (pendingMoves[i].hand) return pendingMoves[i].hand;
   return null;
 }
+let pendingInsert = null; // a card I dragged in from the middle goes where I dropped it, not at the end
 function setHandCards(cards) {
   const added = cards.filter((c) => !hand.includes(c));
-  hand = [...hand.filter((c) => cards.includes(c)), ...added];
+  const kept = hand.filter((c) => cards.includes(c));
+  if (pendingInsert && added.length === 1 && Date.now() < pendingInsert.until) {
+    const at = Math.max(0, Math.min(kept.length, pendingInsert.at));
+    hand = [...kept.slice(0, at), added[0], ...kept.slice(at)];
+    pendingInsert = null;
+  } else hand = [...kept, ...added];
   if (!hand.includes(selected)) selected = null;
 }
 function moveBatch() {
@@ -3956,6 +3964,7 @@ function throwCard(cardIds, timedOut = false) {
   if (timedOut) { cancelPendingThrow(true); return doThrowCard(ids, true); }
   if (pendingThrow) return; // one throw at a time
   if (throwProblem(ids)) return doThrowCard(ids, false);
+  if (gameOf(room) === "digu" && C.findWinningLayout(hand.filter((c) => !ids.includes(c)))) return doThrowCard(ids, false); // DIGU! slam it down
   const key = `${roomId}|${room.round}|${room.moveId || 0}`;
   const ui = Object.assign(document.createElement("button"), { type: "button", className: "undo-throw" });
   ui.innerHTML = '<span>↩ Take back</span><i></i>';
@@ -6209,7 +6218,7 @@ function renderHeap() {
     inner.className = "flip-inner";
     const front = document.createElement("div");
     front.className = "flip-front";
-    if (digu) front.append(cardEl(digu));
+    if (digu) front.append(gameOf(room) === "digu" ? Object.assign(document.createElement("div"), { className: "card back" }) : cardEl(digu)); // lies face down
     const back = document.createElement("div");
     back.className = "flip-back";
     back.append(shoutEl(room.diguStyle, gameOf(room) === "call" ? "CALL!" : gameOf(room) === "babbush" ? "BABUSH!" : "DIGU!"));
@@ -6475,9 +6484,11 @@ function flyCard(from, to, id, { delay = 0, back = false, slow = false } = {}) {
     // a thrown card starts small and grows on the way, landing exactly the size and angle of the
     // card on the pile (measured once the pile has drawn it, a moment later)
     const go = () => {
-      const t = document.querySelector(`#discardPile .card[data-id="${CSS.escape(id)}"]`) || to;
+      const found = document.querySelector(`#discardPile .card[data-id="${CSS.escape(id)}"]`), t = found || to;
       const b = t.getBoundingClientRect();
-      const w = t.offsetWidth || 56, h = t.offsetHeight || 80;
+      // (no such card on the pile, e.g. the pile ran out and was shuffled: a normal-sized card, not the pile's width)
+      const ps = found ? null : pileCardSize();
+      const w = found ? found.offsetWidth || 56 : ps.w, h = found ? found.offsetHeight || 80 : ps.h;
       const rot = +((t.style.getPropertyValue("--t") || "").match(/rotate\((-?[\d.]+)deg/)?.[1] || 0);
       // from my hand: the card itself leaves, full size and at its angle in the hand; from another player: it starts small
       const fromHand = !!handSrc;
@@ -6580,6 +6591,30 @@ function cardMoves(prev) {
 const SHUFFLE_MS = 5200;
 let shuffleBusyUntil = 0;
 const shuffling = () => Date.now() < shuffleBusyUntil;
+// ✋ While the new middle pile is being made, a big animated "wait" hand and a little speech bubble
+// sit by the middle pile (Google's free animated Noto emoji; a plain one if it can't load).
+const WAIT_EMOJI = "https://fonts.gstatic.com/s/e/notoemoji/latest/270b/512.webp", WAIT_CLOCK = "https://fonts.gstatic.com/s/e/notoemoji/latest/23f3/512.webp";
+try { new Image().src = WAIT_EMOJI; new Image().src = WAIT_CLOCK; } catch {}
+function shuffleWaiter() {
+  let el = $("shuffleWait");
+  const on = !!room && room.status === "playing" && !$("game").hidden && shuffling();
+  if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); setTimeout(() => el.remove(), 400); } return; }
+  if (!el) {
+    el = Object.assign(document.createElement("div"), { id: "shuffleWait", className: "shuffle-wait" });
+    el.innerHTML = `<div class="sw-hand"></div><div class="sw-bubble"><span class="sw-clock"></span><b>Wait a moment</b><small>shuffling a new pile</small></div>`;
+    const pic = (src, alt, box) => {
+      const img = Object.assign(new Image(), { alt, src });
+      img.onerror = () => img.replaceWith(Object.assign(document.createElement("span"), { className: "sw-text", textContent: alt }));
+      el.querySelector(box).append(img);
+    };
+    pic(WAIT_EMOJI, "✋", ".sw-hand"); pic(WAIT_CLOCK, "⏳", ".sw-clock");
+    document.body.append(el);
+  }
+  // just above the middle of the table
+  const t = ($("table") || $("deck")).getBoundingClientRect();
+  Object.assign(el.style, { left: t.left + t.width / 2 + "px", top: Math.max(8, t.top - 6) + "px" });
+}
+setInterval(shuffleWaiter, 150);
 // the newest move my screen had already shown before this update
 function fxSeen(prev) {
   return (prev?.fx || []).filter((e) => e.r === room.round).reduce((m, e) => Math.max(m, e.n), 0);
@@ -6979,7 +7014,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261027t";
+const APP_VERSION = "20261029c";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7761,7 +7796,7 @@ function slapCard(id, who, then) {
         transformOrigin: "50% 110%", transform: `rotate(${a}deg)` });
       el.append(k);
     });
-  } else el = cardEl(id);
+  } else el = gameOf(room) === "digu" ? Object.assign(document.createElement("div"), { className: "card back" }) : cardEl(id); // DIGU: slammed down face down
   el.classList.add("flying", "slap-card");
   Object.assign(el.style, { position: "fixed", left: cx - w / 2 + "px", top: cy - h / 2 + "px", width: w + "px", height: h + "px", zIndex: 170, margin: 0 });
   document.body.append(el);
@@ -7904,6 +7939,26 @@ $("discardPile").addEventListener("pointerdown", (e) => {
 });
 
 function makeGhost() {
+  if (drag.src === "deck" || drag.src === "discard") {
+    const w = drag.src === "deck" ? drag.el.offsetWidth : drag.el.offsetWidth, h = drag.el.offsetHeight;
+    const g = Object.assign(document.createElement("div"), { className: "drag-flip ghost" });
+    const inner = drag.src === "deck" ? Object.assign(document.createElement("div"), { className: "card back" }) : drag.el.cloneNode(true);
+    inner.classList.remove("selected", "new", "clickable", "thrown", "top", "landing", "pick");
+    inner.removeAttribute("id");
+    Object.assign(inner.style, { width: "100%", height: "100%", margin: "0", position: "absolute", left: "0", top: "0", transform: "none" });
+    g.append(inner);
+    Object.assign(g.style, { width: w + "px", height: h + "px" });
+    drag.offX = w / 2; drag.offY = h / 2;
+    drag.inner = inner;
+    drag.face = drag.src === "deck" ? (room.deck || []).at(-1) || null : null; // the card I'm about to take
+    drag.flipped = drag.src !== "deck";
+    drag.startY = drag.el.getBoundingClientRect().top + h / 2;
+    document.body.append(g);
+    drag.ghost = g;
+    drag.el.classList.add("dragging");
+    document.body.classList.add("is-dragging");
+    return;
+  }
   const r = drag.el.getBoundingClientRect();
   const g = drag.el.cloneNode(true);
   g.classList.remove("selected", "new", "clickable", "thrown", "top", "landing");
@@ -7925,11 +7980,35 @@ function dropTarget(e, d) {
   const t = document.elementFromPoint(e.clientX, e.clientY);
   if (d.src === "hand") {
     const handTop = $("hand").getBoundingClientRect().top;
-    if (canThrow() && (t?.closest("#table") || e.clientY < handTop - 30)) return "throw";
+    if (canThrow() && (t?.closest("#table") || e.clientY < handTop - 70)) return "throw";
     return null;
   }
   if (canDraw() && (t?.closest("#handSection") || e.clientY > $("table").getBoundingClientRect().bottom + 20)) return "draw";
   return null;
+}
+
+// where a card coming in from the middle would go, for the pointer's position over my hand
+function insertSlot(e) {
+  const box = $("hand"), hr = box.getBoundingClientRect(), f = box._fan;
+  if (!f || !hand.length) return hand.length;
+  let row = f.rows[0];
+  if (f.rows.length > 1) {
+    const second = box.querySelectorAll(".card")[f.rows[1].from];
+    if (second && e.clientY > second.getBoundingClientRect().top + 12) row = f.rows[1];
+  }
+  const k = Math.round((e.clientX - hr.left - row.start) / row.step);
+  return row.from + Math.max(0, Math.min(row.count, k));
+}
+function showInsertMark(slot) {
+  let m = $("insertMark");
+  if (slot == null) { m?.remove(); return; }
+  if (!m) { m = Object.assign(document.createElement("div"), { id: "insertMark", className: "insert-mark" }); document.body.append(m); }
+  const cards = $("hand").querySelectorAll(".card");
+  const ref = cards[Math.min(slot, cards.length - 1)];
+  if (!ref) { m.remove(); return; }
+  const r = ref.getBoundingClientRect();
+  const x = slot >= cards.length ? r.right + 2 : r.left - 2;
+  Object.assign(m.style, { left: x - 2 + "px", top: r.top - 6 + "px", height: r.height + 12 + "px" });
 }
 
 // Move the dragged card to the spot under the pointer (like rearranging cards in your real hand).
@@ -7937,7 +8016,7 @@ function dropTarget(e, d) {
 // always means the same spot and the hand stays still while you slide.
 function placeInHand(e) {
   const box = $("hand"), hr = box.getBoundingClientRect();
-  if (e.clientX < hr.left - 30 || e.clientX > hr.right + 30 || e.clientY < hr.top - 20 || e.clientY > hr.bottom + 20) return;
+  if (e.clientX < hr.left - 40 || e.clientX > hr.right + 40 || e.clientY < hr.top - 60 || e.clientY > hr.bottom + 40) return;
   const f = box._fan;
   if (!f || hand.length < 2) return;
   let row = f.rows[0];
@@ -7965,13 +8044,27 @@ document.addEventListener("pointermove", (e) => {
   const tilt = Math.max(-12, Math.min(12, dx / 15));
   drag.ghost.style.transform = `translate(${e.clientX - drag.offX}px, ${e.clientY - drag.offY}px) rotate(${tilt}deg) scale(1.08)`;
   if (drag.src === "hand") placeInHand(e);
+  if (drag.src === "deck" && !drag.flipped && drag.face && canDraw()) { // halfway to my hand: it turns over
+    const handTop = $("hand").getBoundingClientRect().top;
+    if (e.clientY > drag.startY + (handTop - drag.startY) * 0.45) {
+      drag.flipped = true;
+      const inner = drag.inner, face = cardEl(drag.face);
+      Object.assign(face.style, { width: "100%", height: "100%", margin: "0", position: "absolute", left: "0", top: "0" });
+      inner.animate([{ transform: "rotateY(0deg)" }, { transform: "rotateY(90deg)" }], { duration: 110, easing: "ease-in" }).onfinish = () => {
+        inner.replaceWith(face); drag && (drag.inner = face);
+        face.animate([{ transform: "rotateY(-90deg)" }, { transform: "rotateY(0deg)" }], { duration: 130, easing: "ease-out" });
+      };
+    }
+  }
   const t = dropTarget(e, drag);
+  if (drag.src !== "hand") showInsertMark(t === "draw" && e.clientY > $("hand").getBoundingClientRect().top - 40 ? insertSlot(e) : null);
   $("discardPile").classList.toggle("drop-hover", t === "throw");
   $("hand").classList.toggle("drop-hover", t === "draw");
 }, { passive: false });
 
 function endDrag(d) {
   d.ghost?.remove();
+  showInsertMark(null);
   d.el?.classList.remove("dragging");
   document.body.classList.remove("is-dragging");
   $("discardPile").classList.remove("drop-hover");
@@ -8006,8 +8099,15 @@ document.addEventListener("pointerup", (e) => {
   }
   const t = dropTarget(e, d);
   if (t === "throw") throwCard(isCall() && callSel.has(d.id) ? [...callSel] : [d.id]);
-  else if (d.src === "hand" && d.moved && needsDrawFirst() && e.clientY < $("hand").getBoundingClientRect().top - 30) takeFirstHint();
-  else if (t === "draw") draw(d.src);
+  else if (d.src === "hand" && d.moved && needsDrawFirst() && e.clientY < $("hand").getBoundingClientRect().top - 70) takeFirstHint();
+  else if (t === "draw") {
+    // dropped over my hand: the new card goes into that spot
+    if (e.clientY > $("hand").getBoundingClientRect().top - 40) { pendingInsert = { at: insertSlot(e), until: Date.now() + 5000 }; drawnByDrag = true; }
+    draw(d.src);
+    if (drawnByDrag) drawnByDrag = false; // (the draw didn't happen)
+    setTimeout(() => { if (pendingInsert && Date.now() > pendingInsert.until) pendingInsert = null; }, 5200);
+    render();
+  }
   else render(); // card stays where it was dropped in the hand
 });
 document.addEventListener("pointercancel", () => { if (drag) { endDrag(drag); drag = null; render(); } });
