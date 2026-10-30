@@ -2681,7 +2681,8 @@ body.scene-window #game.in-play #table .pile small { color: #ffe3c2; }
 .dealer { width: 230px; }
 
 /* my thrown card resting on the pile during the take-back second: a soft breathing glow */
-.glide.waiting .gl-in > .card { animation: waitGlow 1s ease-in-out infinite alternate; }
+.glide .gl-in { transition: filter .25s, opacity .25s; }
+.glide.waiting .gl-in { filter: blur(1.6px) saturate(.8); opacity: .75; } /* blurred until the take-back second is over */
 @keyframes waitGlow { from { box-shadow: 0 6px 14px rgba(0,0,0,.35); } to { box-shadow: 0 6px 14px rgba(0,0,0,.35), 0 0 14px rgba(255,255,255,.45); } }
 
 /* 🃏 real-looking hands shuffling the new middle pile */
@@ -2727,3 +2728,14 @@ body.scene-window #game.in-play #table .pile small { color: #ffe3c2; }
   animation: sparkFly .9s ease-out forwards; }
 @keyframes sparkFly { 0% { transform: translate(-50%, -50%) scale(.4); opacity: 1; } 70% { opacity: 1; }
   100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1) rotate(160deg); opacity: 0; } }
+
+/* readable text on every scene: dark letters with a light halo on the beach (sea or sand behind),
+   white letters with a dark halo on the darker scenes */
+body.scene-beach #game :is(.status, .log, p, small, #callCount, #sortLockNote, .hint, .muted, .pile small) {
+  color: #24180a !important; text-shadow: 0 0 3px rgba(255,255,255,.95), 0 0 8px rgba(255,255,255,.75) !important; }
+body.scene-beach #game :is(button.ghost, .sort-btn, #sortSuit, #sortRank, #groupSets) { color: #24180a !important; background: rgba(255,255,255,.55) !important; border-color: rgba(60,40,15,.35) !important; text-shadow: none !important; }
+body.scene-beach #game #discardBtn:disabled, body.scene-beach #game #callBtn:disabled { color: rgba(36,24,10,.55) !important; background: rgba(255,255,255,.45) !important; }
+body:is(.scene-pool, .scene-rain, .scene-window) #game :is(.status, .log, p, small, #callCount, #sortLockNote, .hint, .muted) {
+  color: #fff !important; text-shadow: 0 1px 2px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.6) !important; }
+body:is(.scene-pool, .scene-rain, .scene-window) #game :is(button.ghost, #sortSuit, #sortRank, #groupSets) { color: #fff !important; background: rgba(0,0,0,.35) !important; text-shadow: none !important; }
+body.scene-pool #game.in-play #table .pile small { color: #3a2a12 !important; text-shadow: 0 0 3px rgba(255,255,255,.8) !important; }
