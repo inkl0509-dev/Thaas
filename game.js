@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261029j";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261030c";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261029j`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261030c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261029j";
-import * as CFG from "./firebase-config.js?v=20261029j";
-import * as C from "./cards.js?v=20261029j";
-import * as P from "./profile.js?v=20261029j";
-import { DV } from "./i18n.js?v=20261029j";
+} from "./store.js?v=20261030c";
+import * as CFG from "./firebase-config.js?v=20261030c";
+import * as C from "./cards.js?v=20261030c";
+import * as P from "./profile.js?v=20261030c";
+import { DV } from "./i18n.js?v=20261030c";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -3880,6 +3880,7 @@ function takeFirstHint() {
 
 // ↩ A thrown card waits 1 second before it really goes, so an accidental tap can be taken back.
 const UNDO_MS = 1000;
+const TAKE_BACK = false; // the "↩ Take back" second: off
 let pendingThrow = null;
 function throwProblem(ids) { // anything that would stop this throw (then it's handled straight away, with its message)
   if (shuffling() || needsDrawFirst() || !canThrow() || !ids.length || !ids.every((c) => hand.includes(c))) return true;
@@ -3915,6 +3916,14 @@ function glideStart(id) {
   el.classList.add("glide-src");
   const g = { id, el, clone, inner, face, back, down: false, w0, h0, a, rot0, x: a.x, y: a.y, sc: 1, rot: rot0 };
   return g; // (stays face up on my own screen)
+}
+// an ease curve like CSS cubic-bezier(x1, y1, x2, y2), for moving things by hand
+function cubicBezier(x1, y1, x2, y2, t) {
+  const bx = (u) => 3 * x1 * u * (1 - u) * (1 - u) + 3 * x2 * u * u * (1 - u) + u * u * u;
+  const by = (u) => 3 * y1 * u * (1 - u) * (1 - u) + 3 * y2 * u * u * (1 - u) + u * u * u;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 18; i++) { const m = (lo + hi) / 2; if (bx(m) < t) lo = m; else hi = m; }
+  return by((lo + hi) / 2);
 }
 // turn the moving card over (face down while it can still be taken back; face up when it lands)
 function glideTurn(g, down) {
@@ -3962,7 +3971,7 @@ function finishGlide(id) {
     const b = (t || $("discardPile")).getBoundingClientRect(), w = t?.offsetWidth || g.w0 * g.sc;
     const rot = +(((t?.style.getPropertyValue("--t") || "").match(/rotate\((-?[\d.]+)deg/) || [])[1] || 0);
     const from = glideCss(g);
-    glideTurn(g, false); // time's up: it turns face up as it lands
+    g.clone.classList.remove("waiting"); // time's up: sharp again, it's thrown
     Object.assign(g, { x: b.left + b.width / 2, y: b.top + b.height / 2, sc: w / g.w0, rot });
     const anim = g.clone.animate([{ transform: from }, { transform: glideCss(g) }], { duration: 260, easing: "cubic-bezier(.3,.9,.4,1)", fill: "forwards" });
     anim.onfinish = () => { landed(id); g.clone.remove(); };
@@ -3982,6 +3991,7 @@ function cancelPendingThrow(silent) {
 function throwCard(cardIds, timedOut = false) {
   const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
   if (timedOut) { cancelPendingThrow(true); return doThrowCard(ids, true); }
+  if (!TAKE_BACK) return doThrowCard(ids, false); // thrown straight away (the take-back second is switched off)
   if (pendingThrow) return; // one throw at a time
   if (throwProblem(ids)) return doThrowCard(ids, false);
   if (gameOf(room) === "digu" && C.findWinningLayout(hand.filter((c) => !ids.includes(c)))) return doThrowCard(ids, false); // DIGU! slam it down
@@ -3999,12 +4009,12 @@ function throwCard(cardIds, timedOut = false) {
     if (!pendingThrow || !pendingThrow.run) return;
     // a normal throw at normal speed: face up on my screen, it lands on the pile and waits there until the
     // take-back second is over (only then do the other players see it)
-    const f = Math.min(1, (performance.now() - t0) / 420);
-    const u = 1 - Math.pow(1 - f, 3);
+    const f = Math.min(1, (performance.now() - t0) / 550); // the same flight as every other thrown card
+    const u = cubicBezier(0.4, 0, 0.2, 1, f);
     glides.forEach((g, k) => {
       const dx = goal.x - g.a.x, dy = goal.y - g.a.y, len = Math.hypot(dx, dy) || 1;
       const side = g.a.x < innerWidth / 2 ? -1 : 1;
-      const cx = g.a.x + dx * 0.5 + side * len * 0.1, cy = g.a.y + dy * 0.5 - 26; // a normal throw: a gentle arc
+      const cx = g.a.x + dx * 0.55, cy = g.a.y + dy * 0.55 - 52; // the usual little arc
       g.x = (1 - u) * (1 - u) * g.a.x + 2 * (1 - u) * u * cx + u * u * goal.x + k * 6;
       const half = (g.w0 * Math.max(1, g.sc)) / 2 + 8; // never off the edge of the screen
       g.x = Math.max(half, Math.min(innerWidth - half, g.x));
@@ -4795,19 +4805,29 @@ function ensureProfile(d, exists) {
 // My table and card-back colours (my own screen only).
 function applyLook() {
   const prefs = myPrefs();
-  const t = P.byId(P.TABLES, prefs.table);
+  const chosen = P.byId(P.TABLES, prefs.table);
+  // a scene (beach, rain, sea, house) only paints the game table; everywhere else keeps the normal colours
+  const t = chosen.scene ? P.TABLES[0] : chosen;
   const s = document.documentElement.style;
   s.setProperty("--felt-light", t.c[0]);
   s.setProperty("--felt", t.c[1]);
   s.setProperty("--felt-dark", t.c[2]);
   s.setProperty("--back", P.byId(P.DECKS, prefs.deck).bg);
-  setScene(t.scene || null);
+  setScene(chosen.scene || null);
 }
 
 // 🏖️ / 🌧️ scenes: the screen becomes a beach (sea and waves at the top, white sand, the cards on a
 // wooden table) or a rainy day (rain falling, lightning), each with its own sounds at the table.
 let sceneNow = null;
-function setScene(kind) {
+// the chosen scene only shows at a game table; the home screen, Aammu Jagaha and holhuashi keep the
+// normal look (so all their text stays easy to read)
+let sceneWanted = null;
+function setScene(kind) { sceneWanted = kind || null; syncScene(); }
+function syncScene() {
+  const show = sceneWanted && room && !$("game").hidden && room.status !== "lobby" ? sceneWanted : null;
+  buildScene(show);
+}
+function buildScene(kind) {
   if (kind === sceneNow) return;
   sceneNow = kind;
   document.body.classList.remove("scene-beach", "scene-rain", "scene-pool", "scene-window");
@@ -6617,8 +6637,10 @@ let shuffleBusyUntil = 0;
 const shuffling = () => Date.now() < shuffleBusyUntil;
 // 🪄 While the new middle pile is being made, a magic wand floats beside it, points at the cards and
 // waves, sparkles flying from its tip, while the cards shuffle themselves.
+const SHOW_WAND = false; // the magic wand during the shuffle: off (the cards still shuffle themselves)
 function shuffleWaiter() {
   let el = $("shuffleWait");
+  if (!SHOW_WAND) { el?.remove(); return; }
   const on = !!room && room.status === "playing" && !$("game").hidden && shuffling();
   if (!on) { if (el && !el.classList.contains("bye")) { el.classList.add("bye"); clearInterval(el._spark); setTimeout(() => el.remove(), 450); } return; }
   const d = $("deck").getBoundingClientRect();
@@ -7045,7 +7067,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261029j";
+const APP_VERSION = "20261030c";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7080,6 +7102,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) chec
 
 // 🎵 background music while at a table (game or round results), unless muted
 function syncMusic() {
+  try { syncScene(); } catch {}
   const at = !!room && room.playerIds?.includes(uid) && room.status !== "lobby" && !$("game").hidden && !document.hidden;
   if (at && !isMuted()) startMusic(); else stopMusic();
   if (at && !isMuted() && sceneNow) startAmbience(sceneNow); else stopAmbience();
@@ -8547,3 +8570,4 @@ $("langEn").onclick = () => setLang("en");
 $("langDv").onclick = () => setLang("dv");
 setLang(load("thaas-lang") === "dv" ? "dv" : "en");
 window.__thaasStarted = true; document.getElementById("bootErr")?.remove();
+setInterval(() => { try { syncScene(); } catch {} }, 1000);
