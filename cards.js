@@ -89,16 +89,16 @@ const consecutive = (rs) => rs.every((v, i) => i === 0 || v === rs[i - 1] + 1);
 
 // A valid set is either:
 //  - same number, any suits (e.g. 7♠ 7♥ 7♦), or
-//  - same suit in number order (e.g. 2♥ 3♥ 4♥). Ace can be low (A-2-3) or high (Q-K-A), no wrapping.
+//  - same suit in number order (e.g. 2♥ 3♥ 4♥, J♠ Q♠ K♠). An Ace is never in a run: A-2-3 and Q-K-A
+//    don't count (A-A-A of the same number does).
 export function isValidGroup(ids) {
   if (ids.length < 3) return false;
   const cs = ids.map(parse);
   if (cs.every((c) => c.r === cs[0].r)) return true;
   if (!cs.every((c) => c.s === cs[0].s)) return false;
   const rs = cs.map((c) => c.r).sort((a, b) => a - b);
-  if (consecutive(rs)) return true;
-  if (rs[0] === 1) return consecutive([...rs.slice(1), 14]);
-  return false;
+  if (rs[0] === 1) return false; // an Ace is never part of a run (A-2-3 and Q-K-A don't count); A-A-A does
+  return consecutive(rs);
 }
 
 function combinations(arr, k, start = 0, prefix = [], out = []) {
@@ -111,6 +111,10 @@ function combinations(arr, k, start = 0, prefix = [], out = []) {
 // Returns [[4 cards], [3 cards], [3 cards]] if the 10 cards are a winning hand, else null.
 export function findWinningLayout(ids) {
   if (ids.length !== HAND_SIZE) return null;
+  if (isThousandDigu(ids)) { // 💯 A up to 10, or K down to 4, one suit: a DIGU of its own
+    const run = [...ids].sort((a, b) => parse(a).r - parse(b).r);
+    return [run.slice(0, 4), run.slice(4, 7), run.slice(7)];
+  }
   for (const four of combinations(ids, 4)) {
     if (!isValidGroup(four)) continue;
     const rest = ids.filter((c) => !four.includes(c));
@@ -170,12 +174,10 @@ export function oneAway(ids) {
   for (const id of ids) {
     const { r, s } = parse(id);
     for (const s2 of SUITS) cand.add(`${r}-${s2}-9`);
-    // same suit within 2 steps; Ace counts as 1 and as 14 (for Q-K-A)
-    for (const v of r === 1 ? [1, 14] : [r]) {
-      for (const dr of [-2, -1, 1, 2]) {
-        const w = v + dr === 14 ? 1 : v + dr;
-        if (w >= 1 && w <= 13) cand.add(`${w}-${s}-9`);
-      }
+    // same suit within 2 steps (Ace is low only)
+    for (const dr of [-2, -1, 1, 2]) {
+      const w = r + dr;
+      if (w >= 2 && w <= 13) cand.add(`${w}-${s}-9`);
     }
   }
   for (let i = 0; i < ids.length; i++) {
@@ -193,16 +195,16 @@ export const DIGU_BONUS = 100;
 export const NO_SET_PENALTY = -100;
 const sum = (ids) => ids.reduce((a, c) => a + points(c), 0);
 
-// 💯 "1000 DIGU": all ten cards of the DIGU in one suit, in one unbroken run (A–10, 2–J, 3–Q, … ;
-// A can also come after K). That DIGU scores 1000.
+// 💯 "1000 DIGU": ten cards of one suit, counting up from the Ace (A, 2, 3 … 10) or down from the King
+// (K, Q, J … 4). That DIGU scores 1000. (The only time an Ace may be in a run.)
 export const THOUSAND = 1000;
 export function isThousandDigu(ids) {
   if (!ids || ids.length !== HAND_SIZE) return false;
   const cs = ids.map(parse);
   if (!cs.every((c) => c.s === cs[0].s)) return false;
   const rs = cs.map((c) => c.r).sort((a, b) => a - b);
-  if (consecutive(rs)) return true;
-  return rs[0] === 1 && consecutive([...rs.slice(1), 14]);
+  if (!consecutive(rs)) return false;
+  return rs[0] === 1 || rs[rs.length - 1] === 13;
 }
 export function roundScore(cards, winnerSets = null) {
   if (winnerSets) {
