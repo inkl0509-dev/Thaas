@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107d";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107e";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261107d`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261107e`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261107d";
-import * as CFG from "./firebase-config.js?v=20261107d";
-import * as C from "./cards.js?v=20261107d";
-import * as P from "./profile.js?v=20261107d";
-import { DV } from "./i18n.js?v=20261107d";
+} from "./store.js?v=20261107e";
+import * as CFG from "./firebase-config.js?v=20261107e";
+import * as C from "./cards.js?v=20261107e";
+import * as P from "./profile.js?v=20261107e";
+import { DV } from "./i18n.js?v=20261107e";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -6502,20 +6502,26 @@ function landed(id) {
     el.classList.remove("arriving"); el.classList.add("just-landed");
   });
 }
+let throwFrom = null; // a card I dragged and let go: { id, cx, cy, w, h, rot } (it flies from there)
 function flyCard(from, to, id, { delay = 0, back = false, slow = false } = {}) {
   if (!from || !to) return;
   const toPile = to === $("discardPile") && id;
+  const dropped = toPile && throwFrom && throwFrom.id === id && Date.now() - throwFrom.at < 2000 ? throwFrom : null;
+  if (dropped) throwFrom = null;
   const dur = slow ? 700 : 550;
   if (toPile) {
     arriving.add(id);
     document.querySelectorAll(`#discardPile .card[data-id="${CSS.escape(id)}"]`).forEach((el) => el.classList.add("arriving"));
     setTimeout(() => landed(id), dur + delay + 900); // safety: never stay hidden
   }
-  const a = from.getBoundingClientRect();
+  const a = dropped
+    ? { left: dropped.cx - dropped.w / 2, top: dropped.cy - dropped.h / 2, width: dropped.w, height: dropped.h }
+    : from.getBoundingClientRect();
   if (!a.width && !a.height) return;
   const el = back || !id ? Object.assign(document.createElement("div"), { className: "card back" }) : cardEl(id);
   el.classList.add("flying", "fly-move");
-  const handSrc = toPile && from.closest?.("#hand") && from.classList?.contains("card")
+  const handSrc = dropped ? { w: dropped.w * dropped.scale, h: dropped.h * dropped.scale, r: dropped.rot }
+    : toPile && from.closest?.("#hand") && from.classList?.contains("card")
     ? { w: from.offsetWidth || 56, h: from.offsetHeight || 80, r: +(getComputedStyle(from).getPropertyValue("--rot").match(/-?[\d.]+/)?.[0] || 0) } : null;
   if (handSrc) { // my own card: show it leaving the hand straight away, no gap
     const w0 = handSrc.w, h0 = handSrc.h;
@@ -7067,7 +7073,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261107d";
+const APP_VERSION = "20261107e";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -8147,6 +8153,7 @@ document.addEventListener("pointermove", (e) => {
   }
   e.preventDefault();
   const tilt = Math.max(-12, Math.min(12, dx / 15));
+  drag.tilt = tilt;
   drag.ghost.style.transform = `translate(${e.clientX - drag.offX}px, ${e.clientY - drag.offY}px) rotate(${tilt}deg) scale(1.08)`;
   if (drag.src === "hand") placeInHand(e);
   if (drag.src === "deck" && !drag.flipped && drag.face && canDraw()) { // halfway to my hand: it turns over
@@ -8180,6 +8187,11 @@ document.addEventListener("pointerup", (e) => {
   if (!drag) return;
   const d = drag;
   drag = null;
+  // where the dragged card was let go: a thrown card flies to the middle from right there
+  if (d.moved && d.src === "hand" && d.ghost) {
+    const r = d.ghost.getBoundingClientRect();
+    throwFrom = { id: d.id, at: Date.now(), cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: d.el?.offsetWidth || 56, h: d.el?.offsetHeight || 80, rot: d.tilt || 0, scale: 1.08 };
+  }
   endDrag(d);
   if (!d.moved) { // a tap
     if (d.src === "hand") {
