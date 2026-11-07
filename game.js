@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261103c";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107a";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261103c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261107a`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261103c";
-import * as CFG from "./firebase-config.js?v=20261103c";
-import * as C from "./cards.js?v=20261103c";
-import * as P from "./profile.js?v=20261103c";
-import { DV } from "./i18n.js?v=20261103c";
+} from "./store.js?v=20261107a";
+import * as CFG from "./firebase-config.js?v=20261107a";
+import * as C from "./cards.js?v=20261107a";
+import * as P from "./profile.js?v=20261107a";
+import { DV } from "./i18n.js?v=20261107a";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -7067,7 +7067,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261103c";
+const APP_VERSION = "20261107a";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7253,19 +7253,23 @@ function render() {
   const handDiv = $("hand");
   const dragId = drag?.moved && drag.src === "hand" ? drag.id : "";
   const legal = canThrow() ? (isBondi() ? C.bondiLegal(hand, room.trick || []) : isDhiha() ? C.dhihaLegal(hand, room.trick || []) : null) : null;
-  const handKey = [hand.join(), isCall() ? [...callSel].join() : selected, lastDrawn, dragId, room.round, legal?.join()].join("|");
+  // the cards themselves are only rebuilt when the hand really changes; picking a card up, selecting it or
+  // dragging it just changes that one card, so the rest of the hand stays perfectly still
+  const handKey = [hand.join(), room.round, legal?.join()].join("|");
   if (handDiv._key !== handKey || !handDiv.children.length !== !hand.length) {
-  handDiv._key = handKey;
-  handDiv.innerHTML = "";
-  hand.forEach((id) => {
-    const el = cardEl(id);
-    if (isCall() ? callSel.has(id) : id === selected) el.classList.add("selected");
-    if (id === lastDrawn) el.classList.add("new");
-    if (legal && !legal.includes(id)) el.classList.add("blocked");
-    if (drag?.moved && drag.src === "hand" && drag.id === id) { el.classList.add("dragging"); drag.el = el; }
-    handDiv.append(el);
-  });
+    handDiv._key = handKey;
+    handDiv.innerHTML = "";
+    hand.forEach((id) => handDiv.append(cardEl(id)));
   }
+  [...handDiv.querySelectorAll(".card")].forEach((el) => {
+    const id = el.dataset.id;
+    el.classList.toggle("selected", isCall() ? callSel.has(id) : id === selected);
+    el.classList.toggle("new", id === lastDrawn);
+    el.classList.toggle("blocked", !!legal && !legal.includes(id));
+    const dr = !!(drag?.moved && drag.src === "hand" && drag.id === id);
+    el.classList.toggle("dragging", dr);
+    if (dr) drag.el = el;
+  });
   $("handSection").hidden = !me || room.status === "lobby";
   if (handDiv._fanW !== handDiv.clientWidth || handDiv._fanKey !== handKey) {
     handDiv._fanKey = handKey; fanHand(); handDiv._fanW = handDiv.clientWidth;
@@ -8070,20 +8074,21 @@ function showInsertMark(slot) {
 // always means the same spot and the hand stays still while you slide.
 function placeInHand(e) {
   const box = $("hand"), hr = box.getBoundingClientRect();
-  if (e.clientX < hr.left - 40 || e.clientX > hr.right + 40 || e.clientY < hr.top - 60 || e.clientY > hr.bottom + 40) return;
-  const f = box._fan;
-  if (!f || hand.length < 2) return;
-  let row = f.rows[0];
-  if (f.rows.length > 1) {
-    const second = box.querySelectorAll(".card")[f.rows[1].from];
-    if (second && e.clientY > second.getBoundingClientRect().top + 12) row = f.rows[1];
-  }
-  const slot = row.from + Math.max(0, Math.min(row.count - 1, Math.floor((e.clientX - hr.left - row.start) / row.step)));
-  const cur = hand.indexOf(drag.id);
-  if (cur < 0 || slot === cur) return;
-  const rest = hand.filter((c) => c !== drag.id);
-  hand = [...rest.slice(0, slot), drag.id, ...rest.slice(slot)];
-  render();
+  if (e.clientX < hr.left - 40 || e.clientX > hr.right + 40 || e.clientY < hr.top - 60 || e.clientY > hr.bottom + 40) { drag.slot = null; showInsertMark(null); return; }
+  if (!box._fan || hand.length < 2) return;
+  // the other cards stay still while I drag: a gold line shows where the card will go when I let go
+  const slot = insertSlot(e), cur = hand.indexOf(drag.id);
+  drag.slot = cur < 0 || slot === cur || slot === cur + 1 ? null : slot;
+  showInsertMark(drag.slot);
+}
+// put the dragged card into the marked spot, once, when it's dropped
+function dropInHand(d) {
+  const cur = hand.indexOf(d.id);
+  if (d.slot == null || cur < 0) return false;
+  const at = d.slot > cur ? d.slot - 1 : d.slot;
+  const rest = hand.filter((c) => c !== d.id);
+  hand = [...rest.slice(0, at), d.id, ...rest.slice(at)];
+  return true;
 }
 
 document.addEventListener("pointermove", (e) => {
@@ -8164,7 +8169,7 @@ document.addEventListener("pointerup", (e) => {
     setTimeout(() => { if (pendingInsert && Date.now() > pendingInsert.until) pendingInsert = null; }, 5200);
     render();
   }
-  else render(); // card stays where it was dropped in the hand
+  else { if (d.src === "hand") dropInHand(d); render(); } // the card goes into the spot I dropped it on
 });
 document.addEventListener("pointercancel", () => { if (drag) { endDrag(drag); drag = null; render(); } });
 

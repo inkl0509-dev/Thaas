@@ -2617,8 +2617,7 @@ body.scene-window #game.in-play #table .pile small { color: #ffe3c2; }
 .insert-mark { position: fixed; z-index: 199; width: 4px; border-radius: 4px; background: #ffcf5a; box-shadow: 0 0 10px #ffcf5a; pointer-events: none;
   animation: markPulse .8s ease-in-out infinite alternate; }
 @keyframes markPulse { from { opacity: .55; } to { opacity: 1; } }
-/* rearranging the hand: neighbours slide over smoothly */
-.hand .card { transition: margin-left .14s ease, transform .14s ease; }
+/* (the hand stays still: no sliding about when cards are added, taken or rearranged) */
 
 /* 🃏 the dealer shuffling the new middle pile by hand */
 .dealer { position: fixed; z-index: 210; width: 170px; height: 150px; transform: translate(-50%, -100%); pointer-events: none;
