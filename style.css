@@ -2738,3 +2738,40 @@ body:is(.scene-pool, .scene-rain, .scene-window) #game :is(.status, .log, p, sma
   color: #fff !important; text-shadow: 0 1px 2px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.6) !important; }
 body:is(.scene-pool, .scene-rain, .scene-window) #game :is(button.ghost, #sortSuit, #sortRank, #groupSets) { color: #fff !important; background: rgba(0,0,0,.35) !important; text-shadow: none !important; }
 body.scene-pool #game.in-play #table .pile small { color: #3a2a12 !important; text-shadow: 0 0 3px rgba(255,255,255,.8) !important; }
+
+/* ===== fit the game to short phones (added step by step until nothing needs scrolling) ===== */
+body.fit-1 #game .status { font-size: 15px; margin-bottom: 4px; }
+body.fit-1 #game.in-play .status { margin-top: 88px; }
+body.fit-1 #game .log { font-size: 12px; margin: 2px 0; }
+body.fit-1 #game .pile .card { width: 68px; height: 98px; }
+body.fit-1 #game .pile { gap: 3px; font-size: 11px; }
+body.fit-1 #game .hand-tools { margin: 2px 0; gap: 4px; }
+body.fit-1 #game .hand-tools button { padding: 4px 9px; font-size: 12px; }
+body.fit-1 #game .lock-note { font-size: 11px; margin: 2px 0; }
+body.fit-1 #game .turn-badge { margin: 2px auto; padding: 4px 14px; font-size: 14px; }
+body.fit-1 #game .hand { padding: 20px 0 6px; }
+body.fit-1 #game .actions { margin-top: 2px; }
+body.fit-1 #game .actions button { padding: 8px 16px; }
+body.fit-2 :is(#game) { --card-w: 56px; --card-h: 80px; }
+body.fit-2 #game .status { font-size: 14px; margin-bottom: 2px; }
+body.fit-2 #game.in-play .status { margin-top: 80px; }
+body.fit-2 #game .log { font-size: 11px; margin: 0; }
+body.fit-2 #game .pile .card { width: 58px; height: 84px; }
+body.fit-2 #game .pile { gap: 2px; font-size: 10px; }
+body.fit-2 #game .hand-tools { margin: 0; gap: 4px; }
+body.fit-2 #game .hand-tools button { padding: 3px 8px; font-size: 11px; }
+body.fit-2 #game .lock-note { font-size: 10px; margin: 0; }
+body.fit-2 #game .turn-badge { margin: 0 auto; padding: 3px 12px; font-size: 13px; }
+body.fit-2 #game .hand { padding: 16px 0 4px; }
+body.fit-2 #game .actions button { padding: 6px 14px; font-size: 14px; }
+body.fit-3 :is(#game) { --card-w: 50px; --card-h: 72px; }
+body.fit-3 #game .status { font-size: 13px; }
+body.fit-3 #game.in-play .status { margin-top: 74px; }
+body.fit-3 #game .pile .card { width: 50px; height: 72px; }
+body.fit-3 #game .lock-note { display: none; }
+body.fit-3 #game .hand { padding: 12px 0 2px; }
+body.fit-4 :is(#game) { --card-w: 46px; --card-h: 66px; }
+body.fit-4 #game .log { display: none; }
+body.fit-4 #game .pile .card { width: 46px; height: 66px; }
+body.fit-4 #game .pile small, body.fit-4 #game .pile > span:last-child { display: none; }
+body.fit-4 #game .hand-tools button { padding: 2px 7px; font-size: 10px; }

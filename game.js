@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107a";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107c";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261107a`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261107c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261107a";
-import * as CFG from "./firebase-config.js?v=20261107a";
-import * as C from "./cards.js?v=20261107a";
-import * as P from "./profile.js?v=20261107a";
-import { DV } from "./i18n.js?v=20261107a";
+} from "./store.js?v=20261107c";
+import * as CFG from "./firebase-config.js?v=20261107c";
+import * as C from "./cards.js?v=20261107c";
+import * as P from "./profile.js?v=20261107c";
+import { DV } from "./i18n.js?v=20261107c";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -7067,7 +7067,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261107a";
+const APP_VERSION = "20261107c";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7271,6 +7271,7 @@ function render() {
     if (dr) drag.el = el;
   });
   $("handSection").hidden = !me || room.status === "lobby";
+  fitGame();
   if (handDiv._fanW !== handDiv.clientWidth || handDiv._fanKey !== handKey) {
     handDiv._fanKey = handKey; fanHand(); handDiv._fanW = handDiv.clientWidth;
   }
@@ -7945,6 +7946,9 @@ function fanHand() {
   const W = box.clientWidth || 320;
   const cw = cards[0].offsetWidth || 64;
   const stepFor = (k) => (k > 1 ? Math.min(cw * 0.72, (W - cw - 8) / (k - 1)) : cw);
+  // DIGU and CALL: room is kept for the card you'll take, so the cards already in your hand don't
+  // shift about each time one is added or thrown
+  const slotsFor = (k) => (room && (gameOf(room) === "digu" || isCall()) ? Math.max(k, gameOf(room) === "digu" ? C.HAND_SIZE + 1 : 8) : k);
   // a big hand (e.g. BONDI with 2 players = 26 cards) on a narrow screen gets two rows,
   // so every card still shows enough to tap
   const two = n > 1 && stepFor(n) < 22;
@@ -7952,21 +7956,47 @@ function fanHand() {
   const rows = two ? [[0, split], [split, n - split]] : [[0, n]];
   box.classList.toggle("two-rows", two);
   box._fan = { rows: rows.map(([from, count]) => {
-    const step = stepFor(count);
-    const tilt = Math.min(4, 36 / count);
+    const slots = two ? count : slotsFor(count);
+    const step = stepFor(slots);
+    const tilt = Math.min(4, 36 / slots);
     for (let j = 0; j < count; j++) {
-      const el = cards[from + j], off = j - (count - 1) / 2;
+      const el = cards[from + j], off = j - (slots - 1) / 2; // (the arc is for all the slots, so it doesn't change either)
       el.style.marginLeft = j ? `${step - cw}px` : "0";
       el.style.setProperty("--rot", `${off * tilt}deg`);
       el.style.setProperty("--y", `${Math.abs(off) * Math.abs(off) * 0.9}px`);
       el.style.zIndex = from + j + 1;
     }
     // where the row starts inside the hand box (it's centred), for rearranging by drag
-    return { from, count, step, start: Math.max(0, (W - (cw + step * (count - 1))) / 2) };
+    return { from, count, step, slots, start: Math.max(0, (W - (cw + step * (slots - 1))) / 2) };
   }) };
+  // the empty slots at the end keep the cards where they are (the row stays centred on all slots)
+  const r0 = box._fan.rows[0];
+  box.style.paddingRight = !two && r0.slots > r0.count ? `${(r0.slots - r0.count) * r0.step}px` : "";
   if (two) cards[split].before(Object.assign(document.createElement("div"), { className: "row-break" }));
 }
-addEventListener("resize", () => { if (room) fanHand(); });
+addEventListener("resize", () => { if (room) { fitGame(); fanHand(); } });
+// The game screen fits every phone: on a short screen things get a little smaller, step by step
+// (fit-1 … fit-4), until the whole table, your hand and the buttons fit without scrolling.
+let fitKey = "";
+function fitGame(force) {
+  const b = document.body, at = !!room && !$("game").hidden && room.status !== "lobby";
+  const key = at ? `${innerWidth}x${innerHeight}|${gameOf(room)}|${room.playerIds?.length}|${room.status}` : "";
+  const over = () => document.documentElement.scrollHeight > innerHeight + 2;
+  const level = () => [4, 3, 2, 1].find((i) => b.classList.contains("fit-" + i)) || 0; // (the steps add up: fit-3 has fit-1 and fit-2 too)
+  if (!force && key === fitKey) {
+    // same screen: only step down again if something still doesn't fit (the table can grow later)
+    if (!at || level() >= 4 || !over()) return;
+    b.classList.add("fit-" + (level() + 1));
+    fanHand(); return;
+  }
+  fitKey = key;
+  for (let i = 1; i <= 4; i++) b.classList.remove("fit-" + i);
+  if (!at) return;
+  for (let i = 1; i <= 4 && over(); i++) b.classList.add("fit-" + i);
+  fanHand();
+}
+addEventListener("orientationchange", () => setTimeout(() => fitGame(true), 300));
+setInterval(() => { try { fitGame(); } catch {} }, 700);
 
 // ---------- drag & tap (mouse and touch) ----------
 // Drag a hand card onto the thrown cards to throw it. While dragging over your hand,
