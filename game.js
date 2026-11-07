@@ -4,10 +4,10 @@ import {
   setPersistence, browserLocalPersistence, browserSessionPersistence,
   EmailAuthProvider, linkWithCredential, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107c";
+import { startMusic, stopMusic, setMuted, isMuted, unlock as unlockMusic } from "./music.js?v=20261107d";
 // scene sounds load on their own: if ambience.js is ever missing, the game still works (just quiet)
 let AMB = null;
-import(`./ambience.js?v=20261107c`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
+import(`./ambience.js?v=20261107d`).then((m) => { AMB = m; m.setThunderHandler(thunderFromSound); m.setSwellHandler(swellNow); syncMusic(); })
   .catch((e) => console.warn("scene sounds unavailable", e));
 const startAmbience = (k) => AMB?.startAmbience(k), stopAmbience = () => AMB?.stopAmbience(), unlockAmbience = () => AMB?.unlockAmbience();
 // Card tables live in Realtime Database (see store.js); accounts, profiles etc. in Firestore.
@@ -16,11 +16,11 @@ import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction,
   collection, getDocs, writeBatch, serverTimestamp, increment, query, where, arrayUnion, arrayRemove, deleteField,
   disableNetwork, enableNetwork, initStore, usingRealtime, databaseUrlFor, serverClockOffset, deleteRoomEverywhere, watchPresence, stopPresence, onReconnect, rememberMembership,
-} from "./store.js?v=20261107c";
-import * as CFG from "./firebase-config.js?v=20261107c";
-import * as C from "./cards.js?v=20261107c";
-import * as P from "./profile.js?v=20261107c";
-import { DV } from "./i18n.js?v=20261107c";
+} from "./store.js?v=20261107d";
+import * as CFG from "./firebase-config.js?v=20261107d";
+import * as C from "./cards.js?v=20261107d";
+import * as P from "./profile.js?v=20261107d";
+import { DV } from "./i18n.js?v=20261107d";
 
 const { firebaseConfig } = CFG;
 if (!firebaseConfig?.apiKey || String(firebaseConfig.apiKey).includes("PASTE"))
@@ -7067,7 +7067,7 @@ addEventListener("resize", () => { if (room) renderTurnGlow(); });
 // version.json on the website says which version is current. When it's newer than this copy (an old
 // copy kept by the phone, e.g. an iPhone home-screen app), a full-screen notice asks to update and
 // can't be closed. Updating reloads the page from the server; the game carries on where it was.
-const APP_VERSION = "20261107c";
+const APP_VERSION = "20261107d";
 let updateShown = false;
 async function checkForUpdate() {
   if (updateShown || document.hidden) return;
@@ -7258,8 +7258,15 @@ function render() {
   const handKey = [hand.join(), room.round, legal?.join()].join("|");
   if (handDiv._key !== handKey || !handDiv.children.length !== !hand.length) {
     handDiv._key = handKey;
-    handDiv.innerHTML = "";
-    hand.forEach((id) => handDiv.append(cardEl(id)));
+    // only the cards that changed are added, removed or moved; the rest stay exactly as they are
+    // (rebuilding the whole hand made it flicker)
+    handDiv.querySelector(".row-break")?.remove();
+    const have = new Map([...handDiv.querySelectorAll(".card")].map((e) => [e.dataset.id, e]));
+    for (const [id, e] of have) if (!hand.includes(id)) e.remove();
+    hand.forEach((id, i) => {
+      const el = have.get(id) || cardEl(id);
+      if (handDiv.children[i] !== el) handDiv.insertBefore(el, handDiv.children[i] || null);
+    });
   }
   [...handDiv.querySelectorAll(".card")].forEach((el) => {
     const id = el.dataset.id;
@@ -7948,7 +7955,11 @@ function fanHand() {
   const stepFor = (k) => (k > 1 ? Math.min(cw * 0.72, (W - cw - 8) / (k - 1)) : cw);
   // DIGU and CALL: room is kept for the card you'll take, so the cards already in your hand don't
   // shift about each time one is added or thrown
-  const slotsFor = (k) => (room && (gameOf(room) === "digu" || isCall()) ? Math.max(k, gameOf(room) === "digu" ? C.HAND_SIZE + 1 : 8) : k);
+  // DIGU / CALL: the hand is centred on its usual size (10 / 5 cards) and keeps the same spacing, so
+  // taking a card just adds it at the end and throwing one just takes it away: nothing else moves
+  const baseFor = (k) => (room && gameOf(room) === "digu" ? C.HAND_SIZE : room && isCall() ? C.CALL_HAND_SIZE : k);
+  // (spacing is worked out for the usual hand + 1 card + room to keep it centred, so it fits on any screen)
+  const slotsFor = (k) => (!(room && (gameOf(room) === "digu" || isCall())) ? k : Math.max(k + Math.abs(k - baseFor(k)), baseFor(k) + 2));
   // a big hand (e.g. BONDI with 2 players = 26 cards) on a narrow screen gets two rows,
   // so every card still shows enough to tap
   const two = n > 1 && stepFor(n) < 22;
@@ -7958,20 +7969,25 @@ function fanHand() {
   box._fan = { rows: rows.map(([from, count]) => {
     const slots = two ? count : slotsFor(count);
     const step = stepFor(slots);
+    const base = two ? count : baseFor(count);
     const tilt = Math.min(4, 36 / slots);
     for (let j = 0; j < count; j++) {
-      const el = cards[from + j], off = j - (slots - 1) / 2; // (the arc is for all the slots, so it doesn't change either)
+      const el = cards[from + j], off = j - (base - 1) / 2; // (the arc is centred on the usual hand, so it doesn't change either)
       el.style.marginLeft = j ? `${step - cw}px` : "0";
       el.style.setProperty("--rot", `${off * tilt}deg`);
       el.style.setProperty("--y", `${Math.abs(off) * Math.abs(off) * 0.9}px`);
       el.style.zIndex = from + j + 1;
     }
     // where the row starts inside the hand box (it's centred), for rearranging by drag
-    return { from, count, step, slots, start: Math.max(0, (W - (cw + step * (slots - 1))) / 2) };
+    return { from, count, step, slots, base, start: Math.max(0, (W - (cw + step * (base - 1))) / 2) };
   }) };
-  // the empty slots at the end keep the cards where they are (the row stays centred on all slots)
-  const r0 = box._fan.rows[0];
-  box.style.paddingRight = !two && r0.slots > r0.count ? `${(r0.slots - r0.count) * r0.step}px` : "";
+  // keep the first card where it is: a little padding on one side makes the usual hand sit in the
+  // middle whether you hold a card more or a card less
+  const r0 = box._fan.rows[0], d = (r0.base - r0.count) * r0.step;
+  const fits = cw + r0.step * (r0.count - 1) + Math.abs(d) <= W - 4;
+  box.style.paddingRight = !two && fits && d > 0 ? `${d}px` : "";
+  box.style.paddingLeft = !two && fits && d < 0 ? `${-d}px` : "";
+  if (two || !fits) r0.start = Math.max(0, (W - (cw + r0.step * (r0.count - 1))) / 2);
   if (two) cards[split].before(Object.assign(document.createElement("div"), { className: "row-break" }));
 }
 addEventListener("resize", () => { if (room) { fitGame(); fanHand(); } });

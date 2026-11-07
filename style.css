@@ -2775,3 +2775,4 @@ body.fit-4 #game .log { display: none; }
 body.fit-4 #game .pile .card { width: 46px; height: 66px; }
 body.fit-4 #game .pile small, body.fit-4 #game .pile > span:last-child { display: none; }
 body.fit-4 #game .hand-tools button { padding: 2px 7px; font-size: 10px; }
+body.fit-2 #game .actions { margin-top: 12px; }
